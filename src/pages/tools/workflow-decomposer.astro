@@ -1,0 +1,996 @@
+---
+// Workflow Decomposer.
+// PRD: tools-nixfred-prds/tools/07-WORKFLOW-DECOMPOSER.md
+//
+// Anyone can list steps. This tool earns its place by being honest
+// about which steps must stay human. Classification never looks at how
+// often a step runs, only at whether it can be verified, undone, and
+// handed to a system safely. Frequency only affects which already
+// automatable steps get built first. See src/lib/tools/workflow-decomposer.ts.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import Field from '../../components/kit/Field.astro';
+import ResultPanel from '../../components/kit/ResultPanel.astro';
+import AssumptionList from '../../components/kit/AssumptionList.astro';
+import HelpNote from '../../components/kit/HelpNote.astro';
+import EmptyState from '../../components/kit/EmptyState.astro';
+import ExportBar from '../../components/kit/ExportBar.astro';
+import { getTool } from '../../data/registry';
+import {
+  SAMPLES,
+  FREQUENCY_WEIGHT,
+  COST_WEIGHT,
+  RISK_UNIT,
+} from '../../lib/tools/workflow-decomposer';
+
+const tool = getTool('workflow-decomposer')!;
+---
+
+<ToolLayout tool={tool}>
+  <div class="decomposer" data-decomposer>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <label class="label" for="sample">Sample process</label>
+        <select id="sample" data-sample-select>
+          {SAMPLES.map((s) => <option value={s.id}>{s.name}</option>)}
+        </select>
+        <button type="button" class="btn btn-primary" data-load-sample>
+          Load sample
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <button type="button" class="btn" data-add-step>
+          Add step
+        </button>
+        <button type="button" class="btn" data-reset>Reset</button>
+      </div>
+    </div>
+
+    <p class="teaches" data-teaches role="status" aria-live="polite"></p>
+
+    <Field
+      label="Process outcome"
+      name="processName"
+      hint="One line describing what this process is supposed to produce."
+      placeholder="For example, a refund is either issued and confirmed, or the request is declined with a reason."
+    />
+
+    <div data-empty-wrapper>
+      <EmptyState
+        title="No steps yet"
+        body="Add a step, or load a sample process to see the classifier and the priority order work on something real."
+        sampleLabel="Load a sample process"
+      />
+    </div>
+
+    <ol class="steps-list" data-steps-list aria-label="Process steps" hidden></ol>
+
+    <ResultPanel
+      title="Classification"
+      id="classification-panel"
+      description="Every step, classified from the properties above. Each result states the single property that decided it."
+    >
+      <div class="counts mono" data-level-counts role="status" aria-live="polite"></div>
+      <div data-classifications></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Structural issues"
+      id="graph-issues-panel"
+      description="Cycles, orphan steps, and dependencies that point at a step which no longer exists."
+    >
+      <div data-graph-issues></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Handoffs"
+      id="handoffs-panel"
+      description="Every edge where work crosses from a system to a person or back. Real workflows break at these crossings."
+    >
+      <div data-handoffs></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Silent failure risks"
+      id="silent-failure-panel"
+      description="Steps that feed later steps but whose own result nothing checks."
+    >
+      <div data-silent-failures></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Implementation order"
+      id="order-panel"
+      description="Which automatable steps to build first, ranked by frequency times mistake cost, minus a risk penalty."
+    >
+      <ol class="order-list" data-order-list></ol>
+      <p class="method mono" data-order-method></p>
+      <AssumptionList
+        title="Scoring weights"
+        name="priority-weights"
+        items={[
+          { label: 'Rare frequency weight', value: FREQUENCY_WEIGHT.rare, source: 'fixed heuristic' },
+          { label: 'Monthly frequency weight', value: FREQUENCY_WEIGHT.monthly, source: 'fixed heuristic' },
+          { label: 'Weekly frequency weight', value: FREQUENCY_WEIGHT.weekly, source: 'fixed heuristic' },
+          { label: 'Daily frequency weight', value: FREQUENCY_WEIGHT.daily, source: 'fixed heuristic' },
+          { label: 'Low mistake cost weight', value: COST_WEIGHT.low, source: 'fixed heuristic' },
+          { label: 'Medium mistake cost weight', value: COST_WEIGHT.medium, source: 'fixed heuristic' },
+          { label: 'High mistake cost weight', value: COST_WEIGHT.high, source: 'fixed heuristic' },
+          { label: 'Risk penalty unit', value: RISK_UNIT, source: 'fixed heuristic' },
+        ]}
+      />
+    </ResultPanel>
+
+    <ExportBar formats={['json', 'markdown']} filename="workflow-decomposer-report" />
+
+    <HelpNote title="Why does the same step sometimes stay human and sometimes not?">
+      <p>
+        Four rules run in order, and the first one that fits decides the
+        step. If nothing checks a step's result and no person looks at
+        it either, the step needs redesign before anyone can perform it.
+        If it cannot be undone and cannot be verified, it stays human,
+        no matter how often it runs. If it carries legal or financial
+        exposure with no undo path and a costly mistake, it stays human.
+        If it needs a judgment call on input with no fixed shape, it
+        stays human. Everything left over gets automated, sometimes with
+        a checkpoint when a softer version of one of those concerns is
+        still present.
+      </p>
+      <p>
+        A checkpoint step still counts as system performed when this
+        tool looks for handoffs, since a person only signs off rather
+        than doing the work. The crossings worth worrying about are the
+        ones between a system and a fully human step.
+      </p>
+    </HelpNote>
+
+    <HelpNote title="Why does the implementation order ignore how important a step feels">
+      <p>
+        Frequency times the cost of a mistake is the actual signal, not
+        how much the step matters in conversation. A step that runs
+        rarely and carries legal or financial exposure gets a penalty
+        subtracted from its score, even when it is automatable, because
+        rushing to build the riskiest, least common case first is a poor
+        use of the first thing you ship.
+      </p>
+      <p>
+        Exporting this report is the explicit handoff into a tool like
+        Agent Designer. Nothing here reaches another tool on its own;
+        the file is the whole interface.
+      </p>
+    </HelpNote>
+  </div>
+</ToolLayout>
+
+<style>
+  .decomposer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-3);
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .label {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    font: inherit;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .teaches {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: 0;
+    min-height: 1.5em;
+  }
+
+  /* An author display rule otherwise beats the user agent stylesheet's
+     [hidden] rule, so the hidden attribute needs an explicit override
+     here or the list would stay visible while empty. */
+  .steps-list[hidden] {
+    display: none;
+  }
+
+  .steps-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: var(--space-3);
+  }
+
+  .order-list {
+    margin: 0 0 var(--space-3);
+    padding-left: 1.2rem;
+  }
+
+  .method {
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+    margin: 0 0 var(--space-3);
+  }
+</style>
+
+{/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
+    class the script creates below is styled here with :global. */}
+<style is:global>
+  .step-card {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    background: var(--panel);
+  }
+
+  .step-card-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+    padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .step-index {
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    letter-spacing: var(--track-label);
+  }
+
+  .step-badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.55rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    color: var(--text-faint);
+  }
+
+  .step-badge[data-level='automate-now'] {
+    color: var(--status-live);
+    border-color: var(--status-live);
+  }
+
+  .step-badge[data-level='automate-with-checkpoint'] {
+    color: var(--status-beta);
+    border-color: var(--status-beta);
+  }
+
+  .step-badge[data-level='keep-human'] {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .step-badge[data-level='needs-redesign'] {
+    color: var(--status-queued);
+    border-color: var(--status-queued);
+  }
+
+  .step-actions {
+    display: flex;
+    gap: var(--space-2);
+    margin-left: auto;
+  }
+
+  .step-actions button {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.2rem 0.6rem;
+    cursor: pointer;
+  }
+
+  .step-actions button:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .step-actions button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .step-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+  }
+
+  .mini-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .mini-field.wide {
+    grid-column: 1 / -1;
+  }
+
+  .mini-label {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .mini-control {
+    width: 100%;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text);
+    background: var(--bg-alt);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.6rem;
+    line-height: 1.4;
+  }
+
+  textarea.mini-control {
+    resize: vertical;
+    min-height: 3.4rem;
+  }
+
+  .mini-control:focus-visible {
+    border-color: var(--accent);
+    outline: none;
+  }
+
+  .properties-title {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: var(--space-3) 0 var(--space-2);
+    border-top: 1px solid var(--line-faint);
+    padding-top: var(--space-2);
+  }
+
+  .classification-row {
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--line-faint);
+  }
+
+  .classification-row:last-child {
+    border-bottom: 0;
+  }
+
+  .classification-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+    margin-bottom: var(--space-1);
+  }
+
+  .classification-index {
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+  }
+
+  .classification-name {
+    color: var(--text);
+  }
+
+  .classification-badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.55rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    color: var(--text-faint);
+  }
+
+  .classification-badge[data-level='automate-now'] {
+    color: var(--status-live);
+    border-color: var(--status-live);
+  }
+
+  .classification-badge[data-level='automate-with-checkpoint'] {
+    color: var(--status-beta);
+    border-color: var(--status-beta);
+  }
+
+  .classification-badge[data-level='keep-human'] {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .classification-badge[data-level='needs-redesign'] {
+    color: var(--status-queued);
+    border-color: var(--status-queued);
+  }
+
+  .classification-reason {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0 0 var(--space-1);
+    max-width: none;
+  }
+
+  .classification-contributing {
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+    margin: 0;
+  }
+
+  .issue-row,
+  .handoff-row,
+  .silent-row {
+    display: flex;
+    gap: var(--space-2);
+    align-items: baseline;
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--line-faint);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .issue-row:last-child,
+  .handoff-row:last-child,
+  .silent-row:last-child {
+    border-bottom: 0;
+  }
+
+  .issue-kind {
+    flex: none;
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--status-alert);
+  }
+
+  .clean-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+
+  .order-list li {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    padding: var(--space-1) 0;
+  }
+
+  .order-score {
+    color: var(--text-faint);
+    margin-left: var(--space-2);
+  }
+</style>
+
+<script>
+  import type { ProcessState, Step, StepProperties, StepPropertyKey } from '../../lib/tools/workflow-decomposer';
+  import {
+    analyzeProcess,
+    sampleState,
+    emptyState,
+    getSample,
+    serialize,
+    SAMPLES,
+    FREQUENCY_LEVELS,
+    FREQUENCY_LABELS,
+    COST_LEVELS,
+    COST_LABELS,
+    CLASSIFICATION_LABELS,
+    GRAPH_ISSUE_LABELS,
+    PROPERTY_LABELS,
+    PRIORITY_SCORE_METHOD,
+    DEFAULT_PROPERTIES,
+  } from '../../lib/tools/workflow-decomposer';
+
+  const root = document.querySelector<HTMLElement>('[data-decomposer]');
+  if (root) {
+    const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    let state: ProcessState = emptyState();
+
+    const newStepId = (): string =>
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `step-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const emptyWrapper = el<HTMLElement>('[data-empty-wrapper]');
+    const stepsList = el<HTMLOListElement>('[data-steps-list]');
+    const processNameInput = el<HTMLInputElement>('#field-processName');
+
+    /* ---- Focus preservation across a full re-render ---------------- */
+    interface FocusMark {
+      stepId: string;
+      field: string;
+      selectionStart: number | null;
+      selectionEnd: number | null;
+    }
+
+    function captureFocus(): FocusMark | null {
+      const active = document.activeElement;
+      if (!active || !(active instanceof HTMLElement) || !root!.contains(active)) return null;
+      const card = active.closest<HTMLElement>('[data-step-card]');
+      const field = active.getAttribute('data-step-field');
+      if (!card || !field) return null;
+      const withSelection = active as HTMLInputElement | HTMLTextAreaElement;
+      return {
+        stepId: card.dataset.stepId ?? '',
+        field,
+        selectionStart: 'selectionStart' in withSelection ? withSelection.selectionStart : null,
+        selectionEnd: 'selectionEnd' in withSelection ? withSelection.selectionEnd : null,
+      };
+    }
+
+    function restoreFocus(mark: FocusMark | null) {
+      if (!mark) return;
+      const target = root!.querySelector<HTMLElement>(
+        `[data-step-card][data-step-id="${mark.stepId}"] [data-step-field="${mark.field}"]`,
+      );
+      if (!target) return;
+      target.focus();
+      if (mark.selectionStart !== null && 'setSelectionRange' in target) {
+        try {
+          (target as HTMLInputElement).setSelectionRange(mark.selectionStart, mark.selectionEnd ?? mark.selectionStart);
+        } catch {
+          // Some input types refuse setSelectionRange. Focus already landed.
+        }
+      }
+    }
+
+    /* ---- Rendering the step editor ---------------------------------- */
+    const boolField = (
+      stepId: string,
+      field: keyof StepProperties,
+      label: string,
+      value: boolean,
+    ) => `
+      <div class="mini-field">
+        <label class="mini-label" for="${stepId}-${field}">${esc(label)}</label>
+        <select class="mini-control" id="${stepId}-${field}" data-step-id="${stepId}" data-step-field="${field}" data-step-kind="bool">
+          <option value="true" ${value ? 'selected' : ''}>Yes</option>
+          <option value="false" ${!value ? 'selected' : ''}>No</option>
+        </select>
+      </div>`;
+
+    function renderStepCard(step: Step, index: number, all: Step[], levels: Map<string, string>): string {
+      const level = levels.get(step.id) ?? '';
+      const dependsOptions = [
+        `<option value="" ${step.dependsOnId === null ? 'selected' : ''}>Start of the process</option>`,
+        ...all
+          .filter((s) => s.id !== step.id)
+          .map(
+            (s) =>
+              `<option value="${esc(s.id)}" ${step.dependsOnId === s.id ? 'selected' : ''}>${esc(s.name || s.id)}</option>`,
+          ),
+      ].join('');
+
+      return `
+      <li class="step-card" data-step-card data-step-id="${esc(step.id)}">
+        <div class="step-card-head">
+          <span class="step-index mono">Step ${index + 1}</span>
+          <span class="step-badge" data-level="${esc(level)}">${esc(CLASSIFICATION_LABELS[level as keyof typeof CLASSIFICATION_LABELS] ?? level)}</span>
+          <div class="step-actions">
+            <button type="button" data-move-up data-step-id="${esc(step.id)}" ${index === 0 ? 'disabled' : ''} aria-label="Move step ${index + 1} earlier">Up</button>
+            <button type="button" data-move-down data-step-id="${esc(step.id)}" ${index + 1 === all.length ? 'disabled' : ''} aria-label="Move step ${index + 1} later">Down</button>
+            <button type="button" data-remove-step data-step-id="${esc(step.id)}" aria-label="Remove step ${index + 1}">Remove</button>
+          </div>
+        </div>
+
+        <div class="step-grid">
+          <div class="mini-field wide">
+            <label class="mini-label" for="${step.id}-name">Step name</label>
+            <input class="mini-control" id="${step.id}-name" type="text" data-step-id="${step.id}" data-step-field="name" value="${esc(step.name)}" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="mini-field">
+            <label class="mini-label" for="${step.id}-owner">Owner today</label>
+            <input class="mini-control" id="${step.id}-owner" type="text" data-step-id="${step.id}" data-step-field="owner" value="${esc(step.owner)}" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="mini-field">
+            <label class="mini-label" for="${step.id}-dependsOnId">Depends on</label>
+            <select class="mini-control" id="${step.id}-dependsOnId" data-step-id="${step.id}" data-step-field="dependsOnId">
+              ${dependsOptions}
+            </select>
+          </div>
+          <div class="mini-field wide">
+            <label class="mini-label" for="${step.id}-completionEvidence">Completion evidence</label>
+            <textarea class="mini-control" id="${step.id}-completionEvidence" rows="2" data-step-id="${step.id}" data-step-field="completionEvidence" spellcheck="false">${esc(step.completionEvidence)}</textarea>
+          </div>
+        </div>
+
+        <p class="properties-title">Properties that decide automatability</p>
+        <div class="step-grid">
+          ${boolField(step.id, 'inputStructured', 'Input is structured', step.properties.inputStructured)}
+          ${boolField(step.id, 'outputVerifiable', 'Output is verifiable', step.properties.outputVerifiable)}
+          ${boolField(step.id, 'reversible', 'Action is reversible', step.properties.reversible)}
+          ${boolField(step.id, 'needsJudgment', 'Needs human judgment', step.properties.needsJudgment)}
+          ${boolField(step.id, 'legalFinancialRisk', 'Legal or financial risk', step.properties.legalFinancialRisk)}
+          <div class="mini-field">
+            <label class="mini-label" for="${step.id}-frequency">How often it runs</label>
+            <select class="mini-control" id="${step.id}-frequency" data-step-id="${step.id}" data-step-field="frequency">
+              ${FREQUENCY_LEVELS.map((f) => `<option value="${f}" ${step.properties.frequency === f ? 'selected' : ''}>${esc(FREQUENCY_LABELS[f])}</option>`).join('')}
+            </select>
+          </div>
+          <div class="mini-field">
+            <label class="mini-label" for="${step.id}-mistakeCost">Cost of a mistake</label>
+            <select class="mini-control" id="${step.id}-mistakeCost" data-step-id="${step.id}" data-step-field="mistakeCost">
+              ${COST_LEVELS.map((c) => `<option value="${c}" ${step.properties.mistakeCost === c ? 'selected' : ''}>${esc(COST_LABELS[c])}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+      </li>`;
+    }
+
+    function renderSteps(levels: Map<string, string>) {
+      if (!stepsList || !emptyWrapper) return;
+
+      const hasSteps = state.steps.length > 0;
+      // The empty state is the real kit component, rendered once on the
+      // server. Its own "load a sample" button already dispatches
+      // workbench:load-sample, which the listener near the bottom of
+      // this script answers, so nothing here duplicates its markup.
+      emptyWrapper.hidden = hasSteps;
+      stepsList.hidden = !hasSteps;
+
+      if (!hasSteps) {
+        stepsList.innerHTML = '';
+        return;
+      }
+
+      stepsList.innerHTML = state.steps
+        .map((step, index) => renderStepCard(step, index, state.steps, levels))
+        .join('');
+    }
+
+    /* ---- Rendering results -------------------------------------------- */
+    function renderClassifications(analysis: ReturnType<typeof analyzeProcess>) {
+      const counts = el('[data-level-counts]');
+      const target = el('[data-classifications]');
+      if (!counts || !target) return;
+
+      counts.innerHTML = Object.entries(analysis.levelCounts)
+        .map(([level, n]) => `<span>${esc(CLASSIFICATION_LABELS[level as keyof typeof CLASSIFICATION_LABELS])}: ${n}</span>`)
+        .join('');
+
+      if (state.steps.length === 0) {
+        target.innerHTML = '<p class="clean-note">Add a step to see it classified.</p>';
+        return;
+      }
+
+      target.innerHTML = state.steps
+        .map((step, index) => {
+          const c = analysis.classifications.get(step.id);
+          if (!c) return '';
+          const contributing = c.contributingFactors.length
+            ? `<p class="classification-contributing">Also weighed: ${c.contributingFactors.map((f) => esc(PROPERTY_LABELS[f as StepPropertyKey])).join(', ')}.</p>`
+            : '';
+          return `
+          <div class="classification-row">
+            <div class="classification-head">
+              <span class="classification-index mono">${index + 1}</span>
+              <strong class="classification-name">${esc(step.name || step.id)}</strong>
+              <span class="classification-badge" data-level="${c.level}">${esc(CLASSIFICATION_LABELS[c.level])}</span>
+            </div>
+            <p class="classification-reason">${esc(c.reason)}</p>
+            ${contributing}
+          </div>`;
+        })
+        .join('');
+    }
+
+    function renderGraphIssues(analysis: ReturnType<typeof analyzeProcess>) {
+      const target = el('[data-graph-issues]');
+      if (!target) return;
+      if (!analysis.graphIssues.length) {
+        target.innerHTML = '<p class="clean-note">No cycles, orphan steps, or broken dependencies detected.</p>';
+        return;
+      }
+      target.innerHTML = analysis.graphIssues
+        .map(
+          (issue) => `
+        <div class="issue-row">
+          <span class="issue-kind mono">${esc(GRAPH_ISSUE_LABELS[issue.kind])}</span>
+          <p>${esc(issue.message)}</p>
+        </div>`,
+        )
+        .join('');
+    }
+
+    function renderHandoffs(analysis: ReturnType<typeof analyzeProcess>) {
+      const target = el('[data-handoffs]');
+      if (!target) return;
+      if (!analysis.handoffs.length) {
+        target.innerHTML =
+          '<p class="clean-note">No edge in this process crosses from a system to a person or back.</p>';
+        return;
+      }
+      target.innerHTML = analysis.handoffs
+        .map((h) => `<div class="handoff-row"><p>${esc(h.message)}</p></div>`)
+        .join('');
+    }
+
+    function renderSilentFailures(analysis: ReturnType<typeof analyzeProcess>) {
+      const target = el('[data-silent-failures]');
+      if (!target) return;
+      if (!analysis.silentFailureRisks.length) {
+        target.innerHTML = '<p class="clean-note">No step with an unverifiable result feeds a later step.</p>';
+        return;
+      }
+      target.innerHTML = analysis.silentFailureRisks
+        .map((s) => `<div class="silent-row"><p>${esc(s.message)}</p></div>`)
+        .join('');
+    }
+
+    function renderOrder(analysis: ReturnType<typeof analyzeProcess>) {
+      const target = el('[data-order-list]');
+      const method = el('[data-order-method]');
+      if (!target) return;
+      const byId = new Map(state.steps.map((s) => [s.id, s]));
+
+      if (!analysis.implementationOrder.length) {
+        target.innerHTML =
+          '<li class="clean-note">No step is classified automate now or automate with a checkpoint yet.</li>';
+      } else {
+        target.innerHTML = analysis.implementationOrder
+          .map((entry, index) => {
+            const step = byId.get(entry.stepId);
+            return `<li>
+              <span class="mono">#${index + 1}</span>
+              <strong>${esc(step?.name || entry.stepId)}</strong>
+              <span class="order-score mono">score ${entry.score} = ${entry.frequencyWeight} &times; ${entry.costWeight} minus ${entry.riskPenalty}</span>
+            </li>`;
+          })
+          .join('');
+      }
+      if (method) method.textContent = PRIORITY_SCORE_METHOD;
+    }
+
+    function renderPanels(analysis: ReturnType<typeof analyzeProcess>) {
+      renderClassifications(analysis);
+      renderGraphIssues(analysis);
+      renderHandoffs(analysis);
+      renderSilentFailures(analysis);
+      renderOrder(analysis);
+    }
+
+    // Full path: the editor cards and every read only panel, from a
+    // fresh analysis. Used whenever the shape of the process might have
+    // changed, add, remove, move, a dropdown commit, load sample, reset.
+    function renderResults() {
+      const analysis = analyzeProcess(state);
+      const levels = new Map(
+        Array.from(analysis.classifications.entries()).map(([id, c]) => [id, c.level as string]),
+      );
+      renderSteps(levels);
+      renderPanels(analysis);
+    }
+
+    // Panels only, editor cards untouched. A text field edit changes no
+    // structure, so the card the visitor is typing in, and its cursor
+    // position, are left alone rather than rebuilt on every keystroke.
+    function renderPanelsOnly() {
+      renderPanels(analyzeProcess(state));
+    }
+
+    function render() {
+      const mark = captureFocus();
+      renderResults();
+      restoreFocus(mark);
+    }
+
+    /* ---- State mutation -------------------------------------------- */
+    function updateStepField(stepId: string, field: string, rawValue: string) {
+      const step = state.steps.find((s) => s.id === stepId);
+      if (!step) return;
+
+      if (field === 'dependsOnId') {
+        step.dependsOnId = rawValue === '' ? null : rawValue;
+      } else if (field === 'name' || field === 'owner' || field === 'completionEvidence') {
+        step[field] = rawValue;
+      } else if (
+        field === 'inputStructured' ||
+        field === 'outputVerifiable' ||
+        field === 'reversible' ||
+        field === 'needsJudgment' ||
+        field === 'legalFinancialRisk'
+      ) {
+        step.properties[field] = rawValue === 'true';
+      } else if (field === 'frequency') {
+        step.properties.frequency = rawValue as StepProperties['frequency'];
+      } else if (field === 'mistakeCost') {
+        step.properties.mistakeCost = rawValue as StepProperties['mistakeCost'];
+      }
+      state.scenarioId = 'custom';
+    }
+
+    function addStep() {
+      const last = state.steps[state.steps.length - 1];
+      const step: Step = {
+        id: newStepId(),
+        name: '',
+        owner: '',
+        completionEvidence: '',
+        dependsOnId: last ? last.id : null,
+        properties: { ...DEFAULT_PROPERTIES },
+      };
+      state.steps.push(step);
+      state.scenarioId = 'custom';
+      render();
+      const nameInput = root!.querySelector<HTMLInputElement>(
+        `[data-step-card][data-step-id="${step.id}"] [data-step-field="name"]`,
+      );
+      nameInput?.focus();
+    }
+
+    function removeStep(stepId: string) {
+      state.steps = state.steps.filter((s) => s.id !== stepId);
+      // A step that depended on the removed one loses that dependency
+      // rather than pointing at a ghost. It surfaces as an orphan if
+      // nothing else connects it, which is the honest thing to show.
+      for (const step of state.steps) {
+        if (step.dependsOnId === stepId) step.dependsOnId = null;
+      }
+      state.scenarioId = 'custom';
+      render();
+    }
+
+    function moveStep(stepId: string, direction: -1 | 1) {
+      const index = state.steps.findIndex((s) => s.id === stepId);
+      const target = index + direction;
+      if (index === -1 || target < 0 || target >= state.steps.length) return;
+      const [step] = state.steps.splice(index, 1);
+      state.steps.splice(target, 0, step);
+      state.scenarioId = 'custom';
+      render();
+    }
+
+    function loadSample(id: string) {
+      state = sampleState(id);
+      if (processNameInput) processNameInput.value = state.processName;
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = getSample(id)?.teaches ?? '';
+      render();
+    }
+
+    /* ---- Wiring ------------------------------------------------------ */
+    root.addEventListener('input', (event) => {
+      const target = event.target as HTMLElement;
+      if (target.matches('#field-processName')) {
+        state.processName = (target as HTMLInputElement).value;
+        return;
+      }
+      const stepId = target.getAttribute('data-step-id');
+      const field = target.getAttribute('data-step-field');
+      if (!stepId || !field) return;
+      const kind = target.getAttribute('data-step-kind');
+      // Text and textarea fields update state quietly and only refresh
+      // the read only results, so the field the visitor is typing in
+      // never loses focus. Select fields fire 'change', not 'input', so
+      // this branch only ever sees free text.
+      if (kind !== 'bool' && !(target instanceof HTMLSelectElement)) {
+        updateStepField(stepId, field, (target as HTMLInputElement | HTMLTextAreaElement).value);
+        renderPanelsOnly();
+      }
+    });
+
+    root.addEventListener('change', (event) => {
+      const target = event.target as HTMLElement;
+      const stepId = target.getAttribute('data-step-id');
+      const field = target.getAttribute('data-step-field');
+      if (!stepId || !field) return;
+      if (target instanceof HTMLSelectElement) {
+        updateStepField(stepId, field, target.value);
+        render();
+      }
+    });
+
+    root.addEventListener('click', (event) => {
+      const target = event.target as HTMLElement;
+      const moveUp = target.closest<HTMLElement>('[data-move-up]');
+      const moveDown = target.closest<HTMLElement>('[data-move-down]');
+      const remove = target.closest<HTMLElement>('[data-remove-step]');
+      if (moveUp) moveStep(moveUp.dataset.stepId!, -1);
+      else if (moveDown) moveStep(moveDown.dataset.stepId!, 1);
+      else if (remove) removeStep(remove.dataset.stepId!);
+    });
+
+    el('[data-add-step]')?.addEventListener('click', addStep);
+
+    el('[data-load-sample]')?.addEventListener('click', () => {
+      const id = el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id;
+      loadSample(id);
+    });
+
+    el('[data-reset]')?.addEventListener('click', () => {
+      state = emptyState();
+      if (processNameInput) processNameInput.value = '';
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = '';
+      render();
+    });
+
+    root.addEventListener('workbench:load-sample', () => loadSample(SAMPLES[0].id));
+
+    root.addEventListener('workbench:export', ((event: CustomEvent) => {
+      const { format, resolve } = event.detail ?? {};
+      if (typeof resolve !== 'function') return;
+      const fmt = format === 'markdown' ? 'markdown' : 'json';
+      resolve(serialize(state, fmt));
+    }) as EventListener);
+
+    render();
+  }
+</script>

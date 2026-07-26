@@ -1,0 +1,802 @@
+---
+// Retrieval Laboratory.
+// PRD: tools-nixfred-prds/tools/04-RAG-LAB.md
+//
+// All chunking and ranking below runs locally and deterministically.
+// Nothing here calls a model or a network. BM25 and TF-IDF are real
+// lexical algorithms, not a simulation of one, and the trigram overlap
+// mode is labeled everywhere as a local approximation, never a stand
+// in for a real embedding model. See src/lib/tools/rag-lab.ts for the
+// full honesty statement the PRD requires.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import Field from '../../components/kit/Field.astro';
+import ResultPanel from '../../components/kit/ResultPanel.astro';
+import HelpNote from '../../components/kit/HelpNote.astro';
+import WarningNote from '../../components/kit/WarningNote.astro';
+import { getTool } from '../../data/registry';
+import {
+  SAMPLE_QUERIES,
+  CHUNK_STRATEGIES,
+  CHUNK_STRATEGY_LABELS,
+  RANK_METHODS,
+  RANK_METHOD_LABELS,
+} from '../../lib/tools/rag-lab';
+
+const tool = getTool('rag-lab')!;
+
+const strategyOptions = CHUNK_STRATEGIES.map((s) => ({ value: s, label: CHUNK_STRATEGY_LABELS[s] }));
+const rankOptions = RANK_METHODS.map((m) => ({ value: m, label: RANK_METHOD_LABELS[m] }));
+const mmrOptions = [
+  { value: 'off', label: 'Off' },
+  { value: 'on', label: 'On' },
+];
+const corpusOptions = [
+  { value: 'sample', label: 'Sample corpus, five documents' },
+  { value: 'custom', label: 'Your pasted text' },
+];
+const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }));
+---
+
+<ToolLayout tool={tool}>
+  <div class="lab" data-lab>
+    <WarningNote severity="info" title="What is actually running on this page">
+      <p>
+        Every score below comes from BM25, TF-IDF cosine similarity, or
+        character trigram overlap, computed in this browser from the
+        text you can see. None of the three understands meaning, and
+        none of them is a neural embedding model. Pick a ranking method
+        below to read exactly what it can and cannot do.
+      </p>
+    </WarningNote>
+
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <Field
+          label="Sample query"
+          name="sample-query"
+          id="sample-query"
+          type="select"
+          options={sampleOptions}
+        />
+        <button type="button" class="btn btn-primary" data-load-sample>
+          Load sample
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <Field
+          label="Corpus"
+          name="corpus-source"
+          id="corpus-source"
+          type="select"
+          options={corpusOptions}
+        />
+        <button type="button" class="btn" data-reset>Reset</button>
+      </div>
+    </div>
+
+    <p class="teaches" data-teaches role="status" aria-live="polite"></p>
+    <p class="explanation" data-explanation></p>
+
+    <Field
+      label="Query"
+      name="query"
+      id="query"
+      type="textarea"
+      rows={2}
+      placeholder="Ask a question the corpus below should answer."
+      hint="Runs against whichever corpus is selected above. Nothing you type here leaves this browser."
+    />
+
+    <div data-custom-text-field hidden>
+      <Field
+        label="Your pasted text"
+        name="custom-text"
+        id="custom-text"
+        type="textarea"
+        rows={8}
+        placeholder="Paste text here. It is chunked and ranked exactly like the sample corpus, as a single document, and it stays in this tab."
+      />
+    </div>
+
+    <div class="configs">
+      {
+        (['a', 'b'] as const).map((slot) => (
+          <section class="config" data-config={slot}>
+            <h2 class="config-title">Config {slot.toUpperCase()}</h2>
+
+            <div class="config-row">
+              <Field
+                label="Chunk strategy"
+                name={`${slot}-strategy`}
+                id={`${slot}-strategy`}
+                type="select"
+                options={strategyOptions}
+                value={slot === 'a' ? 'sentence' : 'paragraph'}
+              />
+              <Field
+                label="Chunk size, characters"
+                name={`${slot}-size`}
+                id={`${slot}-size`}
+                type="number"
+                min={20}
+                max={2000}
+                step={10}
+                value={slot === 'a' ? 150 : 600}
+              />
+              <Field
+                label="Overlap, characters"
+                name={`${slot}-overlap`}
+                id={`${slot}-overlap`}
+                type="number"
+                min={0}
+                max={1000}
+                step={10}
+                value={0}
+              />
+            </div>
+            <p class="hint" data-strategy-help={slot} />
+
+            <div class="config-row">
+              <Field
+                label="Ranking method"
+                name={`${slot}-rank`}
+                id={`${slot}-rank`}
+                type="select"
+                options={rankOptions}
+                value="bm25"
+              />
+              <Field
+                label="Top k"
+                name={`${slot}-topk`}
+                id={`${slot}-topk`}
+                type="number"
+                min={1}
+                max={20}
+                step={1}
+                value={3}
+              />
+              <Field
+                label="Score threshold"
+                name={`${slot}-threshold`}
+                id={`${slot}-threshold`}
+                type="number"
+                min={0}
+                step={0.01}
+                value={0}
+              />
+            </div>
+            <p class="hint" data-rank-help={slot} />
+
+            <div class="config-row">
+              <Field
+                label="Diversity re-rank, MMR"
+                name={`${slot}-mmr`}
+                id={`${slot}-mmr`}
+                type="select"
+                options={mmrOptions}
+                value="off"
+              />
+              <Field
+                label="MMR lambda, 0 is all diversity, 1 is all relevance"
+                name={`${slot}-lambda`}
+                id={`${slot}-lambda`}
+                type="number"
+                min={0}
+                max={1}
+                step={0.1}
+                value={0.5}
+              />
+            </div>
+          </section>
+        ))
+      }
+    </div>
+
+    <div class="results">
+      {
+        (['a', 'b'] as const).map((slot) => (
+          <ResultPanel
+            title={`Config ${slot.toUpperCase()} results`}
+            id={`results-${slot}`}
+            description="The chunks this configuration produced, what it retrieved, and what it left out."
+          >
+            <div class="verdict" data-verdict={slot} role="status" aria-live="polite" />
+
+            <p class="section-label">Chunks produced</p>
+            <div class="chunk-list" data-chunks={slot} />
+
+            <p class="section-label">Retrieved and ranked</p>
+            <div data-selected={slot} />
+
+            <p class="section-label">Missed evidence</p>
+            <div data-missed={slot} />
+
+            <p class="section-label">Grounded answer template</p>
+            <p class="answer-note">
+              Not a generated answer. A citation scaffold built from the
+              selected chunks, for a human or a model to answer inside.
+            </p>
+            <pre class="answer-template" data-answer={slot} />
+          </ResultPanel>
+        ))
+      }
+    </div>
+
+    <HelpNote title="Why does the same query return different evidence in Config A and Config B?">
+      <p>
+        Chunking decides the unit retrieval ranks against. A small
+        sentence sized chunk is precise but can split one idea across
+        two chunks. A paragraph sized chunk keeps an idea together but
+        drags in whatever else was in the paragraph. Neither is
+        correct in general. The retention and encryption sample query
+        above shows both sides of that trade at once, on the same
+        corpus.
+      </p>
+    </HelpNote>
+
+    <HelpNote title="What BM25 and TF-IDF can and cannot see">
+      <p>
+        Both score a chunk higher when it repeats words from the
+        query, weighted so a rare word counts for more than a common
+        one. That is genuinely useful: it is why the rollback sample
+        query works well. It is also a hard limit: a rare word shared
+        by coincidence, refund appearing once in an unrelated sentence
+        about compute credits, can outweigh an entire document that
+        answers the question without ever using that word. The refund
+        sample query above is that exact failure, reproduced on
+        purpose, not asserted.
+      </p>
+    </HelpNote>
+
+    <HelpNote title="What trigram overlap can and cannot see">
+      <p>
+        Trigram overlap compares three character sequences instead of
+        whole words, so it can catch a shared word stem or a spelling
+        variant that BM25 and TF-IDF would treat as two unrelated
+        tokens. It still has no notion of meaning. Refund and
+        reimbursement share almost no three character sequences, so
+        this method does not reliably close the gap either. A real
+        dense embedding model, which this tool cannot run locally
+        without a network call, is the tool that would.
+      </p>
+    </HelpNote>
+  </div>
+</ToolLayout>
+
+<style>
+  .lab {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-3);
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+    margin-bottom: var(--space-4);
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .teaches {
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    margin: 0;
+    min-height: 1.5em;
+  }
+
+  .explanation {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    max-width: var(--measure);
+    margin: 0;
+  }
+
+  .configs {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: var(--space-4);
+  }
+
+  .config {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    background: var(--panel);
+  }
+
+  .config-title {
+    font-size: var(--text-lg);
+    margin-bottom: var(--space-3);
+  }
+
+  .config-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: var(--space-3);
+  }
+
+  .hint {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    line-height: 1.5;
+    margin: calc(-1 * var(--space-2)) 0 var(--space-3);
+    max-width: var(--measure);
+  }
+
+  .results {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: var(--space-4);
+    align-items: start;
+  }
+
+  .section-label {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: var(--space-4) 0 var(--space-2);
+  }
+
+  .section-label:first-of-type {
+    margin-top: 0;
+  }
+
+  .answer-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    margin: 0 0 var(--space-2);
+  }
+
+  .answer-template {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    white-space: pre-wrap;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    background: var(--bg);
+    overflow-wrap: anywhere;
+    margin: 0;
+  }
+</style>
+
+{/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
+    class the script creates below is styled with :global here. */}
+<style is:global>
+  .verdict {
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    margin-bottom: var(--space-3);
+  }
+
+  .verdict[data-hit='true'] {
+    border-left-color: var(--status-live);
+    color: var(--text);
+  }
+
+  .verdict[data-hit='false'] {
+    border-left-color: var(--status-alert);
+    color: var(--text);
+  }
+
+  .chunk-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    max-height: 22rem;
+    overflow-y: auto;
+    padding-right: var(--space-1);
+  }
+
+  .chunk-item {
+    border: 1px solid var(--line-faint);
+    border-radius: var(--radius);
+    padding: var(--space-2);
+    background: var(--bg-alt);
+  }
+
+  .chunk-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: baseline;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    margin-bottom: var(--space-1);
+  }
+
+  .chunk-text {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .chunk-truncation-note {
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+    text-align: center;
+    padding: var(--space-2) 0 0;
+  }
+
+  .scored {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-left-color: var(--accent-deep);
+    border-radius: var(--radius);
+    background: transparent;
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+  }
+
+  .scored-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: baseline;
+    margin-bottom: var(--space-1);
+  }
+
+  .scored-rank {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  .scored-where {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+  }
+
+  .scored-score {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+  }
+
+  .scored-text {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text);
+    margin: 0 0 var(--space-1);
+    overflow-wrap: anywhere;
+  }
+
+  .scored-reason {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    margin: 0;
+    max-width: none;
+  }
+
+  .missed {
+    border-left-color: var(--status-beta);
+    opacity: 0.9;
+  }
+
+  .empty-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+</style>
+
+<script>
+  import {
+    SAMPLE_QUERIES,
+    MIN_CHUNK_SIZE,
+    MAX_CHUNK_SIZE,
+    CHUNK_STRATEGY_HELP,
+    RANK_METHOD_HONESTY,
+    runForState,
+    emptyState,
+    sampleState,
+    getSampleQuery,
+    type RagLabState,
+    type RetrievalConfig,
+    type RetrievalResult,
+    type ScoredChunk,
+    type Chunk,
+    type ChunkStrategy,
+    type RankMethod,
+    type CorpusSource,
+  } from '../../lib/tools/rag-lab';
+
+  const root = document.querySelector<HTMLElement>('[data-lab]');
+  if (root) {
+    const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+    const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;
+
+    const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
+
+    // Every keystroke in the pasted text field re-chunks and re-ranks
+    // the whole corpus, so a short debounce keeps fast typing smooth
+    // even though the bounded corpus here makes it fast regardless.
+    function debounce<Args extends unknown[]>(fn: (...args: Args) => void, ms: number) {
+      let handle: number | undefined;
+      return (...args: Args) => {
+        window.clearTimeout(handle);
+        handle = window.setTimeout(() => fn(...args), ms);
+      };
+    }
+
+    const readConfig = (slot: 'a' | 'b'): RetrievalConfig => {
+      const strategy = (byId<HTMLSelectElement>(`${slot}-strategy`)?.value ?? 'sentence') as ChunkStrategy;
+      const chunkSize = clamp(Number(byId<HTMLInputElement>(`${slot}-size`)?.value ?? 150), MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);
+      const overlap = Math.max(0, Number(byId<HTMLInputElement>(`${slot}-overlap`)?.value ?? 0));
+      const rankMethod = (byId<HTMLSelectElement>(`${slot}-rank`)?.value ?? 'bm25') as RankMethod;
+      const topK = Math.max(1, Number(byId<HTMLInputElement>(`${slot}-topk`)?.value ?? 3));
+      const scoreThreshold = Math.max(0, Number(byId<HTMLInputElement>(`${slot}-threshold`)?.value ?? 0));
+      const useMmr = byId<HTMLSelectElement>(`${slot}-mmr`)?.value === 'on';
+      const mmrLambda = clamp(Number(byId<HTMLInputElement>(`${slot}-lambda`)?.value ?? 0.5), 0, 1);
+      return {
+        chunking: { strategy, chunkSize, overlap },
+        rankMethod,
+        topK,
+        scoreThreshold,
+        useMmr,
+        mmrLambda,
+      };
+    };
+
+    const writeConfig = (slot: 'a' | 'b', config: RetrievalConfig) => {
+      const set = (id: string, value: string) => {
+        const field = byId<HTMLInputElement | HTMLSelectElement>(id);
+        if (field) field.value = value;
+      };
+      set(`${slot}-strategy`, config.chunking.strategy);
+      set(`${slot}-size`, String(config.chunking.chunkSize));
+      set(`${slot}-overlap`, String(config.chunking.overlap));
+      set(`${slot}-rank`, config.rankMethod);
+      set(`${slot}-topk`, String(config.topK));
+      set(`${slot}-threshold`, String(config.scoreThreshold));
+      set(`${slot}-mmr`, config.useMmr ? 'on' : 'off');
+      set(`${slot}-lambda`, String(config.mmrLambda));
+    };
+
+    const readState = (): RagLabState => ({
+      corpusSource: (byId<HTMLSelectElement>('corpus-source')?.value ?? 'sample') as CorpusSource,
+      customText: byId<HTMLTextAreaElement>('custom-text')?.value ?? '',
+      query: byId<HTMLTextAreaElement>('query')?.value ?? '',
+      sampleQueryId: byId<HTMLSelectElement>('sample-query')?.value ?? SAMPLE_QUERIES[0].id,
+      configA: readConfig('a'),
+      configB: readConfig('b'),
+    });
+
+    const writeState = (state: RagLabState) => {
+      const corpusField = byId<HTMLSelectElement>('corpus-source');
+      if (corpusField) corpusField.value = state.corpusSource;
+      const customField = byId<HTMLTextAreaElement>('custom-text');
+      if (customField) customField.value = state.customText;
+      const queryField = byId<HTMLTextAreaElement>('query');
+      if (queryField) queryField.value = state.query;
+      const sampleField = byId<HTMLSelectElement>('sample-query');
+      if (sampleField) sampleField.value = state.sampleQueryId;
+      writeConfig('a', state.configA);
+      writeConfig('b', state.configB);
+      syncCustomTextVisibility(state.corpusSource);
+    };
+
+    function syncCustomTextVisibility(source: CorpusSource) {
+      const wrapper = el<HTMLElement>('[data-custom-text-field]');
+      if (wrapper) wrapper.hidden = source !== 'custom';
+    }
+
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const MAX_CHUNKS_SHOWN = 60;
+
+    function renderChunks(slot: 'a' | 'b', chunks: Chunk[]) {
+      const target = el(`[data-chunks="${slot}"]`);
+      if (!target) return;
+      if (!chunks.length) {
+        target.innerHTML = '<p class="empty-note">No chunks yet. Enter a query or load a sample.</p>';
+        return;
+      }
+      const shown = chunks.slice(0, MAX_CHUNKS_SHOWN);
+      target.innerHTML =
+        shown
+          .map(
+            (c) => `
+        <div class="chunk-item">
+          <p class="chunk-head">
+            <span>${esc(c.docTitle)}</span>
+            <span>chunk ${c.index + 1}</span>
+            <span>characters ${c.start} to ${c.end}</span>
+          </p>
+          <p class="chunk-text">${esc(c.text)}</p>
+        </div>`,
+          )
+          .join('') +
+        (chunks.length > MAX_CHUNKS_SHOWN
+          ? `<p class="chunk-truncation-note">Showing the first ${MAX_CHUNKS_SHOWN} of ${chunks.length} chunks. Raise the chunk size to reduce the count.</p>`
+          : '');
+    }
+
+    function scoredItem(rank: number | null, s: ScoredChunk, extraClass = ''): string {
+      const rankLabel = rank === null ? '' : `<span class="scored-rank">#${rank}</span>`;
+      return `
+      <div class="scored ${extraClass}">
+        <div class="scored-head">
+          ${rankLabel}
+          <span class="scored-where">${esc(s.chunk.docTitle)}, chunk ${s.chunk.index + 1}</span>
+          <span class="scored-score">score ${s.score.toFixed(3)}</span>
+        </div>
+        <p class="scored-text">${esc(s.chunk.text)}</p>
+        <p class="scored-reason">${esc(s.reason)}</p>
+      </div>`;
+    }
+
+    function renderSelected(slot: 'a' | 'b', selected: ScoredChunk[]) {
+      const target = el(`[data-selected="${slot}"]`);
+      if (!target) return;
+      target.innerHTML = selected.length
+        ? selected.map((s, i) => scoredItem(i + 1, s)).join('')
+        : '<p class="empty-note">Nothing cleared the current settings. Lower the score threshold or raise top k.</p>';
+    }
+
+    function renderMissed(slot: 'a' | 'b', missed: RetrievalResult['missed']) {
+      const target = el(`[data-missed="${slot}"]`);
+      if (!target) return;
+      target.innerHTML = missed.length
+        ? missed
+            .map(
+              (m) => `
+        <div class="scored missed">
+          <div class="scored-head">
+            <span class="scored-where">${esc(m.scored.chunk.docTitle)}, chunk ${m.scored.chunk.index + 1}</span>
+            <span class="scored-score">score ${m.scored.score.toFixed(3)}</span>
+          </div>
+          <p class="scored-text">${esc(m.scored.chunk.text)}</p>
+          <p class="scored-reason">${esc(m.reason)}</p>
+        </div>`,
+            )
+            .join('')
+        : '<p class="empty-note">Nothing else scored high enough to be worth showing.</p>';
+    }
+
+    function renderAnswer(slot: 'a' | 'b', text: string) {
+      const target = el(`[data-answer="${slot}"]`);
+      if (target) target.textContent = text;
+    }
+
+    function renderVerdict(
+      slot: 'a' | 'b',
+      result: RetrievalResult,
+      sample: ReturnType<typeof getSampleQuery>,
+      corpusSource: CorpusSource,
+    ) {
+      const target = el(`[data-verdict="${slot}"]`);
+      if (!target) return;
+      if (!sample || corpusSource !== 'sample') {
+        target.innerHTML = '';
+        target.removeAttribute('data-hit');
+        return;
+      }
+      const hit = result.selected.some((s) => s.chunk.docId === sample.expectedDocId);
+      target.setAttribute('data-hit', String(hit));
+      target.innerHTML = hit
+        ? `Correct source retrieved. A chunk from the expected document is in the results below.`
+        : `Correct source NOT retrieved. The expected document did not clear this configuration. See the explanation below the toolbar.`;
+    }
+
+    function renderHelp(slot: 'a' | 'b', config: RetrievalConfig) {
+      const strategyHelp = el(`[data-strategy-help="${slot}"]`);
+      if (strategyHelp) strategyHelp.textContent = CHUNK_STRATEGY_HELP[config.chunking.strategy];
+      const rankHelp = el(`[data-rank-help="${slot}"]`);
+      if (rankHelp) rankHelp.textContent = RANK_METHOD_HONESTY[config.rankMethod];
+    }
+
+    function renderAll() {
+      const state = readState();
+      syncCustomTextVisibility(state.corpusSource);
+
+      const sample = SAMPLE_QUERIES.find((s) => s.query === state.query);
+      const teaches = el('[data-teaches]');
+      const explanation = el('[data-explanation]');
+      if (teaches) teaches.textContent = sample ? sample.teaches : '';
+      if (explanation) explanation.textContent = sample ? sample.explanation : '';
+
+      for (const slot of ['a', 'b'] as const) {
+        const config = slot === 'a' ? state.configA : state.configB;
+        const result = runForState(state, slot);
+        renderChunks(slot, result.chunks);
+        renderSelected(slot, result.selected);
+        renderMissed(slot, result.missed);
+        renderAnswer(slot, result.answerTemplate);
+        renderVerdict(slot, result, sample, state.corpusSource);
+        renderHelp(slot, config);
+
+        const panel = document.getElementById(`results-${slot}`);
+        if (panel) {
+          panel.dataset.resultStatus = state.query.trim() ? 'ready' : 'idle';
+        }
+      }
+    }
+
+    const debouncedRender = debounce(renderAll, 150);
+    root.addEventListener('input', debouncedRender);
+    root.addEventListener('change', renderAll);
+
+    el('[data-load-sample]')?.addEventListener('click', () => {
+      const id = byId<HTMLSelectElement>('sample-query')?.value ?? SAMPLE_QUERIES[0].id;
+      writeState(sampleState(id));
+      renderAll();
+    });
+
+    el('[data-reset]')?.addEventListener('click', () => {
+      writeState(emptyState());
+      renderAll();
+    });
+
+    root.addEventListener('workbench:load-sample', () => {
+      writeState(sampleState());
+      renderAll();
+    });
+
+    // First paint: sync the DOM to a known, valid state rather than
+    // trust whatever the server rendered defaults happen to be, then
+    // render once against it.
+    writeState(emptyState());
+    renderAll();
+  }
+</script>

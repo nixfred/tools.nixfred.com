@@ -241,8 +241,25 @@ export function chunkCorpus(docs: SourceDocument[], config: ChunkingConfig): Chu
  * Tokenization, shared by both real lexical ranking methods.
  * ------------------------------------------------------------------ */
 
+/**
+ * Function words filtered out of the word level methods, BM25 and
+ * TF-IDF. On a corpus of a handful of documents a stopword still gets a
+ * small positive weight from the smoothed IDF formulas below, so
+ * leaving them in would let sheer stopword frequency drown out the
+ * rare, meaningful words a query actually cares about. Trigram overlap
+ * is unaffected: it works on raw characters, not on this word list.
+ */
+const STOPWORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'do', 'does',
+  'did', 'for', 'from', 'has', 'have', 'how', 'if', 'in', 'into', 'is',
+  'it', 'its', 'of', 'on', 'or', 'our', 'that', 'the', 'their', 'then',
+  'there', 'these', 'they', 'this', 'to', 'was', 'we', 'what', 'when',
+  'where', 'which', 'who', 'will', 'with', 'you', 'your',
+]);
+
 function tokenize(text: string): string[] {
-  return text.toLowerCase().match(/[a-z0-9]+(?:'[a-z]+)?/g) ?? [];
+  const tokens = text.toLowerCase().match(/[a-z0-9]+(?:'[a-z]+)?/g) ?? [];
+  return tokens.filter((t) => !STOPWORDS.has(t));
 }
 
 /* ------------------------------------------------------------------ *
@@ -665,21 +682,21 @@ export const SAMPLE_QUERIES: SampleQuery[] = [
     id: 'refund-paraphrase',
     query: 'What is our refund process for a Customer?',
     teaches:
-      'The lexical failure case. The billing procedure describes exactly this situation, credited back, corrected invoice, chargeback, but never uses the word refund.',
+      'The lexical failure case. Under the default sentence sized chunking, the correct source is pushed out of the results entirely, edged out by an unrelated chunk that happens to share the one rare word the query uses.',
     expectedDocId: 'billing-adjustments',
     lexicalFailure: true,
     explanation:
-      'BM25 and TF-IDF both score chunks by shared words, weighted by how rare each word is. The word refund is rare in this corpus, it appears exactly once, in the deployment runbook, in an unrelated sentence about compute credits. That single match can out rank the billing procedure chunk, which is the actually correct source but shares no rare words with the query. A dense embedding model would likely recognize that credited back and refund describe the same action and would not make this mistake. Run this query under BM25 or TF-IDF and check the rank of each source chunk to see the failure directly rather than take this description on faith.',
+      'BM25 and TF-IDF both score chunks by shared words, weighted by how rare each word is across the current chunk set. Refund is rare here, it appears exactly once, in the deployment runbook, in an unrelated sentence about unused compute credits. The billing adjustment procedure describes this exact situation, credited back, corrected invoice, chargeback, but never once uses the word refund, so it shares no rare words with the query. With Config A, small sentence sized chunks, that one match is enough to keep every chunk of the actually correct document out of the top results completely. Switch to Config B, paragraph sized chunks, and the correct document reappears in second place, but the wrong chunk about compute credits still holds first place in both configurations. A dense embedding model would likely recognize that credited back and refund describe the same action, and would not make either mistake.',
   },
   {
     id: 'retention-and-encryption',
     query: 'How many days are backups retained before deletion, and how are they encrypted?',
     teaches:
-      'A chunk size lesson rather than a ranking failure. The retention duration and the encryption method sit in adjacent sentences of one paragraph, so a small chunk size can split them into two chunks, and neither one alone answers the full question.',
+      'A chunk size lesson rather than a ranking failure. The retention duration and the encryption method sit in adjacent sentences of one paragraph, so a small chunk size splits them into separate chunks, while a paragraph sized chunk keeps them together.',
     expectedDocId: 'data-retention-policy',
     lexicalFailure: false,
     explanation:
-      'Compare a small sentence sized chunk against a paragraph sized chunk on this query. With a small chunk size, one retrieved chunk carries the 35 day retention figure and a different chunk carries the AES-256 and TLS detail, so the answer template cites two partial chunks instead of one complete one. Paragraph chunking, or a larger chunk size, keeps both facts in the same chunk. Neither behavior is a bug: it is what the chunk size choice actually does to the evidence available to an answer.',
+      'Compare Config A, small sentence sized chunks, against Config B, paragraph sized chunks, on this query. Config A returns three narrow fragments, all correctly from the backup policy, but the 35 day retention figure and the AES-256 and TLS detail sit in two different fragments, so reading only one of them misses part of the question. Config B returns the whole paragraph as a single chunk, both facts together, and spends its remaining slots on chunks from other documents because nothing else in the corpus is nearly as relevant. Neither behavior is a bug: it is what the chunk size choice actually does to the shape of the evidence an answer is built from.',
   },
 ];
 

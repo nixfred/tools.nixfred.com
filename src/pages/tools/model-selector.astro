@@ -1,0 +1,997 @@
+---
+// Model Selector.
+// PRD: tools-nixfred-prds/tools/05-MODEL-SELECTOR.md
+//
+// Turns stated workload constraints into a ranked shortlist. Every
+// number a visitor sees is a pure function of the requirements,
+// weights, token blend assumption, and per model overrides defined in
+// src/lib/tools/model-selector.ts. This file renders the form from an
+// empty state, renders a result computed from that same empty state so
+// the panels are never blank, and wires the kit event contract
+// (workbench:load-sample, workbench:export, kit:assumption-edit).
+// Nothing here scores a model.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import {
+  Field,
+  ResultPanel,
+  AssumptionList,
+  HelpNote,
+  WarningNote,
+  ExportBar,
+} from '../../components/kit';
+import { getTool } from '../../data/registry';
+import {
+  SAMPLES,
+  TASK_TYPES,
+  TASK_TYPE_LABELS,
+  CAPABILITY_TIERS,
+  CAPABILITY_TIER_LABELS,
+  HOSTING_REQUIREMENTS,
+  HOSTING_REQUIREMENT_LABELS,
+  DATA_SENSITIVITIES,
+  DATA_SENSITIVITY_LABELS,
+  THROUGHPUT_NEEDS,
+  THROUGHPUT_NEED_LABELS,
+  AXIS_KEYS,
+  AXIS_LABELS,
+  emptyState,
+  catalogStaleness,
+  STALE_THRESHOLD_DAYS,
+} from '../../lib/tools/model-selector';
+
+const tool = getTool('model-selector')!;
+
+// Server rendered starting point. The page always loads in this empty
+// configuration, matching the house pattern: the result panels are
+// filled in by the client script's own first renderAll() call rather
+// than by frontmatter, so there is exactly one code path that computes
+// a ranking.
+const initial = emptyState();
+const staleness = catalogStaleness();
+
+const TASK_OPTIONS = TASK_TYPES.map((t) => ({ value: t, label: TASK_TYPE_LABELS[t] }));
+const ACCURACY_OPTIONS = CAPABILITY_TIERS.map((t) => ({ value: t, label: CAPABILITY_TIER_LABELS[t] }));
+const HOSTING_OPTIONS = HOSTING_REQUIREMENTS.map((h) => ({ value: h, label: HOSTING_REQUIREMENT_LABELS[h] }));
+const SENSITIVITY_OPTIONS = DATA_SENSITIVITIES.map((d) => ({ value: d, label: DATA_SENSITIVITY_LABELS[d] }));
+const THROUGHPUT_OPTIONS = THROUGHPUT_NEEDS.map((t) => ({ value: t, label: THROUGHPUT_NEED_LABELS[t] }));
+const YES_NO_OPTIONS = [
+  { value: 'no', label: 'Not required' },
+  { value: 'yes', label: 'Required' },
+];
+---
+
+<ToolLayout tool={tool}>
+  <div class="selector" data-selector>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <label class="label" for="sample">Sample workload</label>
+        <select id="sample" data-sample-select>
+          {SAMPLES.map((s) => <option value={s.id}>{s.name}</option>)}
+        </select>
+        <button type="button" class="btn btn-primary" data-load-sample>
+          Load sample
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <button type="button" class="btn" data-reset>Reset</button>
+      </div>
+    </div>
+
+    <p class="teaches" data-teaches role="status" aria-live="polite"></p>
+
+    <WarningNote severity="warning" title="Catalog data ages fast, this tool does not claim benchmark authority">
+      <p>
+        The oldest price point in this catalog is {staleness.oldest.name},
+        dated {staleness.oldest.priceEffectiveDate}, {staleness.oldestDays}{' '}
+        days old at build time. {staleness.staleCount} of {staleness.total}{' '}
+        candidates carry a price older than {STALE_THRESHOLD_DAYS} days.
+        Verify current pricing with each vendor before deciding.
+      </p>
+      <p>
+        Capability tier, latency class, and throughput tier are this tool's
+        own coarse editorial priors, not vendor claims and not benchmark
+        results. Every one of them is overridable in the ranked list below.
+      </p>
+    </WarningNote>
+
+    <section class="block" aria-labelledby="requirements-heading">
+      <h2 id="requirements-heading" class="block-title">Workload requirements</h2>
+      <div class="field-grid">
+        <Field
+          label="Task type"
+          name="taskType"
+          type="select"
+          options={TASK_OPTIONS}
+          value={initial.requirements.taskType}
+        />
+        <Field
+          label="Accuracy bar"
+          name="accuracyBar"
+          type="select"
+          options={ACCURACY_OPTIONS}
+          value={initial.requirements.accuracyBar}
+          hint="Compared against each candidate's capability tier, itself a coarse editorial prior you can override below."
+        />
+        <Field
+          label="Context needed"
+          name="contextNeededTokens"
+          type="number"
+          value={initial.requirements.contextNeededTokens}
+          min={1}
+          hint="Tokens the longest single request needs, prompt plus expected output."
+        />
+        <Field
+          label="Latency ceiling"
+          name="latencyCeilingMs"
+          type="number"
+          value=""
+          placeholder="No ceiling"
+          min={0}
+          hint="Milliseconds tolerable before a response feels broken. Leave blank for no ceiling, for example batch or async work."
+        />
+        <Field
+          label="Cost ceiling"
+          name="costCeilingPerMTok"
+          type="number"
+          value=""
+          placeholder="No ceiling"
+          min={0}
+          step="0.01"
+          hint="Maximum dollars per million tokens accepted, blended across input and output. Leave blank for no ceiling."
+        />
+        <Field
+          label="Vision input needed"
+          name="needsVision"
+          type="select"
+          options={YES_NO_OPTIONS}
+          value="no"
+        />
+        <Field
+          label="Tool or function calling needed"
+          name="needsToolUse"
+          type="select"
+          options={YES_NO_OPTIONS}
+          value="no"
+        />
+        <Field
+          label="Hosting requirement"
+          name="hostingRequirement"
+          type="select"
+          options={HOSTING_OPTIONS}
+          value={initial.requirements.hostingRequirement}
+        />
+        <Field
+          label="Data sensitivity"
+          name="dataSensitivity"
+          type="select"
+          options={SENSITIVITY_OPTIONS}
+          value={initial.requirements.dataSensitivity}
+        />
+        <Field
+          label="Throughput need"
+          name="throughputNeed"
+          type="select"
+          options={THROUGHPUT_OPTIONS}
+          value={initial.requirements.throughputNeed}
+        />
+      </div>
+    </section>
+
+    <section class="block" aria-labelledby="weights-heading">
+      <h2 id="weights-heading" class="block-title">Ranking weights</h2>
+      <p class="block-note">
+        These weights only affect ranking among candidates that already pass
+        every hard constraint above. They never change which candidates are
+        eliminated. Raise a weight to care more about that axis, relative to
+        the others.
+      </p>
+      <div class="field-grid field-grid-weights">
+        {AXIS_KEYS.map((axis) => (
+          <Field
+            label={AXIS_LABELS[axis]}
+            name={`weight-${axis}`}
+            type="number"
+            value={initial.weights[axis]}
+            min={0}
+            max={100}
+            step={5}
+          />
+        ))}
+      </div>
+    </section>
+
+    <AssumptionList
+      title="Cost assumption"
+      name="token-blend"
+      items={[
+        { label: 'Input token share', value: '75%', editable: true, source: 'default assumption' },
+        { label: 'Output token share', value: '25%', editable: true, source: 'default assumption' },
+      ]}
+    />
+
+    <ResultPanel
+      title="Ranked candidates"
+      id="ranked-panel"
+      status="ready"
+      description="Candidates that pass every hard constraint, ordered by the weighted score above."
+    >
+      <p class="summary mono" data-ranked-summary role="status" aria-live="polite"></p>
+      <div data-ranked></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Disqualified candidates"
+      id="eliminated-panel"
+      status="ready"
+      description="Eliminated by an objective hard constraint, never by an editorial rating."
+    >
+      <div data-eliminated></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Tradeoff, the runner up"
+      id="tradeoff-panel"
+      status="ready"
+      description="What follows from the stated weights, and what would have to change for the runner up to win instead."
+    >
+      <div data-tradeoff></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Unanswered questions"
+      id="questions-panel"
+      status="ready"
+      description="Gaps this tool noticed in the stated requirements."
+    >
+      <ol class="plain-list" data-questions></ol>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Recommended evaluation plan"
+      id="plan-panel"
+      status="ready"
+      description="What to do before trusting this shortlist with real traffic."
+    >
+      <ol class="plain-list" data-plan></ol>
+    </ResultPanel>
+
+    <ExportBar formats={['json', 'markdown']} filename="model-selector-report" />
+
+    <HelpNote title="Why does this not just tell me the best model">
+      <p>
+        There is no universal best model. There is only a model that fits
+        the constraints stated above, weighted the way they are weighted
+        above. Change the accuracy bar, the cost ceiling, or any weight, and
+        a different candidate can win, honestly, because the inputs changed.
+      </p>
+      <p>
+        The tradeoff panel names the runner up and states exactly what
+        weight would have to move, and by how much, for it to outrank the
+        top candidate. That is the whole mechanism. Nothing here consults a
+        live benchmark or a model provider.
+      </p>
+    </HelpNote>
+  </div>
+</ToolLayout>
+
+<style>
+  .selector {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-3);
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    font: inherit;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .teaches {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: 0;
+    min-height: 1.5em;
+  }
+
+  .block {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+    background: var(--panel);
+  }
+
+  .block-title {
+    font-size: var(--text-lg);
+    margin-bottom: var(--space-2);
+  }
+
+  .block-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    max-width: var(--measure);
+    margin-bottom: var(--space-3);
+  }
+
+  .field-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: var(--space-3) var(--space-4);
+  }
+
+  .field-grid-weights {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+
+  .summary {
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    margin: 0 0 var(--space-3);
+  }
+
+  .plain-list {
+    margin: 0;
+    padding-left: 1.2rem;
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    line-height: 1.6;
+  }
+
+  .plain-list li {
+    margin-bottom: var(--space-2);
+  }
+
+  .plain-list li:last-child {
+    margin-bottom: 0;
+  }
+</style>
+
+{/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
+    class the script creates is styled with :global here, matching the
+    house pattern for every tool page with a client script. */}
+<style is:global>
+  .candidate-row {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
+    background: var(--bg);
+  }
+
+  .candidate-row:last-child {
+    margin-bottom: 0;
+  }
+
+  .candidate-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+  }
+
+  .candidate-name {
+    font-size: var(--text-lg);
+  }
+
+  .candidate-provider {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    margin-left: var(--space-2);
+  }
+
+  .candidate-score {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--text-lg);
+    color: var(--accent);
+  }
+
+  .candidate-badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    padding: 0.1rem 0.5rem;
+  }
+
+  .candidate-badge[data-confidence='placeholder'] {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .candidate-badge[data-confidence='estimate'] {
+    color: var(--status-beta);
+    border-color: var(--status-beta);
+  }
+
+  .axis-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) 2fr auto;
+    gap: var(--space-3);
+    align-items: start;
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--line-faint);
+  }
+
+  .axis-row:last-of-type {
+    border-bottom: 0;
+  }
+
+  .axis-label {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .axis-why {
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    margin: var(--space-1) 0 0;
+    max-width: none;
+  }
+
+  .axis-bar-wrap {
+    min-width: 0;
+  }
+
+  .axis-bar {
+    height: 6px;
+    background: var(--chassis-700);
+    border-radius: var(--radius-pill);
+    overflow: hidden;
+  }
+
+  .axis-fill {
+    height: 100%;
+    background: var(--accent-deep);
+    display: block;
+  }
+
+  .axis-num {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .override-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-top: var(--space-3);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--line-faint);
+  }
+
+  .override-label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  .override-select {
+    font: inherit;
+    font-size: var(--text-sm);
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--text);
+    background: var(--bg-alt);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.3rem 0.5rem;
+  }
+
+  .hard-checks {
+    margin-top: var(--space-2);
+  }
+
+  .hard-checks summary {
+    cursor: pointer;
+    font-size: var(--text-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  .hard-check-row {
+    display: flex;
+    gap: var(--space-2);
+    align-items: baseline;
+    font-size: var(--text-sm);
+    padding: var(--space-1) 0;
+    border-left: 2px solid var(--line);
+    padding-left: var(--space-2);
+    margin-top: var(--space-1);
+  }
+
+  .hard-check-row[data-passed='true'] {
+    border-left-color: var(--status-live);
+  }
+
+  .hard-check-row[data-passed='false'] {
+    border-left-color: var(--status-alert);
+  }
+
+  .hard-check-tag {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .hard-check-row[data-passed='true'] .hard-check-tag {
+    color: var(--status-live);
+  }
+
+  .hard-check-row[data-passed='false'] .hard-check-tag {
+    color: var(--status-alert);
+  }
+
+  .hard-check-text {
+    color: var(--text-muted);
+  }
+
+  .eliminated-row {
+    border-left: 2px solid var(--status-alert);
+  }
+
+  .tradeoff-box {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    line-height: 1.6;
+  }
+
+  .empty-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+</style>
+
+<script>
+  import {
+    rankCandidates,
+    computeSensitivity,
+    unansweredQuestions,
+    evaluationPlan,
+    validate,
+    sampleState,
+    emptyState,
+    getSample,
+    serialize,
+    SAMPLES,
+    AXIS_KEYS,
+    CAPABILITY_TIERS,
+    CAPABILITY_TIER_LABELS,
+    LATENCY_CLASSES,
+    LATENCY_CLASS_LABELS,
+    THROUGHPUT_TIERS,
+    THROUGHPUT_TIER_LABELS,
+    PRICE_CONFIDENCE_LABELS,
+    type SelectorState,
+    type RankedCandidate,
+    type EliminatedCandidate,
+  } from '../../lib/tools/model-selector';
+
+  const root = document.querySelector<HTMLElement>('[data-selector]');
+  if (root) {
+    const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+    const esc = (s: string) =>
+      String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    let state: SelectorState = emptyState();
+
+    /* ---------------------------------------------------------------
+     * Reading and writing the requirement and weight fields. Field
+     * renders each control at id `field-${name}`, per Field.astro.
+     * --------------------------------------------------------------- */
+    const fieldEl = <T extends HTMLElement>(name: string) => el<T>(`#field-${name}`);
+
+    function writeFormFromState() {
+      const r = state.requirements;
+      const set = (name: string, value: string) => {
+        const f = fieldEl<HTMLInputElement | HTMLSelectElement>(name);
+        if (f) f.value = value;
+      };
+      set('taskType', r.taskType);
+      set('accuracyBar', r.accuracyBar);
+      set('contextNeededTokens', String(r.contextNeededTokens));
+      set('latencyCeilingMs', r.latencyCeilingMs == null ? '' : String(r.latencyCeilingMs));
+      set('costCeilingPerMTok', r.costCeilingPerMTok == null ? '' : String(r.costCeilingPerMTok));
+      set('needsVision', r.needsVision ? 'yes' : 'no');
+      set('needsToolUse', r.needsToolUse ? 'yes' : 'no');
+      set('hostingRequirement', r.hostingRequirement);
+      set('dataSensitivity', r.dataSensitivity);
+      set('throughputNeed', r.throughputNeed);
+      for (const axis of AXIS_KEYS) set(`weight-${axis}`, String(state.weights[axis]));
+      renderTokenBlend();
+    }
+
+    function readRequirementsFromForm() {
+      const str = (name: string) => fieldEl<HTMLInputElement | HTMLSelectElement>(name)?.value ?? '';
+      const num = (name: string): number | null => {
+        const raw = str(name);
+        if (raw.trim() === '') return null;
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : null;
+      };
+      state.requirements = {
+        taskType: str('taskType') as SelectorState['requirements']['taskType'],
+        accuracyBar: str('accuracyBar') as SelectorState['requirements']['accuracyBar'],
+        contextNeededTokens: num('contextNeededTokens') ?? 0,
+        latencyCeilingMs: num('latencyCeilingMs'),
+        costCeilingPerMTok: num('costCeilingPerMTok'),
+        needsVision: str('needsVision') === 'yes',
+        needsToolUse: str('needsToolUse') === 'yes',
+        hostingRequirement: str('hostingRequirement') as SelectorState['requirements']['hostingRequirement'],
+        dataSensitivity: str('dataSensitivity') as SelectorState['requirements']['dataSensitivity'],
+        throughputNeed: str('throughputNeed') as SelectorState['requirements']['throughputNeed'],
+      };
+    }
+
+    function readWeightsFromForm() {
+      for (const axis of AXIS_KEYS) {
+        const raw = fieldEl<HTMLInputElement>(`weight-${axis}`)?.value ?? '';
+        const n = Number(raw);
+        state.weights[axis] = Number.isFinite(n) ? n : 0;
+      }
+    }
+
+    function setFieldError(name: string, message: string | null) {
+      const wrap = el<HTMLElement>(`[data-kit-field="${name}"]`);
+      const control = fieldEl<HTMLInputElement | HTMLSelectElement>(name);
+      const errorBox = el<HTMLElement>(`#field-${name}-error`);
+      const errorText = errorBox?.querySelector<HTMLElement>('[data-field-error-text]');
+      if (!wrap || !control || !errorBox) return;
+      if (message) {
+        control.setAttribute('aria-invalid', 'true');
+        errorBox.hidden = false;
+        if (errorText) errorText.textContent = message;
+      } else {
+        control.removeAttribute('aria-invalid');
+        errorBox.hidden = true;
+        if (errorText) errorText.textContent = '';
+      }
+    }
+
+    function applyValidation() {
+      const issues = validate(state);
+      const byField = new Map(issues.map((i) => [i.field, i]));
+      for (const name of [
+        'contextNeededTokens',
+        'latencyCeilingMs',
+        'costCeilingPerMTok',
+      ]) {
+        const issue = byField.get(name);
+        setFieldError(name, issue && issue.severity === 'error' ? issue.message : null);
+      }
+    }
+
+    /* ---------------------------------------------------------------
+     * Token blend assumption. Rendered once by AssumptionList, updated
+     * here on state change, per the component's own contract: it
+     * dispatches kit:assumption-edit and this tool owns the state.
+     * --------------------------------------------------------------- */
+    function renderTokenBlend() {
+      const list = el<HTMLElement>('[data-list-name="token-blend"]');
+      if (!list) return;
+      const rows = list.querySelectorAll<HTMLElement>('[data-assumption-value]');
+      if (rows[0]) rows[0].textContent = `${Math.round(state.tokenBlend.inputShare * 100)}%`;
+      if (rows[1]) rows[1].textContent = `${Math.round(state.tokenBlend.outputShare * 100)}%`;
+    }
+
+    root.addEventListener('kit:assumption-edit', ((event: CustomEvent) => {
+      const { list, index } = event.detail ?? {};
+      if (list !== 'token-blend') return;
+      const current =
+        index === 0 ? state.tokenBlend.inputShare : state.tokenBlend.outputShare;
+      const raw = window.prompt(
+        `New ${index === 0 ? 'input' : 'output'} token share, as a percent from 0 to 100`,
+        String(Math.round(current * 100)),
+      );
+      if (raw == null) return;
+      const pct = clamp(Number(raw), 0, 100);
+      if (!Number.isFinite(pct)) return;
+      if (index === 0) {
+        state.tokenBlend = { inputShare: pct / 100, outputShare: 1 - pct / 100 };
+      } else {
+        state.tokenBlend = { outputShare: pct / 100, inputShare: 1 - pct / 100 };
+      }
+      renderAll();
+    }) as EventListener);
+
+    function clamp(n: number, min: number, max: number): number {
+      return Math.max(min, Math.min(max, n));
+    }
+
+    /* ---------------------------------------------------------------
+     * Per model overrides. capabilityTier, latencyClass, and
+     * throughputTier are this tool's own editorial priors, so every
+     * ranked row exposes them as an ordinary select, never as read only
+     * text, per the honesty requirement in model-selector.ts.
+     * --------------------------------------------------------------- */
+    function overrideSelectHtml(
+      modelId: string,
+      field: 'capabilityTier' | 'latencyClass' | 'throughputTier',
+      options: readonly string[],
+      labels: Record<string, string>,
+      current: string,
+      label: string,
+    ): string {
+      const opts = options
+        .map(
+          (o) =>
+            `<option value="${esc(o)}" ${o === current ? 'selected' : ''}>${esc(labels[o])}</option>`,
+        )
+        .join('');
+      return `<label class="override-label">${esc(label)}
+        <select class="override-select" data-override-model="${esc(modelId)}" data-override-field="${field}">${opts}</select>
+      </label>`;
+    }
+
+    root.addEventListener('change', (event) => {
+      const target = event.target as HTMLElement;
+      const select = target.closest<HTMLSelectElement>('[data-override-model]');
+      if (!select) return;
+      const modelId = select.dataset.overrideModel!;
+      const field = select.dataset.overrideField as
+        | 'capabilityTier'
+        | 'latencyClass'
+        | 'throughputTier';
+      state.overrides = {
+        ...state.overrides,
+        [modelId]: { ...state.overrides[modelId], [field]: select.value },
+      };
+      renderAll();
+    });
+
+    /* ---------------------------------------------------------------
+     * Rendering the five result panels.
+     * --------------------------------------------------------------- */
+    function hardCheckRowsHtml(checks: { key: string; label: string; passed: boolean; message: string }[]): string {
+      return checks
+        .map(
+          (c) => `
+        <div class="hard-check-row" data-passed="${c.passed}">
+          <span class="hard-check-tag">${c.passed ? 'Pass' : 'Fail'}</span>
+          <span class="hard-check-text"><strong>${esc(c.label)}.</strong> ${esc(c.message)}</span>
+        </div>`,
+        )
+        .join('');
+    }
+
+    function axisRowsHtml(candidate: RankedCandidate): string {
+      return candidate.axisScores
+        .map(
+          (a) => `
+        <div class="axis-row">
+          <span class="axis-label">${esc(a.label)}</span>
+          <span class="axis-bar-wrap">
+            <span class="axis-bar"><span class="axis-fill" style="width:${a.score}%"></span></span>
+            <p class="axis-why">${esc(a.why)}</p>
+          </span>
+          <span class="axis-num">${a.score} / 100</span>
+        </div>`,
+        )
+        .join('');
+    }
+
+    function renderRanked(ranked: RankedCandidate[]) {
+      const target = el('[data-ranked]');
+      if (!target) return;
+
+      if (!ranked.length) {
+        target.innerHTML =
+          '<p class="empty-note">No candidate in this catalog survives every hard constraint above. See disqualified candidates below, and loosen the tightest one.</p>';
+        return;
+      }
+
+      target.innerHTML = ranked
+        .map((r) => {
+          const m = r.model;
+          return `
+        <article class="candidate-row" data-candidate-rank="${r.rank}">
+          <div class="candidate-head">
+            <span class="candidate-name">${r.rank}. ${esc(m.name)}<span class="candidate-provider">${esc(m.provider)}</span></span>
+            <span class="candidate-score mono">${r.weightedScore.toFixed(1)}</span>
+          </div>
+          <p class="axis-why">
+            <span class="candidate-badge" data-confidence="${esc(m.priceConfidence)}">${esc(PRICE_CONFIDENCE_LABELS[m.priceConfidence])}</span>
+            price dated ${esc(m.priceEffectiveDate)}${m.notes ? `. ${esc(m.notes)}` : ''}
+          </p>
+          ${axisRowsHtml(r)}
+          <div class="override-row">
+            ${overrideSelectHtml(m.id, 'capabilityTier', CAPABILITY_TIERS, CAPABILITY_TIER_LABELS, m.capabilityTier, 'Capability tier (editorial, overridable)')}
+            ${overrideSelectHtml(m.id, 'latencyClass', LATENCY_CLASSES, LATENCY_CLASS_LABELS, m.latencyClass, 'Latency class (editorial, overridable)')}
+            ${overrideSelectHtml(m.id, 'throughputTier', THROUGHPUT_TIERS, THROUGHPUT_TIER_LABELS, m.throughputTier, 'Throughput tier (editorial, overridable)')}
+          </div>
+          <details class="hard-checks">
+            <summary>Show the five hard constraint checks</summary>
+            ${hardCheckRowsHtml(r.hardChecks)}
+          </details>
+        </article>`;
+        })
+        .join('');
+    }
+
+    function renderEliminated(eliminated: EliminatedCandidate[]) {
+      const target = el('[data-eliminated]');
+      if (!target) return;
+      if (!eliminated.length) {
+        target.innerHTML =
+          '<p class="empty-note">None. Every candidate in the catalog passed every hard constraint above.</p>';
+        return;
+      }
+      target.innerHTML = eliminated
+        .map(
+          (e) => `
+        <article class="candidate-row eliminated-row">
+          <div class="candidate-head">
+            <span class="candidate-name">${esc(e.model.name)}<span class="candidate-provider">${esc(e.model.provider)}</span></span>
+          </div>
+          ${hardCheckRowsHtml(e.failedChecks)}
+          <details class="hard-checks">
+            <summary>Show all five constraint checks</summary>
+            ${hardCheckRowsHtml(e.hardChecks)}
+          </details>
+        </article>`,
+        )
+        .join('');
+    }
+
+    function renderTradeoff(ranked: RankedCandidate[]) {
+      const target = el('[data-tradeoff]');
+      if (!target) return;
+      const result = computeSensitivity(ranked[0], ranked[1], state.weights);
+      target.innerHTML = `<p class="tradeoff-box">${esc(result.message)}</p>`;
+    }
+
+    function renderList(selector: string, items: string[]) {
+      const target = el<HTMLOListElement>(selector);
+      if (!target) return;
+      target.innerHTML = items.map((item) => `<li>${esc(item)}</li>`).join('');
+    }
+
+    function renderAll() {
+      applyValidation();
+      const result = rankCandidates(state);
+
+      const summary = el('[data-ranked-summary]');
+      if (summary) {
+        const totalCatalog = result.ranked.length + result.eliminated.length;
+        summary.textContent = `${result.ranked.length} of ${totalCatalog} candidates survive every hard constraint.`;
+      }
+
+      renderRanked(result.ranked);
+      renderEliminated(result.eliminated);
+      renderTradeoff(result.ranked);
+      renderList('[data-questions]', unansweredQuestions(state, result));
+      renderList('[data-plan]', evaluationPlan(state, result));
+    }
+
+    /* ---------------------------------------------------------------
+     * Wiring.
+     * --------------------------------------------------------------- */
+    const requirementFieldNames = [
+      'taskType',
+      'accuracyBar',
+      'contextNeededTokens',
+      'latencyCeilingMs',
+      'costCeilingPerMTok',
+      'needsVision',
+      'needsToolUse',
+      'hostingRequirement',
+      'dataSensitivity',
+      'throughputNeed',
+    ];
+    for (const name of requirementFieldNames) {
+      const control = fieldEl<HTMLInputElement | HTMLSelectElement>(name);
+      control?.addEventListener('input', () => {
+        readRequirementsFromForm();
+        renderAll();
+      });
+    }
+    for (const axis of AXIS_KEYS) {
+      const control = fieldEl<HTMLInputElement>(`weight-${axis}`);
+      control?.addEventListener('input', () => {
+        readWeightsFromForm();
+        renderAll();
+      });
+    }
+
+    el('[data-load-sample]')?.addEventListener('click', () => {
+      const id = el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id;
+      state = sampleState(id);
+      writeFormFromState();
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = getSample(id)?.teaches ?? '';
+      renderAll();
+    });
+
+    el('[data-reset]')?.addEventListener('click', () => {
+      state = emptyState();
+      writeFormFromState();
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = '';
+      renderAll();
+    });
+
+    // ExportBar asks; the tool answers. See src/components/kit/ExportBar.astro.
+    root.addEventListener('workbench:export', ((event: CustomEvent) => {
+      const { format, resolve } = event.detail ?? {};
+      if (typeof resolve !== 'function') return;
+      const fmt = format === 'markdown' ? 'markdown' : 'json';
+      resolve(serialize(state, fmt));
+    }) as EventListener);
+
+    root.addEventListener('workbench:load-sample', () => {
+      state = sampleState();
+      writeFormFromState();
+      renderAll();
+    });
+
+    writeFormFromState();
+    renderAll();
+  }
+</script>

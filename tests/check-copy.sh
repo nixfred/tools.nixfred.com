@@ -63,14 +63,71 @@ report "em dash or en dash" \
 # are therefore never scanned. This trades a small false negative rate,
 # an unquoted dash in raw template text, for zero false positives, which
 # is the correct trade for a gate that must stay switched on.
-spaced_hyphen=$(grep -rn ' - ' src "${SRC_GLOBS[@]}" 2>/dev/null |
-  grep -E ':\s*(//|\*|<!--)|["'"'"'`]' |
-  grep -v 'calc(' |
-  grep -v -E ':\s*---\s*$' |
-  grep -v -E ':[-|:+ ]+$' |
-  grep -v -E ':\s*[-*] ' |
-  grep -v -E ':\s*#' |
-  grep -v -- '-->' || true)
+#
+# SECOND REFINEMENT, 2026-07-26. The prose-only rule above still fired
+# on arithmetic, because arithmetic lives inside template literals and
+# quoted strings, which is exactly what the rule treats as prose.
+# Real examples it wrongly flagged: `all.length - 1` inside a template
+# literal, `group.p50 - sc.effectiveP50`, and `1 - alpha/m` written
+# inside an explanatory comment.
+#
+# Distinguishing "word minus word" from "identifier minus identifier"
+# is not possible lexically, so the discriminator is CONTEXT:
+#   1. Template interpolations `${...}` are code. Strip them, then scan.
+#   2. A subtraction flanked by identifier or number characters, on a
+#      line that also carries another arithmetic or assignment operator,
+#      is arithmetic and not punctuation.
+# Bash cannot express that cleanly, so this one check is Python. The
+# other checks stay as grep because they do not need the nuance.
+spaced_hyphen=$(python3 - <<'PYEOF'
+import os, re, sys
+
+ROOT = '.'
+EXTS = ('.astro', '.ts', '.css', '.md')
+PROSE = re.compile(r'^\s*(//|\*|<!--)')
+QUOTED = re.compile(r'["\'`]')
+INTERP = re.compile(r'\$\{[^}]*\}')
+ARITH = re.compile(r'[\w)\].] - [\w(]')
+OPS = re.compile(r'[*/+=<>]|Math\.')
+SKIP_LINE = re.compile(r'calc\(|-->|^\s*---\s*$|^[-|:+ ]+$|^\s*[-*] |^\s*#')
+
+hits = []
+for base, dirs, files in os.walk(os.path.join(ROOT, 'src')):
+    for name in files:
+        if not name.endswith(EXTS):
+            continue
+        path = os.path.join(base, name)
+        try:
+            lines = open(path, encoding='utf-8', errors='ignore').read().split('\n')
+        except OSError:
+            continue
+        for i, raw in enumerate(lines, 1):
+            # Code is not prose. Only comments, markdown, and lines
+            # carrying a quoted string are candidates at all.
+            if not (PROSE.search(raw) or QUOTED.search(raw)):
+                continue
+            if SKIP_LINE.search(raw.strip()):
+                continue
+            # Template interpolations are code, so remove them first.
+            line = INTERP.sub('', raw)
+            if ' - ' not in line:
+                continue
+            # STRIP THE COMMENT MARKER BEFORE TESTING FOR OPERATORS.
+            # Caught by a negative control: `//` contains a forward
+            # slash, so every single comment line looked like it
+            # contained an arithmetic operator, and the gate silently
+            # stopped catching real prose dashes in comments. A gate
+            # that quietly passes everything is the worst outcome
+            # available, so this line is load bearing.
+            body = re.sub(r'^\s*(//+|/\*|\*/|\*|<!--)', '', line)
+            # Arithmetic, not punctuation.
+            if ARITH.search(body) and OPS.search(body):
+                continue
+            hits.append('%s:%d:%s' % (os.path.relpath(path, ROOT), i, raw.strip()[:120]))
+
+sys.stdout.write('\n'.join(hits))
+PYEOF
+)
 report "spaced hyphen used as punctuation" "$spaced_hyphen"
 
 # ---------------------------------------------------------------------
@@ -109,20 +166,48 @@ report "lowercase customer" \
 # comment in global.css, which is prose about the rule, not a breach of
 # it. Matching an actual color value rather than the bare function name
 # is the difference between a gate and a nuisance.
-COLOR_RE='#[0-9a-fA-F]{3,8}\b|rgba?\([0-9]'
+# THIRD REFINEMENT, 2026-07-26. A bare hex pattern also matches CSS id
+# selectors whose name happens to start with hex letters. The real case
+# that fired: the string '#add-kind-select', where "add" is three valid
+# hex digits. A color literal is never followed by a letter, digit,
+# underscore, or hyphen, so a negative lookahead separates them exactly.
+# grep -E has no lookahead, so this check is Python too.
+color_scan=$(python3 - <<'PYEOF'
+import os, re, sys
 
-color_literals=$(grep -rnE "$COLOR_RE" \
-  src/components src/layouts src/pages \
-  --include='*.astro' --include='*.ts' --include='*.css' 2>/dev/null |
-  grep -v '^src/layouts/Base.astro.*theme-color' || true)
-report "raw color literal outside tokens.css" "$color_literals"
+# A real color: # then exactly 3, 4, 6, or 8 hex digits, NOT followed by
+# an identifier character. Plus rgb()/rgba() with a numeric first arg.
+COLOR = re.compile(r'#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})(?![0-9a-zA-Z_-])|rgba?\(\s*[0-9]')
+DIRS = ['src/components', 'src/layouts', 'src/pages', 'src/styles', 'src/lib']
+EXTS = ('.astro', '.ts', '.css')
 
-# A hex inside tokens.css is expected. A hex ANYWHERE else in styles is
-# not, so styles/ is checked separately with tokens.css excluded.
-stray_style_colors=$(grep -rnE "$COLOR_RE" src/styles \
-  --include='*.css' 2>/dev/null |
-  grep -v '^src/styles/tokens.css:' || true)
-report "raw color literal in styles outside tokens.css" "$stray_style_colors"
+hits = []
+for d in DIRS:
+    for base, _dirs, files in os.walk(d):
+        for name in files:
+            if not name.endswith(EXTS):
+                continue
+            path = os.path.join(base, name)
+            # tokens.css is the one legitimate home for color values.
+            if path.replace(os.sep, '/') == 'src/styles/tokens.css':
+                continue
+            try:
+                lines = open(path, encoding='utf-8', errors='ignore').read().split('\n')
+            except OSError:
+                continue
+            for i, raw in enumerate(lines, 1):
+                if not COLOR.search(raw):
+                    continue
+                # Base.astro carries exactly one documented theme-color
+                # meta tag, because a meta tag cannot read a CSS variable.
+                if path.endswith('Base.astro') and 'theme-color' in raw:
+                    continue
+                hits.append('%s:%d:%s' % (path.replace(os.sep, '/'), i, raw.strip()[:120]))
+
+sys.stdout.write('\n'.join(hits))
+PYEOF
+)
+report "raw color literal outside tokens.css" "$color_scan"
 
 if [ "$fail" -eq 1 ]; then
   echo "HOUSE STYLE: FAILED"

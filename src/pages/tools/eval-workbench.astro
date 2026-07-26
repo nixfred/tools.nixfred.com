@@ -1,0 +1,1114 @@
+---
+// Evaluation Workbench.
+// PRD: tools-nixfred-prds/tools/06-EVAL-WORKBENCH.md
+//
+// The whole design brief is one sentence from the PRD: design an
+// evaluation that would actually catch the failure you are worried
+// about. So the tool starts from a failure in plain words, not from a
+// metric, and every number downstream, the grader choice, the
+// confidence interval, and the minimum detectable effect, is real math
+// or an honestly labeled estimate. Nothing here runs or simulates a
+// model, and no score is ever invented. Scores come only from the user
+// typing in a result from a run they already made.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import Field from '../../components/kit/Field.astro';
+import ResultPanel from '../../components/kit/ResultPanel.astro';
+import AssumptionList from '../../components/kit/AssumptionList.astro';
+import HelpNote from '../../components/kit/HelpNote.astro';
+import WarningNote from '../../components/kit/WarningNote.astro';
+import ExportBar from '../../components/kit/ExportBar.astro';
+import EmptyState from '../../components/kit/EmptyState.astro';
+import { getTool } from '../../data/registry';
+import {
+  FAILURE_CATEGORIES,
+  FAILURE_CATEGORY_LABELS,
+  CONFIDENCE_LEVELS,
+  POWER_LEVELS,
+  SCORE_MODES,
+  SAMPLES,
+  emptyState,
+} from '../../lib/tools/eval-workbench';
+
+const tool = getTool('eval-workbench')!;
+const defaultState = emptyState();
+
+const categoryOptions = FAILURE_CATEGORIES.map((c) => ({ value: c, label: FAILURE_CATEGORY_LABELS[c] }));
+const confidenceOptions = CONFIDENCE_LEVELS.map((c) => ({ value: String(c), label: `${c} percent` }));
+const powerOptions = POWER_LEVELS.map((p) => ({ value: String(p), label: `${p} percent` }));
+const scoreModeOptions = SCORE_MODES.map((m) => ({
+  value: m,
+  label: m === 'pass-fail' ? 'Pass or fail' : 'Scale of 1 to 5',
+}));
+---
+
+<ToolLayout tool={tool}>
+  <div class="workbench" data-workbench>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <label class="label" for="sample">Sample scenario</label>
+        <select id="sample" data-sample-select>
+          {SAMPLES.map((s) => <option value={s.id}>{s.name}</option>)}
+        </select>
+        <button type="button" class="btn btn-primary" data-load-sample>
+          Load sample
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <button type="button" class="btn" data-reset>Reset</button>
+      </div>
+    </div>
+
+    <p class="teaches" data-teaches role="status" aria-live="polite"></p>
+
+    <ResultPanel
+      title="Name the failure"
+      id="failure-panel"
+      headingLevel={2}
+      description="Start from the failure you are worried about, not from a metric."
+    >
+      <Field
+        label="What failure are you worried about"
+        name="failureDescription"
+        type="textarea"
+        rows={3}
+        placeholder="Describe the way this could go wrong, in plain words."
+        hint="One or two sentences. The rest of this plan is built around it."
+      />
+      <Field
+        label="Category"
+        name="category"
+        type="select"
+        options={categoryOptions}
+        value={defaultState.category}
+        hint="The closest match. The grader recommendation below follows from this."
+      />
+      <button type="button" class="btn btn-primary" data-generate-cases>
+        Generate case plan
+      </button>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Recommended grader"
+      id="grader-panel"
+      headingLevel={2}
+      description="The three grader families from Anthropic's evaluation guidance, and which one fits this failure."
+    >
+      <div data-grader-recommendation></div>
+      <div class="grader-table" data-grader-table></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Size the eval"
+      id="stats-inputs-panel"
+      headingLevel={2}
+      description="These numbers drive the confidence interval and the minimum detectable effect below."
+    >
+      <div class="stats-grid">
+        <Field
+          label="Planned sample size"
+          name="plannedN"
+          type="number"
+          min={1}
+          step={1}
+          value={defaultState.plannedN}
+          hint="How many cases you are planning to write."
+        />
+        <Field
+          label="Illustrative successes"
+          name="successes"
+          type="number"
+          min={0}
+          step={1}
+          value={defaultState.successes}
+          hint="Out of the planned sample size, for the interval preview."
+        />
+        <Field
+          label="Confidence level"
+          name="confidenceLevel"
+          type="select"
+          options={confidenceOptions}
+          value={String(defaultState.confidenceLevel)}
+          hint="For the interval and the detectable effect."
+        />
+        <Field
+          label="Statistical power"
+          name="power"
+          type="select"
+          options={powerOptions}
+          value={String(defaultState.power)}
+          hint="Chance of catching a true regression of the detectable size."
+        />
+        <Field
+          label="Pass threshold"
+          name="passThreshold"
+          type="number"
+          min={0.01}
+          max={1}
+          step={0.01}
+          value={defaultState.passThreshold}
+          hint="The pass rate a candidate must clear, as a fraction of 1."
+        />
+        <Field
+          label="Scoring rubric"
+          name="scoreMode"
+          type="select"
+          options={scoreModeOptions}
+          value={defaultState.scoreMode}
+          hint="Pass or fail, or a scale of 1 to 5."
+        />
+      </div>
+
+      <AssumptionList
+        title="What this sizing assumes"
+        name="stats-assumptions"
+        editLabel="Edit above"
+        items={[
+          { label: 'Planned sample size', value: defaultState.plannedN, editable: true, source: 'default' },
+          { label: 'Illustrative successes', value: defaultState.successes, editable: true, source: 'default' },
+          { label: 'Confidence level', value: `${defaultState.confidenceLevel} percent`, editable: true, source: 'default' },
+          { label: 'Statistical power', value: `${defaultState.power} percent`, editable: true, source: 'default' },
+          { label: 'Pass threshold', value: `${Math.round(defaultState.passThreshold * 100)} percent`, editable: true, source: 'default' },
+        ]}
+      />
+    </ResultPanel>
+
+    <ResultPanel
+      title="Confidence interval and detectable effect"
+      id="stats-panel"
+      headingLevel={2}
+      description="A real Wilson score interval and a real minimum detectable effect, not a hand wave."
+    >
+      <div data-stats-output></div>
+    </ResultPanel>
+
+    <div data-empty-wrapper>
+      <EmptyState
+        title="No case plan yet"
+        body="Click generate case plan above once you have named a failure, or load a sample to see a complete plan end to end."
+        sampleLabel="Load a sample"
+      />
+    </div>
+
+    <div class="gated" data-gated hidden>
+      <ResultPanel
+        title="Case plan"
+        id="cases-panel"
+        headingLevel={2}
+        description="Cases to write, not results. Edit the plan, or score a case once you have a real run to report."
+      >
+        <div class="cases-toolbar">
+          <button type="button" class="btn" data-add-case>Add case</button>
+        </div>
+        <div data-cases-list></div>
+      </ResultPanel>
+
+      <ResultPanel
+        title="Aggregate result"
+        id="aggregate-panel"
+        headingLevel={2}
+        description="Computed only from scores you enter. A critical case failure cannot be outvoted by an otherwise high score."
+      >
+        <div data-aggregate-output></div>
+      </ResultPanel>
+
+      <ResultPanel
+        title="Eval plan"
+        id="plan-panel"
+        headingLevel={2}
+        description="The concrete output of this workbench."
+      >
+        <div data-plan-output></div>
+        <WarningNote severity="info" title="What this eval would and would not prove">
+          <p data-plan-proves></p>
+          <p data-plan-not-proves></p>
+        </WarningNote>
+      </ResultPanel>
+
+      <div class="import-row">
+        <Field
+          label="Import a plan"
+          name="importText"
+          type="textarea"
+          rows={3}
+          placeholder="Paste a previously exported plan here."
+          hint="Accepts the JSON this tool exports."
+        />
+        <button type="button" class="btn" data-import>Import</button>
+        <span class="import-status mono" data-import-status role="status" aria-live="polite"></span>
+      </div>
+
+      <ExportBar formats={['json', 'markdown']} filename="eval-workbench-plan" />
+
+      <HelpNote title="Why does a bigger eval catch a smaller regression">
+        <p>
+          A confidence interval narrows with the square root of the
+          sample size, not with the sample size itself. Cutting the
+          detectable regression in half takes four times as many cases,
+          not two. That is why a 20 case eval can look reasonable and
+          still miss a real 5 percent regression: at that size, only a
+          much larger swing stands out from ordinary noise.
+        </p>
+        <p>
+          The minimum detectable effect above turns that relationship
+          into a plain number. It answers the question worth asking
+          before you write a single case. If the candidate actually got
+          worse by this failure, would this eval even notice.
+        </p>
+      </HelpNote>
+    </div>
+  </div>
+</ToolLayout>
+
+<style>
+  .workbench {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-3);
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    font: inherit;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+    margin-top: var(--space-2);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .teaches {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: 0;
+    min-height: 1.5em;
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-3) var(--space-4);
+  }
+
+  .cases-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: var(--space-3);
+  }
+
+  .gated {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .import-row {
+    border-top: 1px solid var(--line);
+    padding-top: var(--space-3);
+  }
+
+  .import-status {
+    display: block;
+    margin-top: var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+  }
+</style>
+
+{/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
+    class the script creates is styled with :global here. */}
+<style is:global>
+  .grader-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid var(--signal-edge);
+    border-radius: var(--radius-pill);
+    padding: 0.2rem 0.7rem;
+    margin-bottom: var(--space-2);
+  }
+
+  .grader-rationale,
+  .grader-tradeoff {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    max-width: none;
+    margin: 0 0 var(--space-1);
+  }
+
+  .grader-table {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-3);
+  }
+
+  .grader-cell {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+  }
+
+  .grader-cell[data-recommended='true'] {
+    border-color: var(--signal-edge);
+    background: var(--signal-wash);
+  }
+
+  .grader-cell-title {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text);
+    margin: 0 0 var(--space-2);
+  }
+
+  .grader-cell p {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    margin: 0 0 var(--space-1);
+    max-width: none;
+  }
+
+  .stats-row {
+    display: grid;
+    grid-template-columns: minmax(160px, 1fr) 2fr;
+    gap: var(--space-3);
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--line-faint);
+  }
+
+  .stats-row:last-child {
+    border-bottom: 0;
+  }
+
+  .stats-label {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .stats-value {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--text-sm);
+    color: var(--text);
+  }
+
+  .stats-method {
+    display: block;
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+    margin-top: var(--space-1);
+  }
+
+  .stats-honesty {
+    margin-top: var(--space-3);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--line);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    max-width: none;
+  }
+
+  .case-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+  }
+
+  .case-row[data-critical='true'] {
+    border-left-color: var(--status-beta);
+  }
+
+  .case-row[data-critical='false'] {
+    border-left-color: var(--line-strong);
+  }
+
+  .case-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .case-bucket {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .case-critical-tag {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--status-beta);
+  }
+
+  .case-row input[type='text'],
+  .case-row textarea {
+    width: 100%;
+    background: var(--bg-alt);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.4rem 0.6rem;
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+  }
+
+  .case-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+  }
+
+  .case-controls label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .case-controls select,
+  .case-controls input[type='number'] {
+    background: var(--bg-alt);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.2rem 0.4rem;
+    font: inherit;
+  }
+
+  .case-remove {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--status-alert);
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.2rem 0.55rem;
+    cursor: pointer;
+  }
+
+  .case-remove:hover {
+    border-color: var(--status-alert);
+  }
+
+  .verdict-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    padding: 0.3rem 0.8rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    margin-bottom: var(--space-3);
+  }
+
+  .verdict-badge[data-verdict='pass'] {
+    color: var(--status-live);
+    border-color: var(--status-live);
+  }
+
+  .verdict-badge[data-verdict='fail'] {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .verdict-badge[data-verdict='incomplete'],
+  .verdict-badge[data-verdict='not-scored'] {
+    color: var(--status-beta);
+    border-color: var(--status-beta);
+  }
+
+  .verdict-badge[data-verdict='no-cases'] {
+    color: var(--text-dim);
+    border-color: var(--line);
+  }
+
+  .critical-list {
+    font-size: var(--text-sm);
+    color: var(--status-alert);
+    margin: var(--space-2) 0;
+  }
+
+  .coverage-gaps {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: var(--space-2) 0 0;
+    padding-left: 1.1rem;
+  }
+
+  .plan-line {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0 0 var(--space-2);
+    max-width: none;
+  }
+
+  .plan-line strong {
+    color: var(--text);
+  }
+</style>
+
+<script>
+  import {
+    recommendGrader,
+    GRADER_PROFILES,
+    GRADER_TYPES,
+    illustrativeWilson,
+    illustrativeMde,
+    generateCasePlan,
+    addCase,
+    removeCase,
+    updateCase,
+    setResult,
+    computeAggregate,
+    describePlan,
+    normalizeResult,
+    emptyState,
+    sampleState,
+    reset,
+    serialize,
+    importState,
+    getSample,
+    SAMPLES,
+    CASE_BUCKETS,
+    CASE_BUCKET_LABELS,
+    type EvalPlanState,
+    type FailureCategory,
+    type ScoreMode,
+    type ConfidenceLevel,
+    type PowerLevel,
+    type CaseBucket,
+    type GraderType,
+  } from '../../lib/tools/eval-workbench';
+
+  const root = document.querySelector<HTMLElement>('[data-workbench]');
+  if (root) {
+    const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    let state: EvalPlanState = emptyState();
+
+    const ASSUMPTION_FIELDS: Array<{ name: string; format: (s: EvalPlanState) => string }> = [
+      { name: 'plannedN', format: (s) => String(s.plannedN) },
+      { name: 'successes', format: (s) => String(s.successes) },
+      { name: 'confidenceLevel', format: (s) => `${s.confidenceLevel} percent` },
+      { name: 'power', format: (s) => `${s.power} percent` },
+      { name: 'passThreshold', format: (s) => `${Math.round(s.passThreshold * 100)} percent` },
+    ];
+
+    /* ---------------------------------------------------------------
+     * Scalar field sync. These fields are the source of truth for
+     * everything except the case list and the results, which live in
+     * `state` directly and are re-rendered from it.
+     * ------------------------------------------------------------- */
+
+    function readScalarsFromDom() {
+      state.failureDescription =
+        (root.querySelector<HTMLTextAreaElement>('[name="failureDescription"]')?.value) ?? '';
+      state.category =
+        (root.querySelector<HTMLSelectElement>('[name="category"]')?.value as FailureCategory) ?? state.category;
+      state.scoreMode =
+        (root.querySelector<HTMLSelectElement>('[name="scoreMode"]')?.value as ScoreMode) ?? state.scoreMode;
+      state.plannedN = Number(root.querySelector<HTMLInputElement>('[name="plannedN"]')?.value) || 0;
+      state.successes = Number(root.querySelector<HTMLInputElement>('[name="successes"]')?.value) || 0;
+      state.confidenceLevel = Number(
+        root.querySelector<HTMLSelectElement>('[name="confidenceLevel"]')?.value,
+      ) as ConfidenceLevel;
+      state.power = Number(root.querySelector<HTMLSelectElement>('[name="power"]')?.value) as PowerLevel;
+      state.passThreshold =
+        Number(root.querySelector<HTMLInputElement>('[name="passThreshold"]')?.value) || 0;
+    }
+
+    function writeScalarsToDom() {
+      const setVal = (name: string, value: string) => {
+        const field = root.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
+          `[name="${name}"]`,
+        );
+        if (field) field.value = value;
+      };
+      setVal('failureDescription', state.failureDescription);
+      setVal('category', state.category);
+      setVal('scoreMode', state.scoreMode);
+      setVal('plannedN', String(state.plannedN));
+      setVal('successes', String(state.successes));
+      setVal('confidenceLevel', String(state.confidenceLevel));
+      setVal('power', String(state.power));
+      setVal('passThreshold', String(state.passThreshold));
+    }
+
+    /* ---------------------------------------------------------------
+     * Render functions. Each reads from `state` and writes to one DOM
+     * region. Nothing here mutates state.
+     * ------------------------------------------------------------- */
+
+    function renderGrader() {
+      const rec = recommendGrader(state.category);
+      const summary = el('[data-grader-recommendation]');
+      if (summary) {
+        summary.innerHTML = `
+          <p class="grader-badge">Recommended, ${esc(GRADER_PROFILES[rec.grader].label)}</p>
+          <p class="grader-rationale">${esc(rec.rationale)}</p>
+          <p class="grader-tradeoff">${esc(rec.tradeoff)}</p>
+        `;
+      }
+      const table = el('[data-grader-table]');
+      if (table) {
+        table.innerHTML = GRADER_TYPES.map((g: GraderType) => {
+          const profile = GRADER_PROFILES[g];
+          const recommended = g === rec.grader;
+          return `
+            <div class="grader-cell" data-recommended="${recommended}">
+              <p class="grader-cell-title">${esc(profile.label)}${recommended ? ', recommended' : ''}</p>
+              <p>${esc(profile.summary)}</p>
+              <p>${esc(profile.costNote)}</p>
+              <p>${esc(profile.limitNote)}</p>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    function renderStats() {
+      const wilson = illustrativeWilson(state);
+      const mde = illustrativeMde(state);
+      const target = el('[data-stats-output]');
+      if (!target) return;
+      target.innerHTML = `
+        <div class="stats-row">
+          <span class="stats-label">Observed rate</span>
+          <span class="stats-value">${(wilson.phat * 100).toFixed(1)} percent, ${wilson.successes} of ${wilson.n}</span>
+        </div>
+        <div class="stats-row">
+          <span class="stats-label">${wilson.confidenceLevel} percent confidence interval</span>
+          <span class="stats-value">${(wilson.lower * 100).toFixed(1)} to ${(wilson.upper * 100).toFixed(1)} percent
+            <span class="stats-method">${esc(wilson.method)}</span>
+          </span>
+        </div>
+        <div class="stats-row">
+          <span class="stats-label">Minimum detectable effect</span>
+          <span class="stats-value">${(mde.delta * 100).toFixed(1)} percentage points
+            <span class="stats-method">${esc(mde.method)}</span>
+          </span>
+        </div>
+        <p class="stats-honesty">
+          At n equals ${state.plannedN}, this eval cannot reliably tell a true regression smaller than
+          ${(mde.delta * 100).toFixed(1)} percentage points apart from ordinary sampling noise, at
+          ${state.confidenceLevel} percent confidence and ${state.power} percent power. A smaller
+          regression can pass through unnoticed.
+        </p>
+      `;
+    }
+
+    function renderAssumptionValues() {
+      const rows = root.querySelectorAll<HTMLElement>('[data-kit-assumptions] .assumption-row');
+      rows.forEach((row, index) => {
+        const spec = ASSUMPTION_FIELDS[index];
+        if (!spec) return;
+        const valueEl = row.querySelector<HTMLElement>('[data-assumption-value]');
+        if (valueEl) valueEl.textContent = spec.format(state);
+      });
+    }
+
+    function scoreControlHtml(evalCase: { id: string }, mode: ScoreMode, current: unknown) {
+      if (mode === 'pass-fail') {
+        const value =
+          current && typeof current === 'object' && 'passFail' in (current as Record<string, unknown>)
+            ? String((current as { passFail?: string }).passFail ?? '')
+            : '';
+        return `
+          <select data-result-passfail data-case-id="${esc(evalCase.id)}">
+            <option value="" ${value === '' ? 'selected' : ''}>Not scored</option>
+            <option value="pass" ${value === 'pass' ? 'selected' : ''}>Pass</option>
+            <option value="fail" ${value === 'fail' ? 'selected' : ''}>Fail</option>
+          </select>
+        `;
+      }
+      const scaleValue =
+        current && typeof current === 'object' && typeof (current as { scale?: number }).scale === 'number'
+          ? String((current as { scale?: number }).scale)
+          : '';
+      return `
+        <input type="number" min="1" max="5" step="1" placeholder="1 to 5"
+          data-result-scale data-case-id="${esc(evalCase.id)}" value="${esc(scaleValue)}" />
+      `;
+    }
+
+    function renderCases() {
+      const list = el('[data-cases-list]');
+      if (!list) return;
+      if (!state.cases.length) {
+        list.innerHTML = '<p class="clean-note">No cases yet. Generate a case plan or add one by hand.</p>';
+        return;
+      }
+      list.innerHTML = state.cases
+        .map((c) => {
+          const result = state.results[c.id];
+          return `
+        <div class="case-row" data-case-id="${esc(c.id)}" data-critical="${c.critical}">
+          <div class="case-head">
+            <span class="case-bucket">${esc(CASE_BUCKET_LABELS[c.bucket])}</span>
+            ${c.critical ? '<span class="case-critical-tag">Critical</span>' : ''}
+          </div>
+          <input type="text" data-case-title data-case-id="${esc(c.id)}" value="${esc(c.title)}" aria-label="Case title" />
+          <textarea rows="2" data-case-property data-case-id="${esc(c.id)}" aria-label="Expected property">${esc(c.expectedProperty)}</textarea>
+          <div class="case-controls">
+            <label>
+              Bucket
+              <select data-case-bucket data-case-id="${esc(c.id)}">
+                ${CASE_BUCKETS.map(
+                  (b: CaseBucket) =>
+                    `<option value="${b}" ${b === c.bucket ? 'selected' : ''}>${esc(CASE_BUCKET_LABELS[b])}</option>`,
+                ).join('')}
+              </select>
+            </label>
+            <label>
+              <input type="checkbox" data-case-critical data-case-id="${esc(c.id)}" ${c.critical ? 'checked' : ''} />
+              Critical
+            </label>
+            <label>
+              Weight
+              <input type="number" min="1" max="5" step="1" data-case-weight data-case-id="${esc(c.id)}" value="${c.weight}" />
+            </label>
+            <label>
+              Score
+              ${scoreControlHtml(c, state.scoreMode, result)}
+            </label>
+            <button type="button" class="case-remove" data-case-remove data-case-id="${esc(c.id)}">Remove</button>
+          </div>
+        </div>
+      `;
+        })
+        .join('');
+    }
+
+    function renderAggregate() {
+      const aggregate = computeAggregate(state);
+      const target = el('[data-aggregate-output]');
+      if (!target) return;
+      const VERDICT_TEXT: Record<string, string> = {
+        pass: 'Pass',
+        fail: 'Fail',
+        incomplete: 'Incomplete, not all cases scored',
+        'not-scored': 'Not scored yet',
+        'no-cases': 'No cases yet',
+      };
+      target.innerHTML = `
+        <p class="verdict-badge" data-verdict="${aggregate.verdict}" aria-live="polite">
+          ${esc(VERDICT_TEXT[aggregate.verdict] ?? aggregate.verdict)}
+        </p>
+        <div class="stats-row">
+          <span class="stats-label">Scored</span>
+          <span class="stats-value">${aggregate.scoredCount} of ${aggregate.totalCount} cases</span>
+        </div>
+        <div class="stats-row">
+          <span class="stats-label">Raw pass rate</span>
+          <span class="stats-value">${(aggregate.rawPassRate * 100).toFixed(1)} percent</span>
+        </div>
+        <div class="stats-row">
+          <span class="stats-label">Weighted score</span>
+          <span class="stats-value">${(aggregate.weightedScore * 100).toFixed(1)} percent</span>
+        </div>
+        ${
+          aggregate.wilson
+            ? `<div class="stats-row">
+                <span class="stats-label">${aggregate.wilson.confidenceLevel} percent confidence interval on scored cases</span>
+                <span class="stats-value">${(aggregate.wilson.lower * 100).toFixed(1)} to ${(aggregate.wilson.upper * 100).toFixed(1)} percent</span>
+              </div>`
+            : ''
+        }
+        ${
+          aggregate.hasCriticalFailure
+            ? `<p class="critical-list">Critical case failure, ${aggregate.criticalFailures.map((c) => esc(c.title)).join(', ')}. This fails the eval regardless of the score above.</p>`
+            : ''
+        }
+        ${
+          aggregate.aggregationDisagreement
+            ? '<p class="critical-list">The weighted score and the raw pass rate land on opposite sides of the pass threshold. The weighting scheme is changing the verdict, not just the number.</p>'
+            : ''
+        }
+        ${
+          aggregate.coverageGaps.length
+            ? `<ul class="coverage-gaps">${aggregate.coverageGaps.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>`
+            : ''
+        }
+      `;
+    }
+
+    function renderPlan() {
+      const plan = describePlan(state);
+      const target = el('[data-plan-output]');
+      if (target) {
+        target.innerHTML = `
+          <p class="plan-line"><strong>Category.</strong> ${esc(plan.categoryLabel)}</p>
+          <p class="plan-line"><strong>Cases in this plan.</strong> ${plan.cases.length}, ${CASE_BUCKETS.map(
+            (b: CaseBucket) => `${plan.bucketCounts[b]} ${esc(CASE_BUCKET_LABELS[b]).toLowerCase()}`,
+          ).join(', ')}.</p>
+          <p class="plan-line"><strong>Pass criterion.</strong> ${esc(plan.passCriterion)}</p>
+          ${
+            plan.coverageGaps.length
+              ? `<ul class="coverage-gaps">${plan.coverageGaps.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>`
+              : ''
+          }
+        `;
+      }
+      const proves = el('[data-plan-proves]');
+      if (proves) proves.textContent = plan.provesStatement;
+      const notProves = el('[data-plan-not-proves]');
+      if (notProves) notProves.textContent = plan.doesNotProveStatement;
+    }
+
+    function toggleGate() {
+      const empty = el('[data-empty-wrapper]');
+      const gated = el('[data-gated]');
+      const hasCases = state.cases.length > 0;
+      if (empty) (empty as HTMLElement).hidden = hasCases;
+      if (gated) (gated as HTMLElement).hidden = !hasCases;
+    }
+
+    function renderDerived() {
+      renderGrader();
+      renderStats();
+      renderAssumptionValues();
+      renderAggregate();
+      renderPlan();
+    }
+
+    function renderAll() {
+      renderDerived();
+      renderCases();
+      toggleGate();
+    }
+
+    /* ---------------------------------------------------------------
+     * Events
+     * ------------------------------------------------------------- */
+
+    root.addEventListener('input', (event) => {
+      const target = event.target as HTMLElement;
+      if (!target) return;
+
+      const scalarNames = [
+        'failureDescription',
+        'category',
+        'scoreMode',
+        'plannedN',
+        'successes',
+        'confidenceLevel',
+        'power',
+        'passThreshold',
+      ];
+      const name = target.getAttribute('name');
+      if (name && scalarNames.includes(name)) {
+        readScalarsFromDom();
+        if (name === 'scoreMode') {
+          // Switching rubric changes what a score even means, so stale
+          // scores under the old rubric are cleared rather than
+          // silently reinterpreted.
+          state.results = {};
+          renderAll();
+        } else {
+          renderDerived();
+        }
+        return;
+      }
+
+      const caseId = target.getAttribute('data-case-id');
+      if (!caseId) return;
+
+      if (target.hasAttribute('data-case-title')) {
+        state.cases = updateCase(state.cases, caseId, { title: (target as HTMLInputElement).value });
+      } else if (target.hasAttribute('data-case-property')) {
+        state.cases = updateCase(state.cases, caseId, {
+          expectedProperty: (target as HTMLTextAreaElement).value,
+        });
+      } else if (target.hasAttribute('data-case-weight')) {
+        const weight = Number((target as HTMLInputElement).value) || 1;
+        state.cases = updateCase(state.cases, caseId, { weight });
+        renderDerived();
+      } else if (target.hasAttribute('data-result-scale')) {
+        const raw = (target as HTMLInputElement).value;
+        const scale = raw === '' ? undefined : Number(raw);
+        state.results = setResult(state.results, caseId, scale === undefined ? undefined : { scale });
+        renderDerived();
+      }
+    });
+
+    root.addEventListener('change', (event) => {
+      const target = event.target as HTMLElement;
+      if (!target) return;
+      const caseId = target.getAttribute('data-case-id');
+      if (!caseId) return;
+
+      if (target.hasAttribute('data-case-bucket')) {
+        const bucket = (target as HTMLSelectElement).value as CaseBucket;
+        state.cases = updateCase(state.cases, caseId, { bucket });
+        renderDerived();
+      } else if (target.hasAttribute('data-case-critical')) {
+        const critical = (target as HTMLInputElement).checked;
+        state.cases = updateCase(state.cases, caseId, { critical });
+        renderDerived();
+      } else if (target.hasAttribute('data-result-passfail')) {
+        const value = (target as HTMLSelectElement).value as '' | 'pass' | 'fail';
+        state.results = setResult(state.results, caseId, value === '' ? undefined : { passFail: value });
+        renderDerived();
+      }
+    });
+
+    root.addEventListener('click', (event) => {
+      const target = (event.target as HTMLElement)?.closest<HTMLElement>('[data-case-remove]');
+      if (!target) return;
+      const caseId = target.getAttribute('data-case-id');
+      if (!caseId) return;
+      state.cases = removeCase(state.cases, caseId);
+      state.results = setResult(state.results, caseId, undefined);
+      renderAll();
+    });
+
+    el('[data-generate-cases]')?.addEventListener('click', () => {
+      readScalarsFromDom();
+      state.cases = generateCasePlan(state.category, state.plannedN);
+      state.results = {};
+      renderAll();
+    });
+
+    el('[data-add-case]')?.addEventListener('click', () => {
+      state.cases = addCase(state.cases, 'core');
+      renderAll();
+    });
+
+    el('[data-load-sample]')?.addEventListener('click', () => {
+      const id = el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id;
+      state = sampleState(id);
+      writeScalarsToDom();
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = getSample(id)?.teaches ?? '';
+      renderAll();
+    });
+
+    // EmptyState dispatches this same event when its own sample
+    // affordance is used, so both entry points share one handler. It
+    // carries no id, so it always loads the first sample.
+    root.addEventListener('workbench:load-sample', () => {
+      state = sampleState(SAMPLES[0].id);
+      writeScalarsToDom();
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = SAMPLES[0].teaches;
+      renderAll();
+    });
+
+    el('[data-reset]')?.addEventListener('click', () => {
+      state = reset();
+      writeScalarsToDom();
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = '';
+      renderAll();
+    });
+
+    el('[data-import]')?.addEventListener('click', () => {
+      const text = root.querySelector<HTMLTextAreaElement>('[name="importText"]')?.value ?? '';
+      const status = el('[data-import-status]');
+      const result = importState(text);
+      if (!result.ok) {
+        if (status) status.textContent = `Import failed. ${result.error}`;
+        return;
+      }
+      state = result.state;
+      writeScalarsToDom();
+      if (status) status.textContent = 'Plan imported.';
+      renderAll();
+    });
+
+    // AssumptionList reports an edit intent. This tool has no modal, so
+    // the honest response is to send focus to the real control that
+    // owns the value, which lives in the sizing panel above.
+    root.addEventListener('kit:assumption-edit', ((event: CustomEvent) => {
+      const index = event.detail?.index ?? -1;
+      const spec = ASSUMPTION_FIELDS[index];
+      if (!spec) return;
+      const field = root.querySelector<HTMLElement>(`[name="${spec.name}"]`);
+      field?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      (field as HTMLElement | null)?.focus();
+    }) as EventListener);
+
+    // ExportBar asks, the tool answers. See ExportBar.astro.
+    root.addEventListener('workbench:export', ((event: CustomEvent) => {
+      const { format, resolve } = event.detail ?? {};
+      if (typeof resolve !== 'function') return;
+      readScalarsFromDom();
+      const fmt = format === 'markdown' ? 'markdown' : 'json';
+      resolve(serialize(state, fmt));
+    }) as EventListener);
+
+    renderAll();
+  }
+</script>

@@ -1,0 +1,943 @@
+---
+// Agent Designer.
+// PRD: tools-nixfred-prds/tools/08-AGENT-DESIGNER.md
+//
+// CONSOLIDATION, per 01-INFORMATION-ARCHITECTURE.md: Agent Observatory,
+// Mission Control, Fleet Command, autonomy, and handoffs are panels of
+// this one tool, not separate tools. The panels below are Purpose,
+// Tools, Autonomy, Handoffs, Limits, and Failure.
+//
+// This is a specification and a linter for that specification, not a
+// running agent. Nothing here calls a model or executes a tool call,
+// and the panel near the bottom says so in its own words.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import Field from '../../components/kit/Field.astro';
+import ResultPanel from '../../components/kit/ResultPanel.astro';
+import HelpNote from '../../components/kit/HelpNote.astro';
+import WarningNote from '../../components/kit/WarningNote.astro';
+import ExportBar from '../../components/kit/ExportBar.astro';
+import { getTool } from '../../data/registry';
+import { SAMPLES, AUTONOMY_LEVELS, AUTONOMY_LABELS } from '../../lib/tools/agent-designer';
+
+const tool = getTool('agent-designer')!;
+
+const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: AUTONOMY_LABELS[level] }));
+---
+
+<ToolLayout tool={tool}>
+  <div class="designer" data-designer>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <label class="label" for="sample">Sample agent</label>
+        <select id="sample" data-sample-select>
+          {SAMPLES.map((s) => <option value={s.id}>{s.name}</option>)}
+        </select>
+        <button type="button" class="btn btn-primary" data-load-sample>
+          Load sample
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <button type="button" class="btn" data-copy-spec>
+          Copy specification
+        </button>
+        <button type="button" class="btn" data-reset>Reset</button>
+      </div>
+    </div>
+
+    <p class="teaches" data-teaches role="status" aria-live="polite"></p>
+
+    <WarningNote severity="info" title="What this tool does not do">
+      This is a specification and a linter for that specification. It
+      does not call a model, does not execute a tool call, and does not
+      simulate a run. Every result below is a deterministic check
+      against the fields you enter.
+    </WarningNote>
+
+    <Field label="Agent name" name="agent-name" hint="A short working title, used in the exported specification." />
+
+    <section class="panel-section" aria-labelledby="purpose-heading">
+      <h2 id="purpose-heading">Purpose</h2>
+      <p class="section-lede">
+        What the agent is for, what it must never do, what done looks
+        like, and how success is measured.
+      </p>
+      <Field
+        label="What the agent is for"
+        name="purpose-summary"
+        type="textarea"
+        rows={2}
+        hint="State the outcome, not the mechanism."
+      />
+      <Field
+        label="What it must never do"
+        name="purpose-must-never"
+        type="textarea"
+        rows={2}
+        hint="A hard boundary, stated as a rule an engineer could check the build against."
+      />
+      <Field
+        label="What done looks like"
+        name="purpose-done-looks-like"
+        type="textarea"
+        rows={2}
+        hint="What exists, or what changed, at the end of one successful run."
+      />
+      <Field
+        label="How success is measured"
+        name="purpose-success-measure"
+        type="textarea"
+        rows={2}
+        hint="A measure that holds across many runs, not just one."
+      />
+    </section>
+
+    <section class="panel-section" aria-labelledby="tools-heading">
+      <h2 id="tools-heading">Tools</h2>
+      <p class="section-lede">
+        Every tool the agent can call. Name each one plainly, state what
+        it needs and what it returns, and mark whether it mutates
+        anything, whether that mutation can be undone, and whether it
+        needs a human to confirm it first.
+      </p>
+      <div data-tools-list></div>
+      <button type="button" class="btn btn-add" data-add-tool>Add tool</button>
+    </section>
+
+    <section class="panel-section" aria-labelledby="autonomy-heading">
+      <h2 id="autonomy-heading">Autonomy</h2>
+      <p class="section-lede">
+        The level this agent runs at, checked against the tool list
+        above. A mutating, irreversible tool combined with full
+        autonomy is a contradiction, and it is flagged loudly rather
+        than accepted quietly.
+      </p>
+      <Field label="Autonomy level" name="autonomy-level" type="select" options={autonomyOptions} />
+      <p class="autonomy-description mono" data-autonomy-description></p>
+      <Field
+        label="Rationale for this level"
+        name="autonomy-rationale"
+        type="textarea"
+        rows={2}
+        hint="Why this level, not a stricter or looser one."
+      />
+    </section>
+
+    <section class="panel-section" aria-labelledby="handoffs-heading">
+      <h2 id="handoffs-heading">Handoffs</h2>
+      <p class="section-lede">
+        When this agent escalates to a human or to another agent, what
+        context moves with the handoff, and who owns the task
+        afterward. An escalation path with no owner is where work gets
+        dropped silently, so it is flagged.
+      </p>
+      <div data-handoffs-list></div>
+      <button type="button" class="btn btn-add" data-add-handoff>Add handoff</button>
+    </section>
+
+    <section class="panel-section" aria-labelledby="limits-heading">
+      <h2 id="limits-heading">Limits</h2>
+      <p class="section-lede">
+        The budget this agent runs inside, and the conditions that stop
+        it. An agent with no stop condition can keep running
+        indefinitely once started.
+      </p>
+      <div class="limits-grid">
+        <Field label="Step budget" name="limits-step-budget" type="number" min={0} step={1} hint="Maximum tool calls in one run." />
+        <Field label="Time budget, minutes" name="limits-time-budget" type="number" min={0} step={1} hint="Maximum wall clock minutes in one run." />
+        <Field label="Cost ceiling" name="limits-cost-ceiling" hint={'For example, "$0.50 per ticket".'} />
+      </div>
+      <Field
+        label="Retry policy"
+        name="limits-retry-policy"
+        type="textarea"
+        rows={2}
+        hint="What happens when a tool call fails once, and how many times it is retried."
+      />
+      <Field
+        label="Stop conditions"
+        name="limits-stop-conditions"
+        type="textarea"
+        rows={3}
+        hint="One condition per line. At least one is required."
+      />
+    </section>
+
+    <section class="panel-section" aria-labelledby="failure-heading">
+      <h2 id="failure-heading">Failure</h2>
+      <p class="section-lede">
+        What the agent does when a tool call fails, when it is
+        uncertain rather than wrong, and when it detects it has looped.
+        An agent with no defined uncertain behavior is incomplete.
+      </p>
+      <Field
+        label="When a tool call fails"
+        name="failure-tool-failure"
+        type="textarea"
+        rows={2}
+      />
+      <Field
+        label="When the agent is uncertain"
+        name="failure-uncertainty"
+        type="textarea"
+        rows={2}
+        hint="Uncertain is not the same as wrong. State what it does when it does not know."
+      />
+      <Field
+        label="When the agent detects a loop"
+        name="failure-loop"
+        type="textarea"
+        rows={2}
+      />
+    </section>
+
+    <ResultPanel
+      title="Specification status"
+      id="status-panel"
+      description="Completeness is every required field filled in. Ready to build also requires zero unresolved critical flags, so a full form with a contradiction still is not ready."
+    >
+      <p class="ready-line" data-ready-line role="status" aria-live="polite"></p>
+      <div class="completeness-bar" data-completeness-bar>
+        <span class="completeness-fill" data-completeness-fill></span>
+      </div>
+      <p class="completeness-label mono" data-completeness-label></p>
+      <div data-missing-list></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Risk flags"
+      id="flags-panel"
+      description="Contradictions the tool can check for automatically. Silence here means these specific checks found nothing, not that the design is safe."
+    >
+      <div data-flags></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Full specification"
+      id="spec-panel"
+      description="Everything above, in one document. Copyable, and identical to the markdown export below."
+    >
+      <pre class="spec-preview mono" data-spec-preview></pre>
+    </ResultPanel>
+
+    <ExportBar formats={['json', 'markdown']} filename="agent-designer-spec" />
+
+    <HelpNote title="Why does the autonomy level have to match the tool list?">
+      <p>
+        An autonomy level is a promise about who is watching. Suggest
+        only promises nothing acts without a human choosing to. Act
+        with confirmation promises a checkpoint before anything
+        mutating happens. Fully autonomous promises the opposite: no
+        checkpoint at all, ever.
+      </p>
+      <p>
+        A tool list is a set of facts about what the agent can actually
+        do. When a fact contradicts a promise, for example an
+        irreversible delete sitting inside a fully autonomous agent,
+        one of them is wrong. The tool cannot know which one you meant,
+        so it flags the contradiction instead of quietly picking a
+        side.
+      </p>
+    </HelpNote>
+  </div>
+</ToolLayout>
+
+<style>
+  .designer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-3);
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    font: inherit;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .btn-add {
+    align-self: flex-start;
+  }
+
+  .teaches {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: 0;
+    min-height: 1.5em;
+  }
+
+  .panel-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+    background: var(--panel);
+  }
+
+  .panel-section h2 {
+    font-size: var(--text-lg);
+    margin-bottom: 0;
+  }
+
+  .section-lede {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    max-width: var(--measure);
+    margin-bottom: var(--space-2);
+  }
+
+  .limits-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--space-3);
+  }
+
+  .autonomy-description {
+    font-size: var(--text-sm);
+    color: var(--text-dim);
+    margin: calc(-1 * var(--space-2)) 0 0;
+  }
+
+  .completeness-bar {
+    height: 8px;
+    background: var(--chassis-700);
+    border-radius: var(--radius-pill);
+    overflow: hidden;
+    margin: var(--space-2) 0;
+  }
+
+  .completeness-fill {
+    display: block;
+    height: 100%;
+    background: var(--accent-deep);
+  }
+
+  .completeness-label {
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    margin: 0 0 var(--space-3);
+  }
+
+  .ready-line {
+    font-size: var(--text-sm);
+    font-weight: 700;
+    margin: 0 0 var(--space-2);
+  }
+
+  .spec-preview {
+    white-space: pre-wrap;
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    max-height: 32rem;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+    margin: 0;
+  }
+</style>
+
+{/* Runtime injected markup, meaning anything built by the script below
+    as an HTML string, is NOT reached by Astro's scoped CSS. Every class
+    the script creates is styled globally here, matching the same
+    pattern used by the Prompt Laboratory tool. */}
+<style is:global>
+  .row {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
+    position: relative;
+  }
+
+  .row-legend {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    padding: 0 var(--space-1);
+  }
+
+  .row-remove {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-2);
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-dim);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.2rem 0.55rem;
+    cursor: pointer;
+  }
+
+  .row-remove:hover {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .row-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+  }
+
+  .row-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .row-label {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .row-input {
+    width: 100%;
+    font-family: var(--font-mono);
+    color: var(--text);
+    background: var(--bg-alt);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.6rem;
+  }
+
+  .row-input:focus-visible {
+    border-color: var(--accent);
+    outline: none;
+  }
+
+  .row-flags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-top: var(--space-3);
+  }
+
+  .row-check {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .row-check input:disabled {
+    opacity: 0.4;
+  }
+
+  .empty-list-note {
+    font-size: var(--text-sm);
+    color: var(--text-dim);
+    margin: 0 0 var(--space-2);
+  }
+
+  .flag {
+    display: block;
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+  }
+
+  .flag[data-severity='critical'] {
+    border-left-color: var(--status-alert);
+  }
+
+  .flag[data-severity='warning'] {
+    border-left-color: var(--status-beta);
+  }
+
+  .flag[data-severity='info'] {
+    border-left-color: var(--readout-700);
+  }
+
+  .flag-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: baseline;
+    margin-bottom: var(--space-1);
+  }
+
+  .flag-severity {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text);
+  }
+
+  .flag-panel {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+  }
+
+  .flag-message {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0;
+    max-width: none;
+  }
+
+  .clean-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+
+  .missing-item {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+</style>
+
+<script>
+  import {
+    evaluateSpec,
+    computeCompleteness,
+    isReadyToBuild,
+    serialize,
+    emptyState,
+    sampleState,
+    getSample,
+    SAMPLES,
+    AUTONOMY_LEVELS,
+    AUTONOMY_LABELS,
+    AUTONOMY_DESCRIPTIONS,
+    type AgentSpecState,
+    type ToolSpec,
+    type Handoff,
+    type AutonomyLevel,
+  } from '../../lib/tools/agent-designer';
+
+  const root = document.querySelector<HTMLElement>('[data-designer]');
+  if (root) {
+    const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+    const byName = <T extends HTMLElement>(name: string) => root.querySelector<T>(`[name="${name}"]`);
+
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escAttr = (s: string) => esc(s).replace(/"/g, '&quot;');
+
+    let rowCounter = 0;
+    const nextId = (prefix: string) => `${prefix}-${(rowCounter += 1)}`;
+
+    /* ---------------------------------------------------------------- *
+     * Tool rows
+     * ---------------------------------------------------------------- */
+
+    function toolRowHtml(tool: ToolSpec, index: number): string {
+      return `
+        <fieldset class="row" data-tool-row data-tool-id="${escAttr(tool.id)}">
+          <legend class="row-legend">Tool ${index + 1}</legend>
+          <button type="button" class="row-remove" data-remove-tool aria-label="Remove tool ${index + 1}">Remove</button>
+          <div class="row-grid">
+            <label class="row-field">
+              <span class="row-label">Name</span>
+              <input type="text" class="row-input" data-tool-field="name" value="${escAttr(tool.name)}" placeholder="For example, Send email">
+            </label>
+            <label class="row-field">
+              <span class="row-label">Input</span>
+              <input type="text" class="row-input" data-tool-field="input" value="${escAttr(tool.input)}" placeholder="What it needs to be called">
+            </label>
+            <label class="row-field">
+              <span class="row-label">Output</span>
+              <input type="text" class="row-input" data-tool-field="output" value="${escAttr(tool.output)}" placeholder="What it returns">
+            </label>
+          </div>
+          <div class="row-flags">
+            <label class="row-check">
+              <input type="checkbox" data-tool-field="mutates" ${tool.mutates ? 'checked' : ''}>
+              Mutates something
+            </label>
+            <label class="row-check">
+              <input type="checkbox" data-tool-field="irreversible" ${tool.irreversible ? 'checked' : ''} ${tool.mutates ? '' : 'disabled'}>
+              Irreversible
+            </label>
+            <label class="row-check">
+              <input type="checkbox" data-tool-field="needsConfirmation" ${tool.needsConfirmation ? 'checked' : ''}>
+              Needs confirmation
+            </label>
+          </div>
+        </fieldset>`;
+    }
+
+    function handoffRowHtml(handoff: Handoff, index: number): string {
+      return `
+        <fieldset class="row" data-handoff-row data-handoff-id="${escAttr(handoff.id)}">
+          <legend class="row-legend">Handoff ${index + 1}</legend>
+          <button type="button" class="row-remove" data-remove-handoff aria-label="Remove handoff ${index + 1}">Remove</button>
+          <div class="row-grid">
+            <label class="row-field">
+              <span class="row-label">Trigger</span>
+              <input type="text" class="row-input" data-handoff-field="trigger" value="${escAttr(handoff.trigger)}" placeholder="The condition that causes escalation">
+            </label>
+            <label class="row-field">
+              <span class="row-label">Escalates to</span>
+              <input type="text" class="row-input" data-handoff-field="target" value="${escAttr(handoff.target)}" placeholder="A human role, or another agent">
+            </label>
+            <label class="row-field">
+              <span class="row-label">Context transferred</span>
+              <input type="text" class="row-input" data-handoff-field="contextTransferred" value="${escAttr(handoff.contextTransferred)}" placeholder="What information moves with it">
+            </label>
+            <label class="row-field">
+              <span class="row-label">Owner after handoff</span>
+              <input type="text" class="row-input" data-handoff-field="owner" value="${escAttr(handoff.owner)}" placeholder="Who is accountable for it now">
+            </label>
+          </div>
+        </fieldset>`;
+    }
+
+    function renderToolRows(tools: ToolSpec[]) {
+      const list = el('[data-tools-list]');
+      if (!list) return;
+      list.innerHTML = tools.length
+        ? tools.map((t, i) => toolRowHtml(t, i)).join('')
+        : '<p class="empty-list-note">No tools yet. Add at least one.</p>';
+    }
+
+    function renderHandoffRows(handoffs: Handoff[]) {
+      const list = el('[data-handoffs-list]');
+      if (!list) return;
+      list.innerHTML = handoffs.length
+        ? handoffs.map((h, i) => handoffRowHtml(h, i)).join('')
+        : '<p class="empty-list-note">No handoffs yet. Most bounded agents need at least one escalation path.</p>';
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Reading and writing state
+     * ---------------------------------------------------------------- */
+
+    function readTools(): ToolSpec[] {
+      return Array.from(root.querySelectorAll<HTMLElement>('[data-tool-row]')).map((row) => ({
+        id: row.dataset.toolId ?? nextId('tool'),
+        name: row.querySelector<HTMLInputElement>('[data-tool-field="name"]')?.value ?? '',
+        input: row.querySelector<HTMLInputElement>('[data-tool-field="input"]')?.value ?? '',
+        output: row.querySelector<HTMLInputElement>('[data-tool-field="output"]')?.value ?? '',
+        mutates: row.querySelector<HTMLInputElement>('[data-tool-field="mutates"]')?.checked ?? false,
+        irreversible: row.querySelector<HTMLInputElement>('[data-tool-field="irreversible"]')?.checked ?? false,
+        needsConfirmation:
+          row.querySelector<HTMLInputElement>('[data-tool-field="needsConfirmation"]')?.checked ?? false,
+      }));
+    }
+
+    function readHandoffs(): Handoff[] {
+      return Array.from(root.querySelectorAll<HTMLElement>('[data-handoff-row]')).map((row) => ({
+        id: row.dataset.handoffId ?? nextId('handoff'),
+        trigger: row.querySelector<HTMLInputElement>('[data-handoff-field="trigger"]')?.value ?? '',
+        target: row.querySelector<HTMLInputElement>('[data-handoff-field="target"]')?.value ?? '',
+        contextTransferred:
+          row.querySelector<HTMLInputElement>('[data-handoff-field="contextTransferred"]')?.value ?? '',
+        owner: row.querySelector<HTMLInputElement>('[data-handoff-field="owner"]')?.value ?? '',
+      }));
+    }
+
+    function readState(): AgentSpecState {
+      const level = (byName<HTMLSelectElement>('autonomy-level')?.value ?? 'suggest-only') as AutonomyLevel;
+      return {
+        name: byName<HTMLInputElement>('agent-name')?.value ?? '',
+        purpose: {
+          summary: byName<HTMLTextAreaElement>('purpose-summary')?.value ?? '',
+          mustNever: byName<HTMLTextAreaElement>('purpose-must-never')?.value ?? '',
+          doneLooksLike: byName<HTMLTextAreaElement>('purpose-done-looks-like')?.value ?? '',
+          successMeasure: byName<HTMLTextAreaElement>('purpose-success-measure')?.value ?? '',
+        },
+        tools: readTools(),
+        autonomy: {
+          level: AUTONOMY_LEVELS.includes(level) ? level : 'suggest-only',
+          rationale: byName<HTMLTextAreaElement>('autonomy-rationale')?.value ?? '',
+        },
+        handoffs: readHandoffs(),
+        limits: {
+          stepBudget: Number(byName<HTMLInputElement>('limits-step-budget')?.value ?? 0) || 0,
+          timeBudgetMinutes: Number(byName<HTMLInputElement>('limits-time-budget')?.value ?? 0) || 0,
+          costCeiling: byName<HTMLInputElement>('limits-cost-ceiling')?.value ?? '',
+          retryPolicy: byName<HTMLTextAreaElement>('limits-retry-policy')?.value ?? '',
+          stopConditions: (byName<HTMLTextAreaElement>('limits-stop-conditions')?.value ?? '')
+            .split('\n')
+            .map((s) => s.trim())
+            .filter(Boolean),
+        },
+        failure: {
+          onToolFailure: byName<HTMLTextAreaElement>('failure-tool-failure')?.value ?? '',
+          onUncertainty: byName<HTMLTextAreaElement>('failure-uncertainty')?.value ?? '',
+          onLoopDetected: byName<HTMLTextAreaElement>('failure-loop')?.value ?? '',
+        },
+      };
+    }
+
+    function writeState(state: AgentSpecState) {
+      const setValue = (name: string, value: string) => {
+        const field = byName<HTMLInputElement | HTMLTextAreaElement>(name);
+        if (field) field.value = value;
+      };
+
+      setValue('agent-name', state.name);
+      setValue('purpose-summary', state.purpose.summary);
+      setValue('purpose-must-never', state.purpose.mustNever);
+      setValue('purpose-done-looks-like', state.purpose.doneLooksLike);
+      setValue('purpose-success-measure', state.purpose.successMeasure);
+      setValue('autonomy-level', state.autonomy.level);
+      setValue('autonomy-rationale', state.autonomy.rationale);
+      setValue('limits-step-budget', state.limits.stepBudget > 0 ? String(state.limits.stepBudget) : '');
+      setValue(
+        'limits-time-budget',
+        state.limits.timeBudgetMinutes > 0 ? String(state.limits.timeBudgetMinutes) : '',
+      );
+      setValue('limits-cost-ceiling', state.limits.costCeiling);
+      setValue('limits-retry-policy', state.limits.retryPolicy);
+      setValue('limits-stop-conditions', state.limits.stopConditions.join('\n'));
+      setValue('failure-tool-failure', state.failure.onToolFailure);
+      setValue('failure-uncertainty', state.failure.onUncertainty);
+      setValue('failure-loop', state.failure.onLoopDetected);
+
+      renderToolRows(state.tools);
+      renderHandoffRows(state.handoffs);
+      updateAutonomyDescription();
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Rendering results
+     * ---------------------------------------------------------------- */
+
+    function updateAutonomyDescription() {
+      const level = (byName<HTMLSelectElement>('autonomy-level')?.value ?? 'suggest-only') as AutonomyLevel;
+      const description = el('[data-autonomy-description]');
+      if (description) description.textContent = AUTONOMY_DESCRIPTIONS[level] ?? '';
+    }
+
+    function renderCompleteness(state: AgentSpecState) {
+      const completeness = computeCompleteness(state);
+      const fill = el<HTMLElement>('[data-completeness-fill]');
+      const label = el('[data-completeness-label]');
+      const missing = el('[data-missing-list]');
+      if (fill) fill.style.width = `${completeness.score}%`;
+      if (label) {
+        label.textContent = `${completeness.score} percent complete, ${completeness.filled} of ${completeness.total} required fields.`;
+      }
+      if (missing) {
+        missing.innerHTML = completeness.missing.length
+          ? `<p class="missing-item">Missing: ${completeness.missing.map(esc).join('. ')}.</p>`
+          : '<p class="clean-note">Every required field is filled in.</p>';
+      }
+      return completeness;
+    }
+
+    function renderFlags(state: AgentSpecState) {
+      const flags = evaluateSpec(state);
+      const target = el('[data-flags]');
+      if (target) {
+        target.innerHTML = flags.length
+          ? flags
+              .map(
+                (f) => `
+          <div class="flag" data-severity="${f.severity}">
+            <div class="flag-head">
+              <span class="flag-severity">${esc(f.severity)}</span>
+              <span class="flag-panel">${esc(f.panel)} panel</span>
+            </div>
+            <p class="flag-message">${esc(f.message)}</p>
+          </div>`,
+              )
+              .join('')
+          : '<p class="clean-note">No contradictions detected by these checks. That is not the same as a safe design; it means these specific rules found nothing to object to.</p>';
+      }
+      return flags;
+    }
+
+    function renderReadyLine(state: AgentSpecState) {
+      const line = el('[data-ready-line]');
+      if (!line) return;
+      const ready = isReadyToBuild(state);
+      line.textContent = ready
+        ? 'Ready to build. An engineer could read this specification and build the agent.'
+        : 'Not ready to build yet. See the missing fields and risk flags below.';
+    }
+
+    function renderSpecPreview(state: AgentSpecState) {
+      const target = el<HTMLElement>('[data-spec-preview]');
+      if (target) target.textContent = serialize(state, 'markdown');
+    }
+
+    function renderAll() {
+      const state = readState();
+      renderReadyLine(state);
+      renderCompleteness(state);
+      renderFlags(state);
+      renderSpecPreview(state);
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Wiring
+     * ---------------------------------------------------------------- */
+
+    root.addEventListener('input', renderAll);
+    root.addEventListener('change', (event) => {
+      const target = event.target as HTMLElement;
+      // Autonomy select changed: refresh its description line too.
+      if (target.matches('[name="autonomy-level"]')) updateAutonomyDescription();
+      // A tool's mutates checkbox governs whether irreversible is even
+      // a meaningful question for that row.
+      if (target instanceof HTMLInputElement && target.dataset.toolField === 'mutates') {
+        const row = target.closest<HTMLElement>('[data-tool-row]');
+        const irreversible = row?.querySelector<HTMLInputElement>('[data-tool-field="irreversible"]');
+        if (irreversible) {
+          irreversible.disabled = !target.checked;
+          if (!target.checked) irreversible.checked = false;
+        }
+      }
+      renderAll();
+    });
+
+    root.addEventListener('click', (event) => {
+      const target = event.target as HTMLElement;
+
+      if (target.closest('[data-remove-tool]')) {
+        target.closest('[data-tool-row]')?.remove();
+        renumberRows('[data-tool-row]', 'Tool');
+        renderAll();
+        return;
+      }
+      if (target.closest('[data-remove-handoff]')) {
+        target.closest('[data-handoff-row]')?.remove();
+        renumberRows('[data-handoff-row]', 'Handoff');
+        renderAll();
+        return;
+      }
+    });
+
+    function renumberRows(selector: string, label: string) {
+      root.querySelectorAll<HTMLElement>(selector).forEach((row, i) => {
+        const legend = row.querySelector('.row-legend');
+        if (legend) legend.textContent = `${label} ${i + 1}`;
+        const removeBtn = row.querySelector<HTMLButtonElement>('.row-remove');
+        if (removeBtn) removeBtn.setAttribute('aria-label', `Remove ${label.toLowerCase()} ${i + 1}`);
+      });
+    }
+
+    el('[data-add-tool]')?.addEventListener('click', () => {
+      const tools = readTools();
+      tools.push({
+        id: nextId('tool'),
+        name: '',
+        input: '',
+        output: '',
+        mutates: false,
+        irreversible: false,
+        needsConfirmation: false,
+      });
+      renderToolRows(tools);
+      renderAll();
+    });
+
+    el('[data-add-handoff]')?.addEventListener('click', () => {
+      const handoffs = readHandoffs();
+      handoffs.push({ id: nextId('handoff'), trigger: '', target: '', contextTransferred: '', owner: '' });
+      renderHandoffRows(handoffs);
+      renderAll();
+    });
+
+    el('[data-load-sample]')?.addEventListener('click', () => {
+      const id = el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id;
+      writeState(sampleState(id));
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = getSample(id)?.teaches ?? '';
+      renderAll();
+    });
+
+    el('[data-reset]')?.addEventListener('click', () => {
+      writeState(emptyState());
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = '';
+      renderAll();
+    });
+
+    el('[data-copy-spec]')?.addEventListener('click', async () => {
+      const text = serialize(readState(), 'markdown');
+      try {
+        await navigator.clipboard.writeText(text);
+        const teaches = el('[data-teaches]');
+        if (teaches) teaches.textContent = 'Specification copied to the clipboard.';
+      } catch {
+        const teaches = el('[data-teaches]');
+        if (teaches) teaches.textContent = 'The browser blocked clipboard access.';
+      }
+    });
+
+    // ExportBar asks; the tool answers. See src/components/kit/ExportBar.astro.
+    root.addEventListener('workbench:export', ((event: CustomEvent) => {
+      const { format, resolve } = event.detail ?? {};
+      if (typeof resolve !== 'function') return;
+      const fmt = format === 'markdown' ? 'markdown' : 'json';
+      resolve(serialize(readState(), fmt));
+    }) as EventListener);
+
+    root.addEventListener('workbench:load-sample', () => {
+      writeState(sampleState());
+      renderAll();
+    });
+
+    // Start from the empty state so the empty case (zero tools, zero
+    // handoffs) renders its own list note rather than nothing at all.
+    writeState(emptyState());
+    renderAll();
+  }
+</script>

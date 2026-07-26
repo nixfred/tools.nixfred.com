@@ -1,0 +1,1008 @@
+---
+// Drift Monitor.
+//
+// tools-nixfred-prds/tools/12-DRIFT-MONITOR.md, framed for this build
+// as: tell a real behavior change apart from ordinary sampling noise
+// before you go chasing it. See src/lib/tools/drift-monitor.ts for the
+// scope note on how this differs from the PRD's literal acceptance
+// criteria.
+//
+// All arithmetic lives in that file. This file is the shell: it
+// renders the form once from an empty state, renders a results
+// skeleton whose numbers are filled in by client script, and wires the
+// kit's event contract (workbench:load-sample, workbench:export).
+// Nothing here computes a p value.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import { getTool } from '../../data/registry';
+import {
+  Field,
+  ResultPanel,
+  AssumptionList,
+  HelpNote,
+  WarningNote,
+  ExportBar,
+  EmptyState,
+} from '../../components/kit';
+import {
+  emptyState,
+  sampleState,
+  analyzeDrift,
+  ASSUMPTIONS_TEXT,
+  VERDICT_LABELS,
+  SAMPLES,
+} from '../../lib/tools/drift-monitor';
+
+const tool = getTool('drift-monitor')!;
+
+const initial = emptyState();
+
+const ALPHA_OPTIONS = [
+  { value: '0.1', label: '0.10 (90 percent confidence)' },
+  { value: '0.05', label: '0.05 (95 percent confidence)' },
+  { value: '0.01', label: '0.01 (99 percent confidence)' },
+];
+const POWER_OPTIONS = [
+  { value: '0.8', label: '80 percent' },
+  { value: '0.9', label: '90 percent' },
+];
+const EVAL_SET_OPTIONS = [
+  { value: 'no', label: 'No, it is the same eval set' },
+  { value: 'yes', label: 'Yes, it changed' },
+];
+const SAMPLE_OPTIONS = SAMPLES.map((s) => ({ value: s.id, label: s.name }));
+
+// Numeric assumption rows. Order is load bearing: the client script
+// updates row N by index, so this array and the script's writer must
+// stay in the same order. Modeled on the cost planner page identical
+// pattern for its own derived assumption rows.
+function runParameterItems(state: ReturnType<typeof emptyState>) {
+  return [
+    { label: 'Significance level (alpha)', value: `${state.alpha}`, editable: false, source: 'the significance level field above' },
+    { label: 'Confidence level used per rate', value: `${((1 - state.alpha) * 100).toFixed(0)} percent`, editable: false, source: '1 minus alpha' },
+    { label: 'Metrics monitored together', value: `${state.metricsMonitored}`, editable: false, source: 'the metrics monitored field above' },
+    { label: 'Bonferroni corrected alpha', value: `${(state.alpha / state.metricsMonitored).toFixed(4)}`, editable: false, source: 'alpha divided by metrics monitored' },
+    { label: 'Target power for detectable effect', value: `${(state.targetPower * 100).toFixed(0)} percent`, editable: false, source: 'the target power field above' },
+    { label: 'Smallest change said to matter', value: `${(state.minMeaningfulEffect * 100).toFixed(2)} points`, editable: false, source: 'the meaningful effect field above' },
+  ];
+}
+---
+
+<ToolLayout tool={tool}>
+  <div class="monitor" data-monitor>
+    <WarningNote severity="info" title="This is a statistics instrument, not a live feed">
+      <p>
+        Enter aggregate counts from two snapshots, a baseline and a current measurement,
+        for one metric at a time. Every number below is computed locally from exactly
+        those four counts and the settings you choose. This tool does not connect to any
+        evaluation system, does not import a snapshot file, and does not monitor anything
+        continuously.
+      </p>
+    </WarningNote>
+
+    <div id="monitor-empty-state">
+      <EmptyState
+        title="Enter a baseline and a current count, or start from an example"
+        body="Fill in the sample size and success count for a baseline measurement and a current one below, or load one of four worked examples, each tuned to land on a different verdict."
+        sampleLabel="Load an example comparison"
+      />
+    </div>
+
+    <div id="monitor-app" data-monitor-app hidden>
+      <section class="controls" aria-labelledby="scenario-heading">
+        <h2 id="scenario-heading" class="eyebrow">Example scenario</h2>
+        <div class="controls-grid">
+          <Field
+            label="Example"
+            name="sample"
+            type="select"
+            options={SAMPLE_OPTIONS}
+            value={SAMPLES[0].id}
+            hint="Each example is tuned to land on a different verdict; see the note under the verdict once loaded."
+          />
+        </div>
+        <div class="controls-actions">
+          <button type="button" class="btn btn-primary" data-load-sample-btn>Load this example</button>
+          <button type="button" class="btn" data-reset>Reset to empty</button>
+        </div>
+        <p class="teaches" data-teaches role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="metric-name" aria-labelledby="metric-name-heading">
+        <h2 id="metric-name-heading" class="eyebrow">What is being measured</h2>
+        <Field
+          label="Metric name"
+          name="metric-name"
+          type="text"
+          value={initial.metricName}
+          placeholder="For example: eval pass rate, tool call success rate"
+          hint="Free text. Shown in the exported report; does not affect the arithmetic."
+        />
+      </section>
+
+      <div class="snapshots">
+        <section class="snapshot" aria-labelledby="baseline-heading">
+          <h2 id="baseline-heading" class="eyebrow">Baseline</h2>
+          <div class="field-grid">
+            <Field
+              label="Sample size"
+              name="baseline-n"
+              type="number"
+              value={initial.baseline.n || undefined}
+              min={1}
+              step="1"
+              hint="How many cases the baseline measurement covered."
+            />
+            <Field
+              label="Successes"
+              name="baseline-successes"
+              type="number"
+              value={initial.baseline.successes || undefined}
+              min={0}
+              step="1"
+              hint="How many of them passed."
+            />
+          </div>
+        </section>
+
+        <section class="snapshot" aria-labelledby="current-heading">
+          <h2 id="current-heading" class="eyebrow">Current</h2>
+          <div class="field-grid">
+            <Field
+              label="Sample size"
+              name="current-n"
+              type="number"
+              value={initial.current.n || undefined}
+              min={1}
+              step="1"
+              hint="How many cases the current measurement covered."
+            />
+            <Field
+              label="Successes"
+              name="current-successes"
+              type="number"
+              value={initial.current.successes || undefined}
+              min={0}
+              step="1"
+              hint="How many of them passed."
+            />
+          </div>
+        </section>
+      </div>
+
+      <section class="settings" aria-labelledby="settings-heading">
+        <h2 id="settings-heading" class="eyebrow">Comparison settings</h2>
+        <div class="field-grid">
+          <Field
+            label="Significance level"
+            name="alpha"
+            type="select"
+            options={ALPHA_OPTIONS}
+            value={String(initial.alpha)}
+            hint="The chance of a false alarm this test accepts, before any multiple comparisons correction."
+          />
+          <Field
+            label="Metrics monitored together"
+            name="metrics-monitored"
+            type="number"
+            value={initial.metricsMonitored}
+            min={1}
+            step="1"
+            hint="How many metrics are being watched in the same sweep. Drives the Bonferroni correction below."
+          />
+          <Field
+            label="Target power"
+            name="target-power"
+            type="select"
+            options={POWER_OPTIONS}
+            value={String(initial.targetPower)}
+            hint="The detection rate the minimum detectable effect below is calculated for."
+          />
+          <Field
+            label="Smallest change that matters"
+            name="min-meaningful-effect"
+            type="number"
+            value={initial.minMeaningfulEffect * 100}
+            min={0.01}
+            step="0.5"
+            hint="In percentage points. A verdict of insufficient data means this comparison could not reliably detect a change this size."
+          />
+          <Field
+            label="Did the evaluation set change?"
+            name="eval-set-changed"
+            type="select"
+            options={EVAL_SET_OPTIONS}
+            value={initial.evalSetChanged}
+            hint="If the test cases themselves are different, no statistic below can separate that from a real behavior change."
+          />
+        </div>
+      </section>
+
+      <ResultPanel
+        id="verdict-panel"
+        title="Verdict"
+        status="idle"
+        description="The plain language answer, and the one number it is actually based on."
+      >
+        <p class="verdict-label" data-field="verdict-label" data-verdict="noise"></p>
+        <p class="verdict-reason" data-field="verdict-reason"></p>
+      </ResultPanel>
+
+      <ResultPanel
+        id="interval-panel"
+        title="Confidence interval on the difference"
+        status="idle"
+        description="Current rate minus baseline rate. Whether this crosses zero is the actual answer to whether this is real."
+      >
+        <p class="diff-line mono" data-field="diff-line"></p>
+        <div class="interval-bar" data-interval-bar>
+          <div class="interval-track">
+            <div class="interval-fill" data-interval-fill></div>
+            <div class="interval-zero" data-interval-zero></div>
+          </div>
+          <div class="interval-scale">
+            <span data-field="scale-min"></span>
+            <span class="interval-scale-zero">0</span>
+            <span data-field="scale-max"></span>
+          </div>
+        </div>
+        <p class="interval-note" data-field="interval-note"></p>
+      </ResultPanel>
+
+      <ResultPanel
+        id="rates-panel"
+        title="Rates and Wilson intervals"
+        status="idle"
+        description="Wilson score intervals, not the normal approximation, so these stay inside 0 to 100 percent even at extreme rates."
+        headingLevel={2}
+      >
+        <div class="result-table" role="table" aria-label="Rates and intervals">
+          <div class="result-row result-head" role="row">
+            <span role="columnheader">Snapshot</span>
+            <span role="columnheader">Rate</span>
+            <span role="columnheader">Wilson interval</span>
+          </div>
+          <div class="result-row" role="row">
+            <span role="rowheader">Baseline</span>
+            <span role="cell" class="mono" data-field="baseline-rate">0.00 percent</span>
+            <span role="cell" class="mono" data-field="baseline-interval">0.00 to 0.00 percent</span>
+          </div>
+          <div class="result-row" role="row">
+            <span role="rowheader">Current</span>
+            <span role="cell" class="mono" data-field="current-rate">0.00 percent</span>
+            <span role="cell" class="mono" data-field="current-interval">0.00 to 0.00 percent</span>
+          </div>
+        </div>
+      </ResultPanel>
+
+      <ResultPanel
+        id="tests-panel"
+        title="Significance tests"
+        status="idle"
+        description="Both a large sample test and a small sample exact test, because small samples are the common case in eval work."
+        headingLevel={2}
+      >
+        <div class="result-table" role="table" aria-label="Significance tests">
+          <div class="result-row result-head" role="row">
+            <span role="columnheader">Test</span>
+            <span role="columnheader">Statistic</span>
+            <span role="columnheader">p value</span>
+          </div>
+          <div class="result-row" role="row">
+            <span role="rowheader" data-field="z-row-label">Two proportion z test</span>
+            <span role="cell" class="mono" data-field="z-statistic">z = 0.000</span>
+            <span role="cell" class="mono" data-field="z-p">0.0000</span>
+          </div>
+          <div class="result-row" role="row">
+            <span role="rowheader" data-field="fisher-row-label">Fisher exact test</span>
+            <span role="cell" class="mono" data-field="fisher-statistic">exact</span>
+            <span role="cell" class="mono" data-field="fisher-p">0.0000</span>
+          </div>
+        </div>
+        <p class="which-test" data-field="which-test-reason"></p>
+        <p class="bonferroni-line mono" data-field="bonferroni-line"></p>
+      </ResultPanel>
+
+      <ResultPanel
+        id="power-panel"
+        title="Statistical power"
+        status="idle"
+        description="What this comparison could have detected, independent of what it actually found."
+        headingLevel={2}
+      >
+        <p class="mde-line mono" data-field="mde-line"></p>
+        <p class="mde-note">
+          This is the minimum detectable effect: the smallest true difference these exact
+          sample sizes could catch at the target power above. It does not depend on what
+          was actually observed. This tool deliberately does not report "observed power",
+          the chance of detecting the effect that was actually seen, because that number is
+          a fixed rescaling of the p value already shown above and is considered poor
+          practice for exactly that reason.
+        </p>
+      </ResultPanel>
+
+      <div id="monitor-warnings">
+        <WarningNote severity="warning" title="Worth checking before you trust this verdict">
+          <ul data-field="warnings-list"></ul>
+        </WarningNote>
+      </div>
+
+      <AssumptionList
+        name="run-parameters"
+        title="Run parameters"
+        items={runParameterItems(initial)}
+      />
+
+      <WarningNote severity="info" title="What this comparison assumes">
+        <ul class="assumptions-list">
+          {ASSUMPTIONS_TEXT.map((a) => <li>{a}</li>)}
+        </ul>
+      </WarningNote>
+
+      <HelpNote title="How the math above works">
+        <p>
+          Each rate gets a Wilson score interval instead of the textbook normal
+          approximation, because the normal approximation can claim a confidence
+          interval outside 0 to 100 percent and collapses to zero width at 0 or 100
+          percent, exactly where pass rates often sit. The interval on the difference is
+          built from those same two Wilson intervals by Newcombe's hybrid method rather
+          than a fresh normal approximation on the difference itself, for the same
+          reason.
+        </p>
+        <p>
+          The two proportion z test is the standard large sample test. The Fisher exact
+          test computes the exact probability from the hypergeometric distribution
+          instead of relying on that approximation, which matters when a sample is small
+          or a rate is extreme. The tests panel above says which one this comparison
+          should trust, using the standard rule of thumb that every expected cell in the
+          comparison table should be at least 5 for the normal approximation to hold.
+        </p>
+        <p>
+          Monitoring more than one metric at once is corrected with the Bonferroni
+          method: testing m metrics at once and asking for the interval to exclude zero
+          at the ordinary 95 percent level means one metric in twenty will clear that bar
+          by chance alone, even with no real change anywhere. This tool corrects for that
+          by widening the interval to 1 minus alpha divided by the number of metrics,
+          rather than leaving it to a footnote.
+        </p>
+      </HelpNote>
+
+      <div class="actions">
+        <ExportBar formats={['json', 'markdown']} filename="drift-monitor-report" />
+      </div>
+    </div>
+  </div>
+</ToolLayout>
+
+<style>
+  .monitor {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .eyebrow {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: var(--space-3);
+  }
+
+  .controls {
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-4);
+  }
+
+  .controls-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: var(--space-3) var(--space-4);
+  }
+
+  .controls-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+  }
+
+  .teaches {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: var(--space-2) 0 0;
+    min-height: 1.5em;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .metric-name {
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-4);
+  }
+
+  .snapshots {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    gap: var(--space-4);
+  }
+
+  .snapshot {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    background: var(--panel);
+  }
+
+  .settings {
+    border-top: 1px solid var(--line);
+    padding-top: var(--space-4);
+  }
+
+  .field-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+    gap: var(--space-2) var(--space-4);
+  }
+
+  #verdict-panel,
+  #interval-panel,
+  #rates-panel,
+  #tests-panel,
+  #power-panel {
+    margin-bottom: 0;
+  }
+
+  .verdict-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xl);
+    font-weight: 700;
+    letter-spacing: var(--track-tight);
+    margin: 0 0 var(--space-2);
+  }
+
+  .verdict-reason {
+    max-width: var(--measure);
+    color: var(--text-muted);
+    margin: 0;
+  }
+
+  .diff-line {
+    font-size: var(--text-lg);
+    margin: 0 0 var(--space-3);
+  }
+
+  .interval-bar {
+    margin-bottom: var(--space-2);
+  }
+
+  .interval-track {
+    position: relative;
+    height: 10px;
+    background: var(--chassis-700);
+    border-radius: var(--radius-pill);
+    overflow: visible;
+  }
+
+  .interval-fill {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    background: var(--accent-deep);
+    border-radius: var(--radius-pill);
+  }
+
+  .interval-zero {
+    position: absolute;
+    top: -3px;
+    width: 2px;
+    height: 16px;
+    background: var(--text-faint);
+  }
+
+  .interval-scale {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+    margin-top: var(--space-1);
+  }
+
+  .interval-scale-zero {
+    color: var(--text-faint);
+  }
+
+  .interval-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    margin: 0;
+  }
+
+  .result-table {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: var(--space-3);
+  }
+
+  .result-row {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr 1.4fr;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--line-faint);
+  }
+
+  .result-row:last-child {
+    border-bottom: 0;
+  }
+
+  .result-head {
+    background: var(--bg-alt);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .result-row span[role='rowheader'] {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+  }
+
+  .result-row span[role='cell'] {
+    font-size: var(--text-sm);
+  }
+
+  .which-test {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0 0 var(--space-2);
+    max-width: var(--measure);
+  }
+
+  .bonferroni-line {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    margin: 0;
+  }
+
+  .mde-line {
+    font-size: var(--text-lg);
+    margin: 0 0 var(--space-2);
+  }
+
+  .mde-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    max-width: var(--measure);
+    margin: 0;
+  }
+
+  .assumptions-list {
+    margin: 0;
+    padding-left: 1.2rem;
+    max-width: var(--measure);
+  }
+
+  .assumptions-list li {
+    margin-bottom: var(--space-2);
+  }
+
+  .assumptions-list li:last-child {
+    margin-bottom: 0;
+  }
+
+  .actions {
+    border-top: 1px solid var(--line);
+    padding-top: var(--space-3);
+  }
+
+  @media (max-width: 34rem) {
+    .result-row {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .result-row span:nth-child(3) {
+      grid-column: 1 / -1;
+    }
+  }
+</style>
+
+{/* Runtime injected markup is NOT reached by Astro scoped CSS (the
+    Astro lesson: tokens leak otherwise, and so does everything else),
+    so every class the script writes text into or toggles is styled
+    globally here rather than in the scoped block above. The warnings
+    list items are the one piece of markup this page builds at
+    runtime. */}
+<style is:global>
+  .verdict-label[data-verdict='real-change'] {
+    color: var(--status-alert);
+  }
+
+  .verdict-label[data-verdict='noise'] {
+    color: var(--status-live);
+  }
+
+  .verdict-label[data-verdict='insufficient-data'] {
+    color: var(--status-beta);
+  }
+
+  .verdict-label[data-verdict='invalid-comparison'] {
+    color: var(--status-alert);
+  }
+
+  [data-field='warnings-list'] li {
+    margin-bottom: var(--space-2);
+  }
+
+  [data-field='warnings-list'] li:last-child {
+    margin-bottom: 0;
+  }
+</style>
+
+<script>
+  import type { DriftState, DriftSnapshot, EvalSetChanged } from '../../lib/tools/drift-monitor';
+  import {
+    emptyState,
+    sampleState,
+    reset as resetState,
+    validate,
+    analyzeDrift,
+    getSample,
+    serialize,
+    SAMPLES,
+    VERDICT_LABELS,
+  } from '../../lib/tools/drift-monitor';
+
+  const app = document.querySelector<HTMLElement>('[data-monitor-app]');
+  const emptyStateEl = document.getElementById('monitor-empty-state');
+  if (!app || !emptyStateEl) throw new Error('drift monitor: shell markup is missing');
+
+  let state: DriftState = emptyState();
+
+  /* ---- element lookups -------------------------------------------- */
+
+  function field(id: string): HTMLInputElement | HTMLSelectElement {
+    const el = document.getElementById(id);
+    if (!el) throw new Error(`drift monitor: missing field #${id}`);
+    return el as HTMLInputElement | HTMLSelectElement;
+  }
+
+  const sampleField = field('field-sample') as HTMLSelectElement;
+  const metricNameField = field('field-metric-name') as HTMLInputElement;
+  const baselineNField = field('field-baseline-n') as HTMLInputElement;
+  const baselineSuccessesField = field('field-baseline-successes') as HTMLInputElement;
+  const currentNField = field('field-current-n') as HTMLInputElement;
+  const currentSuccessesField = field('field-current-successes') as HTMLInputElement;
+  const alphaField = field('field-alpha') as HTMLSelectElement;
+  const metricsMonitoredField = field('field-metrics-monitored') as HTMLInputElement;
+  const targetPowerField = field('field-target-power') as HTMLSelectElement;
+  const minMeaningfulEffectField = field('field-min-meaningful-effect') as HTMLInputElement;
+  const evalSetChangedField = field('field-eval-set-changed') as HTMLSelectElement;
+
+  /* ---- reading and writing the form ---------------------------------
+
+     The DOM is the only place state lives between recomputes; these
+     two functions are the sole translation points between it and the
+     DriftState shape the pure functions in drift-monitor.ts expect. */
+
+  function readSnapshot(nField: HTMLInputElement, successesField: HTMLInputElement): DriftSnapshot {
+    const n = nField.valueAsNumber;
+    const successes = successesField.valueAsNumber;
+    return {
+      n: Number.isNaN(n) ? 0 : n,
+      successes: Number.isNaN(successes) ? 0 : successes,
+    };
+  }
+
+  function readState(): DriftState {
+    return {
+      metricName: metricNameField.value,
+      baseline: readSnapshot(baselineNField, baselineSuccessesField),
+      current: readSnapshot(currentNField, currentSuccessesField),
+      alpha: Number(alphaField.value) || 0.05,
+      metricsMonitored: Number.isNaN(metricsMonitoredField.valueAsNumber)
+        ? 1
+        : metricsMonitoredField.valueAsNumber,
+      targetPower: Number(targetPowerField.value) || 0.8,
+      minMeaningfulEffect: Number.isNaN(minMeaningfulEffectField.valueAsNumber)
+        ? 0.05
+        : minMeaningfulEffectField.valueAsNumber / 100,
+      evalSetChanged: (evalSetChangedField.value as EvalSetChanged) || 'no',
+    };
+  }
+
+  function writeState(next: DriftState): void {
+    metricNameField.value = next.metricName;
+    baselineNField.value = next.baseline.n ? String(next.baseline.n) : '';
+    baselineSuccessesField.value = next.baseline.successes || next.baseline.successes === 0
+      ? String(next.baseline.successes)
+      : '';
+    currentNField.value = next.current.n ? String(next.current.n) : '';
+    currentSuccessesField.value = next.current.successes || next.current.successes === 0
+      ? String(next.current.successes)
+      : '';
+    alphaField.value = String(next.alpha);
+    metricsMonitoredField.value = String(next.metricsMonitored);
+    targetPowerField.value = String(next.targetPower);
+    minMeaningfulEffectField.value = String(next.minMeaningfulEffect * 100);
+    evalSetChangedField.value = next.evalSetChanged;
+  }
+
+  /* ---- rendering ---------------------------------------------------- */
+
+  function setText(id: string, text: string) {
+    const el = document.querySelector<HTMLElement>(`[data-field="${id}"]`);
+    if (el) el.textContent = text;
+  }
+
+  function setPanelStatus(panelId: string, status: 'idle' | 'ready') {
+    const panel = document.getElementById(panelId);
+    if (panel) panel.dataset.resultStatus = status;
+  }
+
+  function pct(fraction: number): string {
+    return `${(fraction * 100).toFixed(2)} percent`;
+  }
+
+  function signedPts(fraction: number): string {
+    const value = fraction * 100;
+    const sign = value >= 0 ? '+' : '';
+    return `${sign}${value.toFixed(2)} points`;
+  }
+
+  function updateAssumptionRow(index: number, value: string) {
+    const row = document.querySelector<HTMLElement>(
+      `[data-list-name="run-parameters"] .assumption-row[data-index="${index}"] [data-assumption-value]`,
+    );
+    if (row) row.textContent = value;
+  }
+
+  function hasMeaningfulInput(s: DriftState): boolean {
+    return s.baseline.n > 0 && s.current.n > 0;
+  }
+
+  function renderIntervalBar(diff: number, lower: number, upper: number) {
+    const fill = document.querySelector<HTMLElement>('[data-interval-fill]');
+    const zero = document.querySelector<HTMLElement>('[data-interval-zero]');
+    if (!fill || !zero) return;
+
+    // Domain is symmetric around zero and padded beyond whichever bound
+    // is furthest out, so the bar always has room to show the zero
+    // marker clearly rather than pinning it to an edge.
+    const furthest = Math.max(Math.abs(lower), Math.abs(upper), 0.02);
+    const domain = furthest * 1.3;
+    const toPct = (value: number) => ((value + domain) / (2 * domain)) * 100;
+
+    const leftPct = toPct(lower);
+    const rightPct = toPct(upper);
+    fill.style.left = `${leftPct}%`;
+    fill.style.width = `${Math.max(0.5, rightPct - leftPct)}%`;
+    zero.style.left = `${toPct(0)}%`;
+
+    setText('scale-min', signedPts(-domain));
+    setText('scale-max', signedPts(domain));
+  }
+
+  function recompute() {
+    state = readState();
+
+    const show = hasMeaningfulInput(state);
+    app!.hidden = !show;
+    emptyStateEl!.hidden = show;
+    if (!show) return;
+
+    const analysis = analyzeDrift(state);
+
+    // Verdict.
+    const verdictLabelEl = document.querySelector<HTMLElement>('[data-field="verdict-label"]');
+    if (verdictLabelEl) {
+      verdictLabelEl.textContent = VERDICT_LABELS[analysis.verdict];
+      verdictLabelEl.dataset.verdict = analysis.verdict;
+    }
+    setText('verdict-reason', analysis.verdictReason);
+    setPanelStatus('verdict-panel', 'ready');
+
+    // Confidence interval on the difference.
+    setText(
+      'diff-line',
+      `${signedPts(analysis.differenceInterval.diff)} (current minus baseline)`,
+    );
+    renderIntervalBar(
+      analysis.differenceInterval.diff,
+      analysis.differenceInterval.lower,
+      analysis.differenceInterval.upper,
+    );
+    const crosses = analysis.differenceInterval.lower <= 0 && analysis.differenceInterval.upper >= 0;
+    setText(
+      'interval-note',
+      `${(analysis.adjustedConfidence * 100).toFixed(2)} percent interval: ${signedPts(analysis.differenceInterval.lower)} to ${signedPts(analysis.differenceInterval.upper)}. ${
+        crosses
+          ? 'This interval includes zero, so a true difference of exactly zero cannot be ruled out.'
+          : 'This interval excludes zero.'
+      }`,
+    );
+    setPanelStatus('interval-panel', 'ready');
+
+    // Rates.
+    setText('baseline-rate', pct(analysis.baselineRate));
+    setText(
+      'baseline-interval',
+      `${pct(analysis.baselineInterval.lower)} to ${pct(analysis.baselineInterval.upper)}`,
+    );
+    setText('current-rate', pct(analysis.currentRate));
+    setText(
+      'current-interval',
+      `${pct(analysis.currentInterval.lower)} to ${pct(analysis.currentInterval.upper)}`,
+    );
+    setPanelStatus('rates-panel', 'ready');
+
+    // Significance tests.
+    setText('z-row-label', `Two proportion z test${analysis.primary.primaryTest === 'z' ? ' (primary)' : ''}`);
+    setText('z-statistic', `z = ${analysis.zTest.z.toFixed(4)}`);
+    setText('z-p', analysis.zTest.pValue.toFixed(4));
+    setText(
+      'fisher-row-label',
+      `Fisher exact test${analysis.primary.primaryTest === 'fisher' ? ' (primary)' : ''}`,
+    );
+    if (analysis.fisher.computed) {
+      setText('fisher-statistic', 'exact, hypergeometric');
+      setText('fisher-p', analysis.fisher.pValue.toFixed(4));
+    } else {
+      setText('fisher-statistic', 'skipped');
+      setText('fisher-p', analysis.fisher.note);
+    }
+    setText('which-test-reason', analysis.primary.reason);
+    setText(
+      'bonferroni-line',
+      `Bonferroni corrected p value for the primary test: ${analysis.adjustedPValue.toFixed(4)} (raw ${analysis.primaryPValue.toFixed(4)}, ${state.metricsMonitored} metric${state.metricsMonitored === 1 ? '' : 's'} monitored).`,
+    );
+    setPanelStatus('tests-panel', 'ready');
+
+    // Power.
+    setText(
+      'mde-line',
+      `Minimum detectable effect at these sample sizes: ${(analysis.minimumDetectableEffect * 100).toFixed(2)} points`,
+    );
+    setPanelStatus('power-panel', 'ready');
+
+    // Warnings.
+    const warningsBlock = document.getElementById('monitor-warnings');
+    const warningsList = document.querySelector<HTMLElement>('[data-field="warnings-list"]');
+    if (warningsBlock && warningsList) {
+      warningsBlock.hidden = analysis.warnings.length === 0;
+      warningsList.innerHTML = analysis.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('');
+    }
+
+    // Run parameter assumption rows, order matches runParameterItems().
+    updateAssumptionRow(0, `${state.alpha}`);
+    updateAssumptionRow(1, `${((1 - state.alpha) * 100).toFixed(0)} percent`);
+    updateAssumptionRow(2, `${state.metricsMonitored}`);
+    updateAssumptionRow(3, `${analysis.adjustedAlpha.toFixed(4)}`);
+    updateAssumptionRow(4, `${(state.targetPower * 100).toFixed(0)} percent`);
+    updateAssumptionRow(5, `${(state.minMeaningfulEffect * 100).toFixed(2)} points`);
+
+    applyErrors(validate(state));
+  }
+
+  function escapeHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function applyErrors(issues: ReturnType<typeof validate>) {
+    document.querySelectorAll<HTMLElement>('[data-field-error]').forEach((el) => {
+      el.hidden = true;
+      const text = el.querySelector<HTMLElement>('[data-field-error-text]');
+      if (text) text.textContent = '';
+      const controlId = el.id.replace(/-error$/, '');
+      document.getElementById(controlId)?.removeAttribute('aria-invalid');
+    });
+
+    const fieldToControlId: Record<string, string> = {
+      'baseline.n': 'field-baseline-n',
+      'baseline.successes': 'field-baseline-successes',
+      'current.n': 'field-current-n',
+      'current.successes': 'field-current-successes',
+      metricsMonitored: 'field-metrics-monitored',
+      alpha: 'field-alpha',
+      targetPower: 'field-target-power',
+      minMeaningfulEffect: 'field-min-meaningful-effect',
+      evalSetChanged: 'field-eval-set-changed',
+    };
+
+    for (const issue of issues) {
+      const controlId = fieldToControlId[issue.field];
+      if (!controlId) continue;
+      const errorEl = document.getElementById(`${controlId}-error`);
+      if (errorEl) {
+        errorEl.hidden = false;
+        const text = errorEl.querySelector<HTMLElement>('[data-field-error-text]');
+        if (text) text.textContent = issue.message;
+      }
+      if (issue.severity === 'error') {
+        document.getElementById(controlId)?.setAttribute('aria-invalid', 'true');
+      }
+    }
+  }
+
+  /* ---- wiring -------------------------------------------------------- */
+
+  [
+    metricNameField, baselineNField, baselineSuccessesField, currentNField,
+    currentSuccessesField, alphaField, metricsMonitoredField, targetPowerField,
+    minMeaningfulEffectField, evalSetChangedField,
+  ].forEach((el) => {
+    el.addEventListener('input', recompute);
+    el.addEventListener('change', recompute);
+  });
+
+  function loadSample(id: string) {
+    writeState(sampleState(id));
+    const teaches = document.querySelector<HTMLElement>('[data-teaches]');
+    if (teaches) teaches.textContent = getSample(id)?.teaches ?? '';
+    recompute();
+  }
+
+  document.querySelector('[data-load-sample-btn]')?.addEventListener('click', () => {
+    loadSample(sampleField.value);
+  });
+
+  emptyStateEl.addEventListener('workbench:load-sample', () => {
+    loadSample(SAMPLES[0].id);
+  });
+
+  document.querySelector('[data-reset]')?.addEventListener('click', () => {
+    writeState(resetState());
+    const teaches = document.querySelector<HTMLElement>('[data-teaches]');
+    if (teaches) teaches.textContent = '';
+    recompute();
+  });
+
+  app.addEventListener('workbench:export', ((event: CustomEvent) => {
+    const { format, resolve } = event.detail ?? {};
+    if (typeof resolve !== 'function') return;
+    try {
+      const fmt = format === 'markdown' ? 'markdown' : 'json';
+      resolve(serialize(readState(), fmt));
+    } catch {
+      resolve(null);
+    }
+  }) as EventListener);
+
+  // Initial paint matches the server rendered empty state.
+  recompute();
+</script>

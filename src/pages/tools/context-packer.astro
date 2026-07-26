@@ -1,0 +1,957 @@
+---
+// Context Packer.
+// PRD: tools-nixfred-prds/tools/03-CONTEXT-PACKER.md
+//
+// Planning simulator, not a tokenizer guarantee, and it says so wherever
+// a token count appears. The one property the whole tool exists to hold
+// is that a block marked required is never silently dropped: if required
+// content alone exceeds the budget, the pack is refused, loudly, rather
+// than quietly shipped without one of them.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import Field from '../../components/kit/Field.astro';
+import ResultPanel from '../../components/kit/ResultPanel.astro';
+import AssumptionList from '../../components/kit/AssumptionList.astro';
+import HelpNote from '../../components/kit/HelpNote.astro';
+import WarningNote from '../../components/kit/WarningNote.astro';
+import ExportBar from '../../components/kit/ExportBar.astro';
+import EmptyState from '../../components/kit/EmptyState.astro';
+import { getTool } from '../../data/registry';
+import { SAMPLES, STRATEGIES, STRATEGY_LABELS, BUDGET_PRESETS } from '../../lib/tools/context-packer';
+
+const tool = getTool('context-packer')!;
+
+const strategyOptions = STRATEGIES.map((s) => ({ value: s, label: STRATEGY_LABELS[s] }));
+const presetOptions = [
+  { value: '', label: 'Choose a preset' },
+  ...BUDGET_PRESETS.map((p) => ({ value: String(p.value), label: p.label })),
+];
+
+const assumptionItems = [
+  {
+    label: 'Manual token estimates',
+    value: 'Taken exactly as entered',
+    source: 'your input',
+    editable: false,
+  },
+  {
+    label: 'Pasted content token estimate',
+    value: '1 token per 4 characters',
+    source: 'heuristic, not a tokenizer',
+    editable: false,
+  },
+  {
+    label: 'Value density priority weight',
+    value: 'Highest priority block scores N, lowest scores 1',
+    source: 'fixed rule',
+    editable: false,
+  },
+  {
+    label: 'High truncation risk threshold',
+    value: 'Under 2% of budget left unused',
+    source: 'fixed rule',
+    editable: false,
+  },
+  {
+    label: 'Medium truncation risk threshold',
+    value: 'Under 10% of budget left unused',
+    source: 'fixed rule',
+    editable: false,
+  },
+];
+---
+
+<ToolLayout tool={tool}>
+  <div class="packer" data-packer>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <label class="label" for="sample">Sample scenario</label>
+        <select id="sample" data-sample-select>
+          {SAMPLES.map((s) => <option value={s.id}>{s.name}</option>)}
+        </select>
+        <button type="button" class="btn btn-primary" data-load-sample>
+          Load sample
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <button type="button" class="btn" data-add-block>Add block</button>
+        <button type="button" class="btn" data-reset>Reset</button>
+      </div>
+    </div>
+
+    <p class="status-line" data-teaches role="status" aria-live="polite"></p>
+
+    <div class="budget-strategy">
+      <Field
+        label="Budget"
+        name="budget"
+        type="number"
+        min={0}
+        step={100}
+        value={8000}
+        hint="Total tokens available for this context window."
+        id="budget-input"
+      />
+      <Field
+        label="Budget preset"
+        name="budget-preset"
+        type="select"
+        id="budget-preset"
+        options={presetOptions}
+        hint="Optional shortcut. Sets the budget field above."
+      />
+      <Field
+        label="Packing strategy"
+        name="strategy"
+        type="select"
+        id="strategy-select"
+        options={strategyOptions}
+        value="priority-order"
+      />
+    </div>
+
+    <p class="strategy-rule mono" data-strategy-rule role="status" aria-live="polite"></p>
+
+    <div data-empty-wrap>
+      <EmptyState
+        title="No context blocks yet"
+        body="Add a labeled block for each piece of context an agent would receive, mark the ones that must never be dropped, and choose a budget. Or load the sample to see a realistic agent task packed for you."
+        sampleLabel="Load the support agent sample"
+      />
+    </div>
+
+    <div data-workspace hidden>
+      <section class="blocks-section">
+        <h2 class="section-title">Context blocks</h2>
+        <div data-block-list></div>
+      </section>
+
+      <ResultPanel
+        title="Pack status"
+        id="status-panel"
+        description="Whether this pack is feasible at all, before anything else is decided."
+      >
+        <div data-overflow-warning hidden>
+          <WarningNote severity="alert" title="This pack was refused">
+            <p data-overflow-message></p>
+          </WarningNote>
+        </div>
+        <div data-status-body></div>
+      </ResultPanel>
+
+      <ResultPanel
+        title="Packed order"
+        id="packed-panel"
+        description="What made it in, in final order, and why each block landed where it did."
+      >
+        <div data-packed-list></div>
+      </ResultPanel>
+
+      <ResultPanel
+        title="Excluded blocks"
+        id="excluded-panel"
+        description="What did not fit under the chosen strategy, and how short it was."
+      >
+        <div data-excluded-list></div>
+      </ResultPanel>
+
+      <ResultPanel
+        title="Suggested summarization targets"
+        id="summarize-panel"
+        description="A starting point for how much a block would need to shrink to fit. A suggestion, not a rewrite."
+      >
+        <div data-summarize-list></div>
+      </ResultPanel>
+
+      <AssumptionList items={assumptionItems} title="Fixed rules this pack leans on" />
+
+      <ExportBar formats={['json', 'markdown']} filename="context-packer-report" />
+
+      <HelpNote title="Why not just find the optimal pack?">
+        <p>
+          Packing blocks into a budget is a knapsack problem, and solving
+          it exactly gets expensive fast as the number of blocks grows.
+          Every strategy here is a deterministic greedy rule instead: it
+          states what it is optimizing for, tries blocks in that order,
+          and takes the first ones that fit. That is not the best
+          possible pack. It is an honest, explainable one, and the
+          reason attached to every block says exactly which rule put it
+          there or left it out.
+        </p>
+        <p>
+          The one rule that is never greedy is required content. It is
+          reserved first, unconditionally, before any strategy runs. If
+          it does not fit, nothing gets packed at all, and the tool says
+          so instead of quietly leaving a required block behind.
+        </p>
+      </HelpNote>
+    </div>
+  </div>
+</ToolLayout>
+
+<style>
+  .packer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-3);
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    font: inherit;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .status-line {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: 0;
+    min-height: 1.5em;
+  }
+
+  .budget-strategy {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-3);
+    align-items: start;
+  }
+
+  .strategy-rule {
+    color: var(--text-dim);
+    font-size: var(--text-sm);
+    margin: calc(var(--space-3) * -1) 0 0;
+  }
+
+  .section-title {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: var(--space-3);
+  }
+
+  .blocks-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+</style>
+
+{/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
+    class the script creates below is styled here with :global, exactly
+    as the reference tool page does. */}
+<style is:global>
+  /* These two match src/components/kit/Field.astro's own control styling.
+     They cannot come FROM Field, because the block list rows below are
+     built by the script as HTML strings, not rendered as Field
+     instances, so they need their own copy of the same visual rule. */
+  .control {
+    width: 100%;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    background: var(--bg-alt);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.55rem 0.7rem;
+    line-height: 1.5;
+  }
+
+  .control-select {
+    appearance: none;
+    cursor: pointer;
+  }
+
+  .block-row {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    background: var(--panel);
+    margin-bottom: var(--space-3);
+  }
+
+  .block-row-head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-3);
+  }
+
+  .block-rank {
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .block-row-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .row-btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-1) var(--space-2);
+    cursor: pointer;
+  }
+
+  .row-btn:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .row-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .row-btn-remove:hover:not(:disabled) {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .block-row-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--space-3);
+    align-items: end;
+    margin-bottom: var(--space-3);
+  }
+
+  .block-row-grid .field-label {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    display: block;
+    margin-bottom: var(--space-1);
+  }
+
+  .block-checkbox {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    align-self: end;
+    padding-bottom: 0.55rem;
+  }
+
+  .block-content-label {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    display: block;
+    margin-bottom: var(--space-1);
+  }
+
+  .block-tokens {
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    margin: var(--space-2) 0 0;
+  }
+
+  .status-summary {
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    color: var(--text-muted);
+  }
+
+  .status-summary strong {
+    color: var(--text);
+  }
+
+  .risk-tag {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+  }
+
+  .risk-tag[data-risk='low'] {
+    color: var(--status-live);
+    border-color: var(--status-live);
+  }
+
+  .risk-tag[data-risk='medium'] {
+    color: var(--status-beta);
+    border-color: var(--status-beta);
+  }
+
+  .risk-tag[data-risk='high'],
+  .risk-tag[data-risk='blocked'] {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .placement-item {
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+  }
+
+  .placement-item[data-kind='packed'] {
+    border-left-color: var(--status-live);
+  }
+
+  .placement-item[data-kind='excluded'] {
+    border-left-color: var(--status-alert);
+  }
+
+  .placement-item[data-kind='overflow'] {
+    border-left-color: var(--status-beta);
+  }
+
+  .placement-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: baseline;
+    margin-bottom: var(--space-1);
+  }
+
+  .placement-label {
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .placement-meta {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+  }
+
+  .placement-tag {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    padding: 0.1rem 0.5rem;
+  }
+
+  .placement-reason {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0;
+    max-width: none;
+  }
+
+  .clean-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+
+  .summarize-item {
+    border-left: 2px solid var(--accent-deep);
+    padding-left: var(--space-3);
+    margin-bottom: var(--space-3);
+  }
+
+  .summarize-head {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text);
+    margin: 0 0 var(--space-1);
+  }
+
+  .summarize-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    margin: 0;
+  }
+</style>
+
+<script>
+  import {
+    pack,
+    addBlock,
+    removeBlock,
+    updateBlock,
+    moveBlock,
+    tokensOf,
+    viewBlocks,
+    sampleState,
+    emptyState,
+    getSample,
+    serialize,
+    validate,
+    SAMPLES,
+    STRATEGY_LABELS,
+    STRATEGY_RULES,
+    ESTIMATE_METHOD_LABELS,
+    type PackerState,
+    type ContextBlock,
+    type Strategy,
+    type PackResult,
+    type PackedBlockResult,
+    type ExcludedBlockResult,
+  } from '../../lib/tools/context-packer';
+
+  const root = document.querySelector<HTMLElement>('[data-packer]');
+  if (root) {
+    const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+
+    let state: PackerState = emptyState();
+
+    const esc = (value: unknown) =>
+      String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    const say = (message: string) => {
+      const status = el('[data-teaches]');
+      if (status) status.textContent = message;
+    };
+
+    /* ---------------------------------------------------------------- *
+     * Top level fields: budget, preset, strategy
+     * ---------------------------------------------------------------- */
+
+    const budgetInput = el<HTMLInputElement>('#budget-input');
+    const presetSelect = el<HTMLSelectElement>('#budget-preset');
+    const strategySelect = el<HTMLSelectElement>('#strategy-select');
+    const strategyRule = el('[data-strategy-rule]');
+
+    function syncTopFields() {
+      if (budgetInput) budgetInput.value = String(state.budget);
+      if (strategySelect) strategySelect.value = state.strategy;
+      if (strategyRule) strategyRule.textContent = STRATEGY_RULES[state.strategy];
+    }
+
+    budgetInput?.addEventListener('input', () => {
+      state = { ...state, budget: Number(budgetInput.value) || 0 };
+      renderResults();
+    });
+
+    presetSelect?.addEventListener('change', () => {
+      if (!presetSelect.value) return;
+      state = { ...state, budget: Number(presetSelect.value) };
+      if (budgetInput) budgetInput.value = String(state.budget);
+      renderResults();
+    });
+
+    strategySelect?.addEventListener('change', () => {
+      state = { ...state, strategy: strategySelect.value as Strategy };
+      if (strategyRule) strategyRule.textContent = STRATEGY_RULES[state.strategy];
+      renderResults();
+    });
+
+    /* ---------------------------------------------------------------- *
+     * Empty state / workspace visibility
+     * ---------------------------------------------------------------- */
+
+    const emptyWrap = el<HTMLElement>('[data-empty-wrap]');
+    const workspace = el<HTMLElement>('[data-workspace]');
+
+    function syncVisibility() {
+      const hasBlocks = state.blocks.length > 0;
+      if (emptyWrap) emptyWrap.hidden = hasBlocks;
+      if (workspace) workspace.hidden = !hasBlocks;
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Block list, structural render
+     *
+     * This rebuilds every row. It runs after add, remove, move, sample
+     * load, and reset, all of which legitimately change which rows exist
+     * or their order. It must NOT run on every keystroke, or every field
+     * would lose focus after one character. See the input and change
+     * listeners below, which update state and the read only parts of
+     * the page WITHOUT rebuilding the row markup itself.
+     * ---------------------------------------------------------------- */
+
+    const blockList = el<HTMLElement>('[data-block-list]');
+
+    function blockRowHtml(block: ContextBlock, rank: number, total: number): string {
+      const tokens = tokensOf(block);
+      const isManual = block.estimateMethod === 'manual';
+      return `
+        <div class="block-row" data-block-row="${esc(block.id)}">
+          <div class="block-row-head">
+            <span class="block-rank mono">Priority ${rank} of ${total}</span>
+            <div class="block-row-actions">
+              <button type="button" class="row-btn" data-move="up" data-target="${esc(block.id)}" ${rank === 1 ? 'disabled' : ''} aria-label="Move ${esc(block.label || 'this block')} up in priority">Move up</button>
+              <button type="button" class="row-btn" data-move="down" data-target="${esc(block.id)}" ${rank === total ? 'disabled' : ''} aria-label="Move ${esc(block.label || 'this block')} down in priority">Move down</button>
+              <button type="button" class="row-btn row-btn-remove" data-remove data-target="${esc(block.id)}" aria-label="Remove ${esc(block.label || 'this block')}">Remove</button>
+            </div>
+          </div>
+          <div class="block-row-grid">
+            <div>
+              <label class="field-label" for="label-${esc(block.id)}">Label</label>
+              <input class="control" id="label-${esc(block.id)}" type="text" data-field="label" value="${esc(block.label)}" />
+            </div>
+            <div>
+              <label class="field-label" for="method-${esc(block.id)}">Estimate method</label>
+              <select class="control control-select" id="method-${esc(block.id)}" data-field="method">
+                <option value="manual" ${isManual ? 'selected' : ''}>Manual estimate</option>
+                <option value="chars-per-4" ${!isManual ? 'selected' : ''}>From pasted content</option>
+              </select>
+            </div>
+            <div data-manual-wrap ${isManual ? '' : 'hidden'}>
+              <label class="field-label" for="manual-${esc(block.id)}">Manual tokens</label>
+              <input class="control" id="manual-${esc(block.id)}" type="number" min="0" step="1" data-field="manualTokens" value="${esc(block.manualTokens)}" />
+            </div>
+            <label class="block-checkbox">
+              <input type="checkbox" data-field="required" ${block.required ? 'checked' : ''} />
+              Required, can never be dropped
+            </label>
+          </div>
+          <label class="block-content-label" for="content-${esc(block.id)}">Content or notes</label>
+          <textarea class="control control-textarea" id="content-${esc(block.id)}" rows="2" data-field="content" spellcheck="false">${esc(block.content)}</textarea>
+          <p class="block-tokens mono" data-token-badge>${tokens} tokens, ${esc(ESTIMATE_METHOD_LABELS[block.estimateMethod])}</p>
+        </div>`;
+    }
+
+    function renderBlockList() {
+      if (!blockList) return;
+      const total = state.blocks.length;
+      blockList.innerHTML = state.blocks
+        .map((block, i) => blockRowHtml(block, i + 1, total))
+        .join('');
+    }
+
+    function updateRowBadge(id: string) {
+      const block = state.blocks.find((b) => b.id === id);
+      const row = blockList?.querySelector<HTMLElement>(`[data-block-row="${CSS.escape(id)}"]`);
+      const badge = row?.querySelector<HTMLElement>('[data-token-badge]');
+      if (block && badge) {
+        badge.textContent = `${tokensOf(block)} tokens, ${ESTIMATE_METHOD_LABELS[block.estimateMethod]}`;
+      }
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Block list, non-structural edits
+     *
+     * Typing in a field, checking a box, or switching a method changes
+     * state and the results below, but never rebuilds the row the user
+     * is actively working in.
+     * ---------------------------------------------------------------- */
+
+    blockList?.addEventListener('input', (event) => {
+      const target = event.target as HTMLElement;
+      const row = target.closest<HTMLElement>('[data-block-row]');
+      const field = target.dataset.field;
+      if (!row || !field) return;
+      const id = row.dataset.blockRow!;
+
+      if (field === 'label') {
+        state = { ...state, blocks: updateBlock(state.blocks, id, { label: (target as HTMLInputElement).value }) };
+      } else if (field === 'content') {
+        state = { ...state, blocks: updateBlock(state.blocks, id, { content: (target as HTMLTextAreaElement).value }) };
+      } else if (field === 'manualTokens') {
+        const value = Number((target as HTMLInputElement).value) || 0;
+        state = { ...state, blocks: updateBlock(state.blocks, id, { manualTokens: value }) };
+      } else {
+        return;
+      }
+      updateRowBadge(id);
+      renderResults();
+    });
+
+    blockList?.addEventListener('change', (event) => {
+      const target = event.target as HTMLElement;
+      const row = target.closest<HTMLElement>('[data-block-row]');
+      const field = target.dataset.field;
+      if (!row || !field) return;
+      const id = row.dataset.blockRow!;
+
+      if (field === 'required') {
+        const checked = (target as HTMLInputElement).checked;
+        state = { ...state, blocks: updateBlock(state.blocks, id, { required: checked }) };
+        renderResults();
+      } else if (field === 'method') {
+        const method = (target as HTMLSelectElement).value as ContextBlock['estimateMethod'];
+        state = { ...state, blocks: updateBlock(state.blocks, id, { estimateMethod: method }) };
+        const manualWrap = row.querySelector<HTMLElement>('[data-manual-wrap]');
+        if (manualWrap) manualWrap.hidden = method !== 'manual';
+        updateRowBadge(id);
+        renderResults();
+      }
+    });
+
+    /* ---------------------------------------------------------------- *
+     * Block list, structural actions: move, remove
+     *
+     * Move up and move down are real <button> elements, so keyboard
+     * operation (focus, then Enter or Space) works with no extra wiring.
+     * This is the PRD's mandatory keyboard control over priority; drag
+     * is not implemented, and the PRD only requires one of the two.
+     * ---------------------------------------------------------------- */
+
+    blockList?.addEventListener('click', (event) => {
+      const target = event.target as HTMLElement;
+      const moveBtn = target.closest<HTMLButtonElement>('[data-move]');
+      const removeBtn = target.closest<HTMLButtonElement>('[data-remove]');
+
+      if (moveBtn && !moveBtn.disabled) {
+        const id = moveBtn.dataset.target!;
+        const direction = moveBtn.dataset.move as 'up' | 'down';
+        state = { ...state, blocks: moveBlock(state.blocks, id, direction) };
+        renderBlockList();
+        renderResults();
+        // Keep focus on the same logical action after the row moves, so
+        // a keyboard user can move a block several steps in a row.
+        const nextBtn = blockList.querySelector<HTMLButtonElement>(
+          `[data-block-row="${CSS.escape(id)}"] [data-move="${direction}"]`,
+        );
+        (nextBtn ?? moveBtn).focus();
+      } else if (removeBtn) {
+        const id = removeBtn.dataset.target!;
+        const label = state.blocks.find((b) => b.id === id)?.label || 'Block';
+        state = { ...state, blocks: removeBlock(state.blocks, id) };
+        renderBlockList();
+        syncVisibility();
+        renderResults();
+        say(`${label} removed.`);
+      }
+    });
+
+    /* ---------------------------------------------------------------- *
+     * Results rendering
+     * ---------------------------------------------------------------- */
+
+    function riskLabel(risk: PackResult['truncationRisk']): string {
+      const labels: Record<PackResult['truncationRisk'], string> = {
+        blocked: 'Blocked, required content exceeds the budget',
+        high: 'High, the estimate heuristic alone could push this over',
+        medium: 'Medium, little headroom past the estimate',
+        low: 'Low, comfortable headroom past the estimate',
+      };
+      return labels[risk];
+    }
+
+    function packedItemHtml(p: PackedBlockResult): string {
+      return `
+        <div class="placement-item" data-kind="packed">
+          <div class="placement-head">
+            <span class="placement-label">${p.order}. ${esc(p.block.label)}</span>
+            <span class="placement-tag">${p.block.required ? 'Required' : 'Optional'}</span>
+            <span class="placement-meta">${p.tokens} tokens</span>
+          </div>
+          <p class="placement-reason">${esc(p.reason)}</p>
+        </div>`;
+    }
+
+    function excludedItemHtml(x: ExcludedBlockResult): string {
+      return `
+        <div class="placement-item" data-kind="excluded">
+          <div class="placement-head">
+            <span class="placement-label">${esc(x.block.label)}</span>
+            <span class="placement-meta">${x.tokens} tokens</span>
+          </div>
+          <p class="placement-reason">${esc(x.reason)}</p>
+        </div>`;
+    }
+
+    function overflowItemHtml(p: PackedBlockResult): string {
+      return `
+        <div class="placement-item" data-kind="overflow">
+          <div class="placement-head">
+            <span class="placement-label">${esc(p.block.label)}</span>
+            <span class="placement-tag">Required</span>
+            <span class="placement-meta">${p.tokens} tokens</span>
+          </div>
+          <p class="placement-reason">${esc(p.reason)}</p>
+        </div>`;
+    }
+
+    function renderResults() {
+      const statusBody = el('[data-status-body]');
+      const packedList = el('[data-packed-list]');
+      const excludedList = el('[data-excluded-list]');
+      const summarizeList = el('[data-summarize-list]');
+      const statusPanel = el('#status-panel');
+      if (!statusBody || !packedList || !excludedList || !summarizeList) return;
+
+      if (state.blocks.length === 0) {
+        const overflowWrap = el<HTMLElement>('[data-overflow-warning]');
+        if (overflowWrap) overflowWrap.hidden = true;
+        statusBody.innerHTML = '<p class="clean-note">Add a block to see a pack.</p>';
+        packedList.innerHTML = '';
+        excludedList.innerHTML = '';
+        summarizeList.innerHTML = '';
+        return;
+      }
+
+      const result = pack(state);
+      statusPanel?.setAttribute('data-result-status', 'ready');
+
+      const overflowWrap = el<HTMLElement>('[data-overflow-warning]');
+      const overflowMessageEl = el('[data-overflow-message]');
+
+      if (!result.feasible) {
+        if (overflowWrap) overflowWrap.hidden = false;
+        if (overflowMessageEl) overflowMessageEl.textContent = result.overflowMessage ?? '';
+        statusBody.innerHTML = `
+          <p class="status-summary">
+            <strong>Required tokens:</strong> ${result.requiredTokens}.
+            <strong>Budget:</strong> ${result.budget}.
+            <span class="risk-tag" data-risk="blocked">${riskLabel(result.truncationRisk)}</span>
+          </p>`;
+        packedList.innerHTML =
+          '<p class="clean-note">Nothing is packed. Required content alone does not fit, so nothing is reported as placed. See the required blocks below for the record.</p>' +
+          result.requiredOverflow.map(overflowItemHtml).join('');
+        excludedList.innerHTML = result.excluded.length
+          ? result.excluded.map(excludedItemHtml).join('')
+          : '<p class="clean-note">No optional blocks to report.</p>';
+      } else {
+        if (overflowWrap) overflowWrap.hidden = true;
+        statusBody.innerHTML = `
+          <p class="status-summary">
+            <strong>Required tokens:</strong> ${result.requiredTokens}.
+            <strong>Budget:</strong> ${result.budget}.
+            <strong>Remaining capacity:</strong> ${result.remainingCapacity} tokens.
+            <span class="risk-tag" data-risk="${result.truncationRisk}">Truncation risk: ${riskLabel(result.truncationRisk)}</span>
+          </p>`;
+        packedList.innerHTML = result.packed.length
+          ? result.packed.map(packedItemHtml).join('')
+          : '<p class="clean-note">Nothing packed yet.</p>';
+        excludedList.innerHTML = result.excluded.length
+          ? result.excluded.map(excludedItemHtml).join('')
+          : '<p class="clean-note">Every block fit. Nothing was excluded.</p>';
+      }
+
+      summarizeList.innerHTML = result.summarizationTargets.length
+        ? result.summarizationTargets
+            .map(
+              (t) => `
+          <div class="summarize-item">
+            <p class="summarize-head mono">${esc(t.label)}: ${t.currentTokens} to about ${t.targetTokens} tokens</p>
+            <p class="summarize-note">${esc(t.note)}</p>
+          </div>`,
+            )
+            .join('')
+        : '<p class="clean-note">No summarization targets. Either everything fit, or shrinking would not help at this budget.</p>';
+    }
+
+    function renderAll() {
+      syncTopFields();
+      syncVisibility();
+      renderBlockList();
+      renderResults();
+    }
+
+    /* ---------------------------------------------------------------- *
+     * Toolbar actions: add, load sample, reset
+     * ---------------------------------------------------------------- */
+
+    function loadSample(id: string) {
+      state = sampleState(id);
+      const sampleSelect = el<HTMLSelectElement>('[data-sample-select]');
+      if (sampleSelect) sampleSelect.value = id;
+      say(getSample(id)?.teaches ?? 'Sample loaded.');
+      renderAll();
+    }
+
+    el('[data-load-sample]')?.addEventListener('click', () => {
+      const id = el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id;
+      loadSample(id);
+    });
+
+    el('[data-add-block]')?.addEventListener('click', () => {
+      state = { ...state, blocks: addBlock(state.blocks) };
+      syncVisibility();
+      renderBlockList();
+      renderResults();
+      say('Added a new context block.');
+      const rows = blockList?.querySelectorAll<HTMLElement>('[data-block-row]');
+      const last = rows?.[rows.length - 1];
+      last?.querySelector<HTMLInputElement>('[data-field="label"]')?.focus();
+    });
+
+    el('[data-reset]')?.addEventListener('click', () => {
+      state = emptyState();
+      say('Reset to an empty pack.');
+      renderAll();
+    });
+
+    // EmptyState's own sample button dispatches this bubbling event.
+    root.addEventListener('workbench:load-sample', () => {
+      loadSample(SAMPLES[0].id);
+    });
+
+    // ExportBar asks; the tool answers. See src/components/kit/ExportBar.astro.
+    root.addEventListener('workbench:export', ((event: CustomEvent) => {
+      const { format, resolve } = event.detail ?? {};
+      if (typeof resolve !== 'function') return;
+      const fmt = format === 'markdown' ? 'markdown' : 'json';
+      resolve(serialize(state, fmt));
+    }) as EventListener);
+
+    renderAll();
+  }
+</script>
