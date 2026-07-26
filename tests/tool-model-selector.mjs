@@ -5,15 +5,23 @@
  *
  * Proves the PRD acceptance criteria that are properties of the engine
  * rather than of the page:
- *   1. A hard constraint eliminates a candidate, and the elimination
- *      reason names the specific constraint.
- *   2. Changing a weight changes the ranking, proven with two runs.
- *   3. Scoring is deterministic and reproducible.
- *   4. Every candidate carries a per constraint explanation, none blank.
- *   5. A workload no model satisfies returns an honest empty result.
- * Plus the supporting properties the tool depends on: the catalog
- * shape, the tradeoff sensitivity math, the samples, validation, and
- * the export round trip.
+ *   1. Hard constraints visibly eliminate candidates, and the reason
+ *      names the specific constraint.
+ *   2. Weight changes update ranking, proven with two runs.
+ *   3. Stale catalog data is clearly, ACTIVELY flagged: a catalog older
+ *      than the threshold produces a warning, and one inside the
+ *      threshold does not, which is the control that proves the check
+ *      discriminates rather than always firing or never firing.
+ *   4. Recommendations export with assumptions: weights, constraints,
+ *      per candidate effective dates, and which fields the user edited
+ *      versus what shipped in the catalog, all present and consistent
+ *      with the state that produced them.
+ * Plus: scoring is deterministic and reproducible, every candidate
+ * carries a per constraint explanation with none blank, a workload no
+ * model satisfies returns an honest empty result, a user edited
+ * candidate is marked distinctly from shipped catalog data, and the
+ * supporting properties the tool depends on (catalog shape, tradeoff
+ * sensitivity math, samples, validation).
  */
 
 import {
@@ -22,6 +30,8 @@ import {
   AXIS_KEYS,
   DEFAULT_WEIGHTS,
   DEFAULT_TOKEN_BLEND,
+  STALE_THRESHOLD_DAYS,
+  STALE_RISK_STATEMENT,
   emptyState,
   sampleState,
   reset,
@@ -34,6 +44,9 @@ import {
   evaluationPlan,
   blendedCost,
   catalogStaleness,
+  isModelStale,
+  daysSincePriceDate,
+  overriddenFields,
   serialize,
 } from '../src/lib/tools/model-selector.ts';
 
@@ -295,31 +308,140 @@ console.log(`  samples: ${SAMPLES.length}, each produces a full accounting of th
   expect('blended cost formula', Math.abs(cost - 12.5) < 1e-9, `expected 10*0.75 + 20*0.25 = 12.5, got ${cost}`);
 }
 
-/* ---- 12. Catalog staleness is a pure function of the reference date */
+/* ---- 12. THE IMPORTANT ONE. Catalog staleness ACTIVELY discriminates */
 {
   const veryFuture = new Date('2099-01-01T00:00:00Z');
   const stale = catalogStaleness(veryFuture);
   expect('staleness grows with time', stale.staleCount === CATALOG.length, `expected every candidate to be stale by 2099, got ${stale.staleCount} of ${CATALOG.length}`);
+  expect('staleness lists every stale model', stale.staleModels.length === CATALOG.length, `staleModels should list all ${CATALOG.length} candidates by 2099, got ${stale.staleModels.length}`);
+  expect('staleness states the threshold', stale.thresholdDays === STALE_THRESHOLD_DAYS, `expected thresholdDays ${STALE_THRESHOLD_DAYS}, got ${stale.thresholdDays}`);
 
   const atOldestExactly = new Date(`${stale.oldest.priceEffectiveDate}T00:00:00Z`);
   const freshAtSource = catalogStaleness(atOldestExactly);
   expect('staleness at source date', freshAtSource.oldestDays === 0, `evaluated at its own effective date, the oldest entry should be 0 days old, got ${freshAtSource.oldestDays}`);
+
+  // THE CONTROL: pick one model and evaluate it one day inside the
+  // threshold and one day outside it. A gate that only ever fires, or
+  // never fires, would pass every check above while proving nothing.
+  // This is what proves the check actually discriminates on the date.
+  const probe = CATALOG[0];
+  const sourceDate = new Date(`${probe.priceEffectiveDate}T00:00:00Z`);
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  const justInside = new Date(sourceDate.getTime() + (STALE_THRESHOLD_DAYS - 1) * dayMs);
+  const justOutside = new Date(sourceDate.getTime() + (STALE_THRESHOLD_DAYS + 1) * dayMs);
+
+  expect(
+    'staleness does not warn inside the threshold',
+    isModelStale(probe, justInside) === false,
+    `${probe.name} at ${STALE_THRESHOLD_DAYS - 1} days old should not be flagged stale`,
+  );
+  expect(
+    'staleness warns past the threshold',
+    isModelStale(probe, justOutside) === true,
+    `${probe.name} at ${STALE_THRESHOLD_DAYS + 1} days old should be flagged stale`,
+  );
+
+  const catalogInside = catalogStaleness(justInside);
+  const catalogOutside = catalogStaleness(justOutside);
+  expect(
+    'catalogStaleness discriminates, inside',
+    catalogInside.staleModels.every((s) => s.model.id !== probe.id),
+    `${probe.name} appeared in staleModels while still inside the threshold`,
+  );
+  expect(
+    'catalogStaleness discriminates, outside',
+    catalogOutside.staleModels.some((s) => s.model.id === probe.id),
+    `${probe.name} did not appear in staleModels once past the threshold`,
+  );
+  expect(
+    'daysSincePriceDate matches the reference date',
+    daysSincePriceDate(probe, justOutside) === STALE_THRESHOLD_DAYS + 1,
+    `expected ${STALE_THRESHOLD_DAYS + 1} days, got ${daysSincePriceDate(probe, justOutside)}`,
+  );
+  console.log(
+    `  staleness control: ${probe.name} not flagged at ${STALE_THRESHOLD_DAYS - 1} days, flagged at ${STALE_THRESHOLD_DAYS + 1} days`,
+  );
+
+  // The risk statement is the honesty requirement itself: staleness
+  // must be framed as a ranking risk, not merely an old price.
+  expect('risk statement names ranking risk', /ranking/i.test(STALE_RISK_STATEMENT), 'the staleness risk statement does not mention the ranking at all');
+  expect('risk statement is substantive', STALE_RISK_STATEMENT.length > 60, 'the staleness risk statement is too short to actually explain the consequence');
 }
 
-/* ---- 13. Export round trip ----------------------------------------- */
+/* ---- 12b. A user edited candidate is marked distinctly -------------- */
+{
+  const state = emptyState();
+  const targetId = CATALOG[0].id;
+  const untouchedId = CATALOG[1].id;
+
+  expect('unedited has no overridden fields', overriddenFields(targetId, state.overrides).length === 0, 'a candidate with no entry in overrides should report zero overridden fields');
+
+  state.overrides = { [targetId]: { capabilityTier: 'frontier' } };
+  const fields = overriddenFields(targetId, state.overrides);
+  expect('overriddenFields names the edited field', fields.length === 1 && fields[0] === 'capabilityTier', `expected exactly ["capabilityTier"], got ${JSON.stringify(fields)}`);
+
+  const result = rankCandidates(state);
+  const edited = [...result.ranked, ...result.eliminated].find((c) => c.model.id === targetId);
+  const untouched = [...result.ranked, ...result.eliminated].find((c) => c.model.id === untouchedId);
+  expect('ranked candidate carries overriddenFields', edited && edited.overriddenFields.length === 1, 'the edited candidate did not carry its overriddenFields through rankCandidates');
+  expect('untouched candidate stays unmarked', untouched && untouched.overriddenFields.length === 0, 'a candidate the user never touched should report zero overridden fields');
+  expect('edited model reflects the override', edited.model.capabilityTier === 'frontier', 'the overridden capabilityTier did not reach the scored model');
+
+  const json = JSON.parse(serialize(state, 'json'));
+  const exportedEdited = json.ranked.find((r) => r.model === CATALOG[0].name) ?? json.eliminated.find((e) => e.model === CATALOG[0].name);
+  const exportedUntouched = json.ranked.find((r) => r.model === CATALOG[1].name) ?? json.eliminated.find((e) => e.model === CATALOG[1].name);
+  expect('export marks the edited candidate', exportedEdited && exportedEdited.overriddenFields.includes('capabilityTier'), 'export lost the overriddenFields marker for the edited candidate');
+  expect('export leaves the untouched candidate unmarked', exportedUntouched && exportedUntouched.overriddenFields.length === 0, 'export incorrectly marked an untouched candidate as edited');
+  console.log(`  user edit: ${CATALOG[0].name} marked overriddenFields=${JSON.stringify(exportedEdited.overriddenFields)}, ${CATALOG[1].name} marked overriddenFields=${JSON.stringify(exportedUntouched.overriddenFields)}`);
+}
+
+/* ---- 13. Export carries its assumptions, criterion 4 verbatim ------ *
+ * "Recommendation exports with assumptions." A reader must be able to
+ * reconstruct why the answer came out: the weights, the constraints,
+ * the catalog effective dates, and any user edits.                    */
 {
   const state = sampleState('regulated-document-analysis');
+  state.overrides = { [CATALOG[0].id]: { latencyClass: 'fast' } };
   const json = serialize(state, 'json');
   const parsed = JSON.parse(json);
+
   expect('export json parses', Array.isArray(parsed.ranked) && Array.isArray(parsed.eliminated), 'JSON export is missing ranked or eliminated arrays');
   expect('export json discloses', /not a claim/i.test(parsed.note), 'JSON export does not disclose that this is not a claim of objective best');
-  expect('export json weights', JSON.stringify(parsed.weights) === JSON.stringify(state.weights), 'JSON export lost the stated weights');
+
+  // Weights.
+  expect('export carries weights', JSON.stringify(parsed.weights) === JSON.stringify(state.weights), 'JSON export lost the stated weights');
+  // Constraints, i.e. the full stated requirements, not a subset.
+  expect('export carries constraints', JSON.stringify(parsed.requirements) === JSON.stringify(state.requirements), 'JSON export lost the stated requirements');
+  expect(
+    'export constraints include hosting and sensitivity',
+    parsed.requirements.hostingRequirement === state.requirements.hostingRequirement &&
+      parsed.requirements.dataSensitivity === state.requirements.dataSensitivity,
+    'export requirements are missing the hosting or data sensitivity constraint that decided this scenario',
+  );
+  // Catalog effective date, per candidate, plus the staleness block.
+  expect(
+    'export carries per candidate effective dates',
+    [...parsed.ranked, ...parsed.eliminated].every((c) => typeof c.priceEffectiveDate === 'string' && c.priceEffectiveDate.length > 0),
+    'every exported candidate must carry the effective date its price was checked against',
+  );
+  expect('export carries catalog staleness threshold', parsed.catalogStaleness.thresholdDays === STALE_THRESHOLD_DAYS, 'export catalogStaleness is missing or has the wrong threshold');
+  expect('export carries the stale model list', Array.isArray(parsed.catalogStaleness.staleModels), 'export catalogStaleness is missing the staleModels list');
+  expect('export carries the ranking risk statement', /ranking/i.test(parsed.catalogStaleness.riskIfAnyStale), 'export does not carry the staleness ranking risk statement');
+  // User edits, preserved and distinct from unedited catalog data.
+  expect('export overrides map is present', JSON.stringify(parsed.overrides) === JSON.stringify(state.overrides), 'JSON export lost the raw overrides map');
+  const editedExport = [...parsed.ranked, ...parsed.eliminated].find((c) => c.model === CATALOG[0].name);
+  expect('export marks the edited candidate distinctly', editedExport && editedExport.overriddenFields.includes('latencyClass'), 'export did not mark the edited candidate distinctly from shipped catalog data');
 
   const md = serialize(state, 'markdown');
   expect('export markdown header', md.includes('# Model Selector report'), 'markdown export missing header');
   expect('export markdown discloses', /not a claim/i.test(md), 'markdown export does not disclose that this is not a claim of objective best');
   expect('export markdown sections', md.includes('## Tradeoff') && md.includes('## Unanswered questions') && md.includes('## Recommended evaluation plan'), 'markdown export is missing a required section');
-  console.log(`  export: json ${json.length} bytes, markdown ${md.length} bytes, both disclose the non authoritative framing`);
+  expect('export markdown carries weights', AXIS_KEYS.every((axis) => md.includes(String(state.weights[axis]))), 'markdown export does not print the stated weights');
+  expect('export markdown carries constraints', md.includes(state.requirements.dataSensitivity), 'markdown export does not print the stated data sensitivity constraint');
+  expect('export markdown carries user edit tag', md.includes('user edited: latencyClass'), 'markdown export does not mark which candidate the user edited');
+  expect('export markdown carries staleness risk', md.includes(STALE_RISK_STATEMENT) || md.includes('No candidate currently exceeds'), 'markdown export does not state the staleness risk or its absence');
+  console.log(`  export: json ${json.length} bytes, markdown ${md.length} bytes, both carry weights, constraints, effective dates, and the user edit`);
 }
 
 /* ---- 14. Default weight sum sanity, used across all scoring -------- */

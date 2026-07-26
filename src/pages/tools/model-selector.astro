@@ -35,7 +35,6 @@ import {
   AXIS_KEYS,
   AXIS_LABELS,
   emptyState,
-  catalogStaleness,
   STALE_THRESHOLD_DAYS,
 } from '../../lib/tools/model-selector';
 
@@ -45,9 +44,11 @@ const tool = getTool('model-selector')!;
 // configuration, matching the house pattern: the result panels are
 // filled in by the client script's own first renderAll() call rather
 // than by frontmatter, so there is exactly one code path that computes
-// a ranking.
+// a ranking. The staleness alert is likewise entirely client computed,
+// against the date in the visitor's own browser at load time, not a
+// date fixed when this static page was built, since a build time
+// answer quietly goes wrong the longer a static build sits unpublished.
 const initial = emptyState();
-const staleness = catalogStaleness();
 
 const TASK_OPTIONS = TASK_TYPES.map((t) => ({ value: t, label: TASK_TYPE_LABELS[t] }));
 const ACCURACY_OPTIONS = CAPABILITY_TIERS.map((t) => ({ value: t, label: CAPABILITY_TIER_LABELS[t] }));
@@ -79,20 +80,31 @@ const YES_NO_OPTIONS = [
 
     <p class="teaches" data-teaches role="status" aria-live="polite"></p>
 
-    <WarningNote severity="warning" title="Catalog data ages fast, this tool does not claim benchmark authority">
+    <WarningNote severity="info" title="How this catalog dates its data, and why a stale entry is not just an old price">
       <p>
-        The oldest price point in this catalog is {staleness.oldest.name},
-        dated {staleness.oldest.priceEffectiveDate}, {staleness.oldestDays}{' '}
-        days old at build time. {staleness.staleCount} of {staleness.total}{' '}
-        candidates carry a price older than {STALE_THRESHOLD_DAYS} days.
-        Verify current pricing with each vendor before deciding.
+        Every candidate below carries its own price effective date and
+        source. On page load, this tool compares each date against today
+        in your own browser and flags anything older than{' '}
+        {STALE_THRESHOLD_DAYS} days, about one quarter. That threshold is
+        a judgment call, stated plainly rather than hidden. It is roughly
+        how often a major vendor changes list pricing or ships a new
+        flagship model, so past it a comparison risks missing a change
+        that would have altered the outcome.
       </p>
       <p>
-        Capability tier, latency class, and throughput tier are this tool's
-        own coarse editorial priors, not vendor claims and not benchmark
-        results. Every one of them is overridable in the ranked list below.
+        Capability tier, latency class, and throughput tier are this
+        tool's own coarse editorial priors, not vendor claims and not
+        benchmark results. Every one of them is overridable per candidate
+        below, and an overridden value is marked user edited rather than
+        shown as unedited catalog data, in both the ranked list and the
+        export.
       </p>
     </WarningNote>
+
+    {/* Filled by the client script from a live Date, not a build time
+        value. Hidden by default so a fresh catalog shows no alert at
+        all rather than an empty box. */}
+    <div data-staleness-alert hidden></div>
 
     <section class="block" aria-labelledby="requirements-heading">
       <h2 id="requirements-heading" class="block-title">Workload requirements</h2>
@@ -460,6 +472,76 @@ const YES_NO_OPTIONS = [
     border-color: var(--status-beta);
   }
 
+  /* Stale and user edited are different concerns from price confidence,
+     so they carry their own modifier rather than reusing "confidence". */
+  .candidate-badge[data-badge-kind='stale'] {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .candidate-badge[data-badge-kind='user-edited'] {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .candidate-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: center;
+    margin-bottom: var(--space-2);
+  }
+
+  /* Hand rolled rather than the WarningNote kit component, because
+     Astro scoped styles never reach runtime injected markup and this
+     box needs to flip between hidden and an assertive alert from a
+     live Date computed in the client script. Visual language matches
+     WarningNote on purpose: a tag, a border left accent, and the
+     severity carried by the word "Alert" as well as by color. */
+  .stale-alert {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    margin: var(--space-3) 0;
+    background: var(--panel-raised);
+    border: 1px solid var(--line);
+    border-left-width: 2px;
+    border-left-color: var(--status-alert);
+    border-radius: var(--radius);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    color: var(--text-muted);
+  }
+
+  .stale-alert-tag {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--status-alert);
+  }
+
+  .stale-alert-body {
+    min-width: 0;
+    max-width: var(--measure);
+  }
+
+  .stale-alert-title {
+    margin: 0 0 var(--space-1);
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .stale-alert-body p {
+    margin: 0 0 var(--space-2);
+  }
+
+  .stale-alert-body p:last-child {
+    margin-bottom: 0;
+  }
+
   .axis-row {
     display: grid;
     grid-template-columns: minmax(120px, 1fr) 2fr auto;
@@ -629,9 +711,15 @@ const YES_NO_OPTIONS = [
     THROUGHPUT_TIERS,
     THROUGHPUT_TIER_LABELS,
     PRICE_CONFIDENCE_LABELS,
+    catalogStaleness,
+    isModelStale,
+    daysSincePriceDate,
+    STALE_THRESHOLD_DAYS,
+    STALE_RISK_STATEMENT,
     type SelectorState,
     type RankedCandidate,
     type EliminatedCandidate,
+    type OverridableField,
   } from '../../lib/tools/model-selector';
 
   const root = document.querySelector<HTMLElement>('[data-selector]');
@@ -837,6 +925,32 @@ const YES_NO_OPTIONS = [
         .join('');
     }
 
+    /**
+     * The badge row every candidate carries: price confidence (always),
+     * a live computed stale flag (when this specific price is past the
+     * threshold, evaluated against today, not build time), and whether
+     * the user has overridden any editorial field on this candidate.
+     * The last one is the visual distinction the PRD requires between
+     * shipped catalog data and user supplied data.
+     */
+    function badgesHtml(model: RankedCandidate['model'], fields: OverridableField[]): string {
+      const badges = [
+        `<span class="candidate-badge" data-confidence="${esc(model.priceConfidence)}">${esc(PRICE_CONFIDENCE_LABELS[model.priceConfidence])}</span>`,
+      ];
+      if (isModelStale(model)) {
+        const days = daysSincePriceDate(model);
+        badges.push(
+          `<span class="candidate-badge" data-badge-kind="stale">Stale, ${days} days old</span>`,
+        );
+      }
+      badges.push(
+        fields.length
+          ? `<span class="candidate-badge" data-badge-kind="user-edited">User edited: ${esc(fields.join(', '))}</span>`
+          : '<span class="candidate-badge">As shipped in the catalog</span>',
+      );
+      return `<div class="candidate-badges">${badges.join('')}</div>`;
+    }
+
     function renderRanked(ranked: RankedCandidate[]) {
       const target = el('[data-ranked]');
       if (!target) return;
@@ -856,9 +970,9 @@ const YES_NO_OPTIONS = [
             <span class="candidate-name">${r.rank}. ${esc(m.name)}<span class="candidate-provider">${esc(m.provider)}</span></span>
             <span class="candidate-score mono">${r.weightedScore.toFixed(1)}</span>
           </div>
+          ${badgesHtml(m, r.overriddenFields)}
           <p class="axis-why">
-            <span class="candidate-badge" data-confidence="${esc(m.priceConfidence)}">${esc(PRICE_CONFIDENCE_LABELS[m.priceConfidence])}</span>
-            price dated ${esc(m.priceEffectiveDate)}${m.notes ? `. ${esc(m.notes)}` : ''}
+            Price dated ${esc(m.priceEffectiveDate)}${m.notes ? `. ${esc(m.notes)}` : ''}
           </p>
           ${axisRowsHtml(r)}
           <div class="override-row">
@@ -890,6 +1004,7 @@ const YES_NO_OPTIONS = [
           <div class="candidate-head">
             <span class="candidate-name">${esc(e.model.name)}<span class="candidate-provider">${esc(e.model.provider)}</span></span>
           </div>
+          ${badgesHtml(e.model, e.overriddenFields)}
           ${hardCheckRowsHtml(e.failedChecks)}
           <details class="hard-checks">
             <summary>Show all five constraint checks</summary>
@@ -898,6 +1013,37 @@ const YES_NO_OPTIONS = [
         </article>`,
         )
         .join('');
+    }
+
+    /**
+     * Evaluated against a live Date at the moment this runs in the
+     * visitor's browser, per the PRD requirement that stale data is
+     * ACTIVELY flagged, not merely dated and left for the reader to do
+     * the arithmetic on. Independent of requirements and weights, so it
+     * runs once rather than on every renderAll() pass.
+     */
+    function renderStalenessAlert() {
+      const container = el<HTMLElement>('[data-staleness-alert]');
+      if (!container) return;
+      const staleness = catalogStaleness(new Date());
+      if (staleness.staleCount === 0) {
+        container.hidden = true;
+        container.innerHTML = '';
+        return;
+      }
+      const list = staleness.staleModels
+        .map((s) => `${esc(s.model.name)} (${s.days} days old, dated ${esc(s.model.priceEffectiveDate)})`)
+        .join(', ');
+      container.hidden = false;
+      container.innerHTML = `
+        <div class="stale-alert" role="alert" data-severity="alert">
+          <span class="stale-alert-tag">Alert</span>
+          <div class="stale-alert-body">
+            <p class="stale-alert-title">${staleness.staleCount} of ${staleness.total} candidates exceed the ${STALE_THRESHOLD_DAYS} day staleness threshold</p>
+            <p>Stale: ${list}.</p>
+            <p>${esc(STALE_RISK_STATEMENT)}</p>
+          </div>
+        </div>`;
     }
 
     function renderTradeoff(ranked: RankedCandidate[]) {
@@ -992,6 +1138,7 @@ const YES_NO_OPTIONS = [
     });
 
     writeFormFromState();
+    renderStalenessAlert();
     renderAll();
   }
 </script>

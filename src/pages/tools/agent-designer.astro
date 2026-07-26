@@ -3,13 +3,29 @@
 // PRD: tools-nixfred-prds/tools/08-AGENT-DESIGNER.md
 //
 // CONSOLIDATION, per 01-INFORMATION-ARCHITECTURE.md: Agent Observatory,
-// Mission Control, Fleet Command, autonomy, and handoffs are panels of
-// this one tool, not separate tools. The panels below are Purpose,
-// Tools, Autonomy, Handoffs, Limits, and Failure.
+// Mission Control, Fleet Command, autonomy, and handoffs are modes of
+// this one tool, not separate tools. The PRD names four modes and this
+// page implements all four as ordered sections on one page rather than
+// as switching tabs, so a keyboard user or a screen reader gets the
+// whole document in one pass:
+//
+//   Architecture: role, instructions, tools, memory, triggers, and
+//   exit conditions. This is Purpose, Memory and triggers, Tools,
+//   Autonomy, Handoffs, Limits, and Failure below.
+//   Mission: steps and tool calls for a sample task, typed as
+//   observation, decision, action, result, or memory, with loops that
+//   carry a limit and an exit condition.
+//   Team: delegation and handoffs. Solo is the default and a complete
+//   answer on its own (acceptance criterion: "a single agent sample
+//   works before team mode is introduced"), so this section is a
+//   closed <details> until a teammate is added.
+//   Observatory: the mission above expanded into a timeline, a
+//   simulated cost count, failures, and recovery.
 //
 // This is a specification and a linter for that specification, not a
-// running agent. Nothing here calls a model or executes a tool call,
-// and the panel near the bottom says so in its own words.
+// running agent. Nothing here calls a model or executes a tool call.
+// "Simulate" means a deterministic expansion of the steps you
+// authored, never a prediction of real behavior, and the page says so.
 import ToolLayout from '../../layouts/ToolLayout.astro';
 import Field from '../../components/kit/Field.astro';
 import ResultPanel from '../../components/kit/ResultPanel.astro';
@@ -44,150 +60,263 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
       </div>
     </div>
 
+    <nav class="mode-nav" aria-label="Tool modes">
+      <a href="#architecture-mode">Architecture</a>
+      <a href="#mission-mode">Mission</a>
+      <a href="#team-mode">Team</a>
+      <a href="#observatory-mode">Observatory</a>
+    </nav>
+
     <p class="teaches" data-teaches role="status" aria-live="polite"></p>
 
     <WarningNote severity="info" title="What this tool does not do">
       This is a specification and a linter for that specification. It
-      does not call a model, does not execute a tool call, and does not
-      simulate a run. Every result below is a deterministic check
-      against the fields you enter.
+      does not call a model and does not execute a tool call.
+      Wherever this page says simulate, it means a deterministic
+      expansion of the steps you authored, exactly as you wrote them.
+      It is not a prediction of what a real model or a real tool call
+      would do.
     </WarningNote>
 
     <Field label="Agent name" name="agent-name" hint="A short working title, used in the exported specification." />
 
-    <section class="panel-section" aria-labelledby="purpose-heading">
-      <h2 id="purpose-heading">Purpose</h2>
-      <p class="section-lede">
-        What the agent is for, what it must never do, what done looks
-        like, and how success is measured.
+    <section class="mode" id="architecture-mode" aria-labelledby="architecture-mode-heading">
+      <h2 class="mode-heading" id="architecture-mode-heading">Architecture</h2>
+      <p class="mode-intro">
+        Role, instructions, tools, memory, triggers, and exit
+        conditions. Everything the agent is, before it ever runs.
       </p>
-      <Field
-        label="What the agent is for"
-        name="purpose-summary"
-        type="textarea"
-        rows={2}
-        hint="State the outcome, not the mechanism."
-      />
-      <Field
-        label="What it must never do"
-        name="purpose-must-never"
-        type="textarea"
-        rows={2}
-        hint="A hard boundary, stated as a rule an engineer could check the build against."
-      />
-      <Field
-        label="What done looks like"
-        name="purpose-done-looks-like"
-        type="textarea"
-        rows={2}
-        hint="What exists, or what changed, at the end of one successful run."
-      />
-      <Field
-        label="How success is measured"
-        name="purpose-success-measure"
-        type="textarea"
-        rows={2}
-        hint="A measure that holds across many runs, not just one."
-      />
+
+      <section class="panel-section" aria-labelledby="purpose-heading">
+        <h3 id="purpose-heading">Purpose</h3>
+        <p class="section-lede">
+          What the agent is for, what it must never do, what done looks
+          like, and how success is measured.
+        </p>
+        <Field
+          label="What the agent is for"
+          name="purpose-summary"
+          type="textarea"
+          rows={2}
+          hint="State the outcome, not the mechanism."
+        />
+        <Field
+          label="What it must never do"
+          name="purpose-must-never"
+          type="textarea"
+          rows={2}
+          hint="A hard boundary, stated as a rule an engineer could check the build against."
+        />
+        <Field
+          label="What done looks like"
+          name="purpose-done-looks-like"
+          type="textarea"
+          rows={2}
+          hint="What exists, or what changed, at the end of one successful run."
+        />
+        <Field
+          label="How success is measured"
+          name="purpose-success-measure"
+          type="textarea"
+          rows={2}
+          hint="A measure that holds across many runs, not just one."
+        />
+      </section>
+
+      <section class="panel-section" aria-labelledby="memory-heading">
+        <h3 id="memory-heading">Memory and triggers</h3>
+        <p class="section-lede">
+          What the agent remembers, and what starts a run. Both are
+          named directly in the PRD as first class parts of the
+          architecture, not incidental detail.
+        </p>
+        <Field
+          label="What it remembers"
+          name="agent-memory"
+          type="textarea"
+          rows={2}
+          hint="What persists between steps, between runs, or not at all, and for how long."
+        />
+        <Field
+          label="What starts a run"
+          name="agent-triggers"
+          type="textarea"
+          rows={2}
+          hint="An event, a schedule, an incoming message, or a manual call."
+        />
+      </section>
+
+      <section class="panel-section" aria-labelledby="tools-heading">
+        <h3 id="tools-heading">Tools</h3>
+        <p class="section-lede">
+          Every tool the agent can call. Name each one plainly, state
+          what it needs and what it returns, and mark whether it
+          mutates anything, whether that mutation can be undone, and
+          whether it needs a human to confirm it first.
+        </p>
+        <div data-tools-list></div>
+        <button type="button" class="btn btn-add" data-add-tool>Add tool</button>
+      </section>
+
+      <section class="panel-section" aria-labelledby="autonomy-heading">
+        <h3 id="autonomy-heading">Autonomy</h3>
+        <p class="section-lede">
+          The level this agent runs at, checked against the tool list
+          above. A mutating, irreversible tool combined with full
+          autonomy is a contradiction, and it is flagged loudly rather
+          than accepted quietly.
+        </p>
+        <Field label="Autonomy level" name="autonomy-level" type="select" options={autonomyOptions} />
+        <p class="autonomy-description mono" data-autonomy-description></p>
+        <Field
+          label="Rationale for this level"
+          name="autonomy-rationale"
+          type="textarea"
+          rows={2}
+          hint="Why this level, not a stricter or looser one."
+        />
+      </section>
+
+      <section class="panel-section" aria-labelledby="handoffs-heading">
+        <h3 id="handoffs-heading">Handoffs</h3>
+        <p class="section-lede">
+          When this agent escalates to a human or to another agent,
+          what context moves with the handoff, and who owns the task
+          afterward. An escalation path with no owner is where work
+          gets dropped silently, so it is flagged.
+        </p>
+        <div data-handoffs-list></div>
+        <button type="button" class="btn btn-add" data-add-handoff>Add handoff</button>
+      </section>
+
+      <section class="panel-section" aria-labelledby="limits-heading">
+        <h3 id="limits-heading">Limits</h3>
+        <p class="section-lede">
+          The budget this agent runs inside, and the conditions that
+          stop it. An agent with no stop condition can keep running
+          indefinitely once started.
+        </p>
+        <div class="limits-grid">
+          <Field label="Step budget" name="limits-step-budget" type="number" min={0} step={1} hint="Maximum tool calls in one run." />
+          <Field label="Time budget, minutes" name="limits-time-budget" type="number" min={0} step={1} hint="Maximum wall clock minutes in one run." />
+          <Field label="Cost ceiling" name="limits-cost-ceiling" hint={'For example, "$0.50 per ticket".'} />
+        </div>
+        <Field
+          label="Retry policy"
+          name="limits-retry-policy"
+          type="textarea"
+          rows={2}
+          hint="What happens when a tool call fails once, and how many times it is retried."
+        />
+        <Field
+          label="Stop conditions"
+          name="limits-stop-conditions"
+          type="textarea"
+          rows={3}
+          hint="One condition per line. At least one is required."
+        />
+      </section>
+
+      <section class="panel-section" aria-labelledby="failure-heading">
+        <h3 id="failure-heading">Failure</h3>
+        <p class="section-lede">
+          What the agent does when a tool call fails, when it is
+          uncertain rather than wrong, and when it detects it has
+          looped. An agent with no defined uncertain behavior is
+          incomplete.
+        </p>
+        <Field label="When a tool call fails" name="failure-tool-failure" type="textarea" rows={2} />
+        <Field
+          label="When the agent is uncertain"
+          name="failure-uncertainty"
+          type="textarea"
+          rows={2}
+          hint="Uncertain is not the same as wrong. State what it does when it does not know."
+        />
+        <Field label="When the agent detects a loop" name="failure-loop" type="textarea" rows={2} />
+      </section>
     </section>
 
-    <section class="panel-section" aria-labelledby="tools-heading">
-      <h2 id="tools-heading">Tools</h2>
-      <p class="section-lede">
-        Every tool the agent can call. Name each one plainly, state what
-        it needs and what it returns, and mark whether it mutates
-        anything, whether that mutation can be undone, and whether it
-        needs a human to confirm it first.
+    <section class="mode" id="mission-mode" aria-labelledby="mission-mode-heading">
+      <h2 class="mode-heading" id="mission-mode-heading">Mission</h2>
+      <p class="mode-intro">
+        Step through one sample task as a deterministic walkthrough of
+        the agent above. Every step is typed as an observation, a
+        decision, an action, a result, or a memory update, so the five
+        stay distinct rather than collapsing into one generic log
+        line. Every action must name a tool from Architecture, or it
+        counts as unauthorized. Steps that repeat belong to a loop, and
+        a loop needs both a limit and an exit condition below.
       </p>
-      <div data-tools-list></div>
-      <button type="button" class="btn btn-add" data-add-tool>Add tool</button>
+
+      <Field
+        label="Sample task"
+        name="mission-task"
+        type="textarea"
+        rows={2}
+        hint="The one task this walkthrough steps through."
+      />
+
+      <section class="panel-section" aria-labelledby="loops-heading">
+        <h3 id="loops-heading">Loops</h3>
+        <p class="section-lede">
+          A labeled block of steps that repeats. Every loop used below
+          needs a maximum iteration count and a stated exit condition;
+          the limit is a backstop, not a substitute for the condition.
+        </p>
+        <div data-loops-list></div>
+        <button type="button" class="btn btn-add" data-add-loop>Add loop</button>
+      </section>
+
+      <section class="panel-section" aria-labelledby="steps-heading">
+        <h3 id="steps-heading">Steps</h3>
+        <p class="section-lede">
+          The walkthrough itself, in order. An action step with no
+          matching tool is flagged as unauthorized below.
+        </p>
+        <div data-steps-list></div>
+        <button type="button" class="btn btn-add" data-add-step>Add step</button>
+      </section>
     </section>
 
-    <section class="panel-section" aria-labelledby="autonomy-heading">
-      <h2 id="autonomy-heading">Autonomy</h2>
-      <p class="section-lede">
-        The level this agent runs at, checked against the tool list
-        above. A mutating, irreversible tool combined with full
-        autonomy is a contradiction, and it is flagged loudly rather
-        than accepted quietly.
+    <section class="mode" id="team-mode" aria-labelledby="team-mode-heading">
+      <h2 class="mode-heading" id="team-mode-heading">Team</h2>
+      <p class="mode-intro">
+        Delegation and handoffs. Solo is the default and a complete
+        answer on its own: a single agent works before team mode is
+        ever introduced. Open this only once the mission actually
+        involves another agent.
       </p>
-      <Field label="Autonomy level" name="autonomy-level" type="select" options={autonomyOptions} />
-      <p class="autonomy-description mono" data-autonomy-description></p>
-      <Field
-        label="Rationale for this level"
-        name="autonomy-rationale"
-        type="textarea"
-        rows={2}
-        hint="Why this level, not a stricter or looser one."
-      />
+      <details class="team-details">
+        <summary class="team-summary">Team roster</summary>
+        <div class="team-body">
+          <p class="section-lede">
+            Who else is on the team. The Handoffs panel in Architecture
+            already carries what moves and who owns it after a
+            handoff; this roster names who they are.
+          </p>
+          <div data-team-list></div>
+          <button type="button" class="btn btn-add" data-add-team>Add teammate</button>
+        </div>
+      </details>
     </section>
 
-    <section class="panel-section" aria-labelledby="handoffs-heading">
-      <h2 id="handoffs-heading">Handoffs</h2>
-      <p class="section-lede">
-        When this agent escalates to a human or to another agent, what
-        context moves with the handoff, and who owns the task
-        afterward. An escalation path with no owner is where work gets
-        dropped silently, so it is flagged.
+    <section class="mode" id="observatory-mode" aria-labelledby="observatory-mode-heading">
+      <h2 class="mode-heading" id="observatory-mode-heading">Observatory</h2>
+      <p class="mode-intro">
+        The mission above, expanded into an ordered timeline. Not a
+        model call and not a benchmark: a mechanical walkthrough of
+        what you authored, including where a loop halted at its limit
+        and where an action had no matching permission.
       </p>
-      <div data-handoffs-list></div>
-      <button type="button" class="btn btn-add" data-add-handoff>Add handoff</button>
-    </section>
-
-    <section class="panel-section" aria-labelledby="limits-heading">
-      <h2 id="limits-heading">Limits</h2>
-      <p class="section-lede">
-        The budget this agent runs inside, and the conditions that stop
-        it. An agent with no stop condition can keep running
-        indefinitely once started.
-      </p>
-      <div class="limits-grid">
-        <Field label="Step budget" name="limits-step-budget" type="number" min={0} step={1} hint="Maximum tool calls in one run." />
-        <Field label="Time budget, minutes" name="limits-time-budget" type="number" min={0} step={1} hint="Maximum wall clock minutes in one run." />
-        <Field label="Cost ceiling" name="limits-cost-ceiling" hint={'For example, "$0.50 per ticket".'} />
-      </div>
-      <Field
-        label="Retry policy"
-        name="limits-retry-policy"
-        type="textarea"
-        rows={2}
-        hint="What happens when a tool call fails once, and how many times it is retried."
-      />
-      <Field
-        label="Stop conditions"
-        name="limits-stop-conditions"
-        type="textarea"
-        rows={3}
-        hint="One condition per line. At least one is required."
-      />
-    </section>
-
-    <section class="panel-section" aria-labelledby="failure-heading">
-      <h2 id="failure-heading">Failure</h2>
-      <p class="section-lede">
-        What the agent does when a tool call fails, when it is
-        uncertain rather than wrong, and when it detects it has looped.
-        An agent with no defined uncertain behavior is incomplete.
-      </p>
-      <Field
-        label="When a tool call fails"
-        name="failure-tool-failure"
-        type="textarea"
-        rows={2}
-      />
-      <Field
-        label="When the agent is uncertain"
-        name="failure-uncertainty"
-        type="textarea"
-        rows={2}
-        hint="Uncertain is not the same as wrong. State what it does when it does not know."
-      />
-      <Field
-        label="When the agent detects a loop"
-        name="failure-loop"
-        type="textarea"
-        rows={2}
-      />
+      <ResultPanel
+        title="Simulated run"
+        id="observatory-panel"
+        description="Every entry keeps the type it was authored with. A loop with a stated limit runs to exactly that many iterations, then stops."
+      >
+        <div data-observatory-summary></div>
+        <div data-timeline></div>
+      </ResultPanel>
     </section>
 
     <ResultPanel
@@ -206,7 +335,7 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
     <ResultPanel
       title="Risk flags"
       id="flags-panel"
-      description="Contradictions the tool can check for automatically. Silence here means these specific checks found nothing, not that the design is safe."
+      description="Contradictions the tool can check for automatically, across every mode. Silence here means these specific checks found nothing, not that the design is safe."
     >
       <div data-flags></div>
     </ResultPanel>
@@ -236,6 +365,23 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
         one of them is wrong. The tool cannot know which one you meant,
         so it flags the contradiction instead of quietly picking a
         side.
+      </p>
+    </HelpNote>
+
+    <HelpNote title="Why does an action need a matching permission?">
+      <p>
+        A mission step that says "deletes the file" reads like an
+        authorized action right up until you check whether a tool
+        called exactly that exists. A typo in a tool reference, or a
+        tool the walkthrough assumes but Architecture never defined,
+        produces a step that looks fine in prose and does nothing real
+        underneath it.
+      </p>
+      <p>
+        Requiring every action to resolve to a real tool from
+        Architecture is what makes the mission trustworthy as a
+        walkthrough of the agent above it, rather than a separate story
+        that happens to sit next to it.
       </p>
     </HelpNote>
   </div>
@@ -306,11 +452,54 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
     align-self: flex-start;
   }
 
+  .mode-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+  }
+
+  .mode-nav a {
+    color: var(--text-faint);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    padding-bottom: 0.15rem;
+  }
+
+  .mode-nav a:hover,
+  .mode-nav a:focus-visible {
+    color: var(--accent);
+    border-bottom-color: var(--signal-edge);
+  }
+
   .teaches {
     color: var(--text-faint);
     font-size: var(--text-sm);
     margin: 0;
     min-height: 1.5em;
+  }
+
+  .mode {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--line-strong);
+  }
+
+  .mode-heading {
+    font-size: var(--text-2xl);
+    margin-bottom: 0;
+  }
+
+  .mode-intro {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    max-width: var(--measure);
+    margin: 0;
   }
 
   .panel-section {
@@ -323,7 +512,7 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
     background: var(--panel);
   }
 
-  .panel-section h2 {
+  .panel-section h3 {
     font-size: var(--text-lg);
     margin-bottom: 0;
   }
@@ -345,6 +534,45 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
     font-size: var(--text-sm);
     color: var(--text-dim);
     margin: calc(-1 * var(--space-2)) 0 0;
+  }
+
+  .team-details {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+    background: var(--panel);
+  }
+
+  .team-summary {
+    cursor: pointer;
+    list-style: none;
+    font-size: var(--text-lg);
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .team-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .team-summary::after {
+    content: ', closed. Click to add teammates.';
+    font-size: var(--text-xs);
+    font-weight: 400;
+    color: var(--text-faint);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .team-details[open] .team-summary::after {
+    content: ', open.';
+  }
+
+  .team-body {
+    margin-top: var(--space-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
   }
 
   .completeness-bar {
@@ -439,6 +667,10 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
     gap: var(--space-1);
   }
 
+  .row-field[hidden] {
+    display: none;
+  }
+
   .row-label {
     font-family: var(--font-sans);
     font-size: var(--text-xs);
@@ -461,6 +693,15 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
   .row-input:focus-visible {
     border-color: var(--accent);
     outline: none;
+  }
+
+  select.row-input {
+    cursor: pointer;
+  }
+
+  select.row-input:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 
   .row-flags {
@@ -547,6 +788,96 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
     font-size: var(--text-sm);
     color: var(--text-muted);
   }
+
+  /* Observatory timeline. Border color is the second channel; the
+     type word itself is always printed too, so nothing here relies on
+     color alone. */
+  .timeline-entry {
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+  }
+
+  .timeline-entry[data-type='observation'] {
+    border-left-color: var(--cat-understand);
+  }
+
+  .timeline-entry[data-type='decision'] {
+    border-left-color: var(--cat-design);
+  }
+
+  .timeline-entry[data-type='action'] {
+    border-left-color: var(--accent);
+  }
+
+  .timeline-entry[data-type='result'] {
+    border-left-color: var(--status-live);
+  }
+
+  .timeline-entry[data-type='memory'] {
+    border-left-color: var(--cat-operate);
+  }
+
+  /* An unauthorized action overrides the type color: the failure is
+     the more important fact here. Ordered after the type rules above
+     so it wins the cascade for the same element. */
+  .timeline-entry[data-authorized='false'] {
+    border-left-color: var(--status-alert);
+  }
+
+  .timeline-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: baseline;
+    margin-bottom: var(--space-1);
+  }
+
+  .timeline-order {
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+  }
+
+  .timeline-type {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text);
+  }
+
+  .timeline-loop {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+  }
+
+  .timeline-desc {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0;
+    max-width: none;
+  }
+
+  .timeline-tool {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    margin: var(--space-1) 0 0;
+  }
+
+  .timeline-tool-bad {
+    color: var(--status-alert);
+  }
+
+  .observatory-line {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0 0 var(--space-2);
+    max-width: none;
+  }
 </style>
 
 <script>
@@ -555,6 +886,7 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
     computeCompleteness,
     isReadyToBuild,
     serialize,
+    runMission,
     emptyState,
     sampleState,
     getSample,
@@ -562,9 +894,15 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
     AUTONOMY_LEVELS,
     AUTONOMY_LABELS,
     AUTONOMY_DESCRIPTIONS,
+    MISSION_STEP_TYPES,
+    MISSION_STEP_LABELS,
     type AgentSpecState,
     type ToolSpec,
     type Handoff,
+    type MissionStep,
+    type MissionLoop,
+    type MissionStepType,
+    type TeammateAgent,
     type AutonomyLevel,
   } from '../../lib/tools/agent-designer';
 
@@ -646,6 +984,99 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
         </fieldset>`;
     }
 
+    function toolOptionsHtml(tools: ToolSpec[], selected: string): string {
+      const blank = `<option value="">(choose a tool)</option>`;
+      const opts = tools
+        .map(
+          (t) =>
+            `<option value="${escAttr(t.id)}" ${t.id === selected ? 'selected' : ''}>${esc(t.name.trim() || '(unnamed tool)')}</option>`,
+        )
+        .join('');
+      return blank + opts;
+    }
+
+    function loopOptionsHtml(loops: MissionLoop[], selected: string): string {
+      const blank = `<option value="">(not in a loop)</option>`;
+      const opts = loops
+        .map(
+          (l) =>
+            `<option value="${escAttr(l.id)}" ${l.id === selected ? 'selected' : ''}>${esc(l.label.trim() || '(unlabeled loop)')}</option>`,
+        )
+        .join('');
+      return blank + opts;
+    }
+
+    function loopRowHtml(loop: MissionLoop, index: number): string {
+      return `
+        <fieldset class="row" data-loop-row data-loop-id="${escAttr(loop.id)}">
+          <legend class="row-legend">Loop ${index + 1}</legend>
+          <button type="button" class="row-remove" data-remove-loop aria-label="Remove loop ${index + 1}">Remove</button>
+          <div class="row-grid">
+            <label class="row-field">
+              <span class="row-label">Label</span>
+              <input type="text" class="row-input" data-loop-field="label" value="${escAttr(loop.label)}" placeholder="For example, Retry fetch">
+            </label>
+            <label class="row-field">
+              <span class="row-label">Iteration limit</span>
+              <input type="number" class="row-input" min="0" step="1" data-loop-field="maxIterations" value="${loop.maxIterations > 0 ? loop.maxIterations : ''}" placeholder="0">
+            </label>
+            <label class="row-field">
+              <span class="row-label">Exit condition</span>
+              <input type="text" class="row-input" data-loop-field="exitCondition" value="${escAttr(loop.exitCondition)}" placeholder="What should end this loop first">
+            </label>
+          </div>
+        </fieldset>`;
+    }
+
+    function stepRowHtml(step: MissionStep, index: number, tools: ToolSpec[], loops: MissionLoop[]): string {
+      const isAction = step.type === 'action';
+      return `
+        <fieldset class="row" data-step-row data-step-id="${escAttr(step.id)}">
+          <legend class="row-legend">Step ${index + 1}</legend>
+          <button type="button" class="row-remove" data-remove-step aria-label="Remove step ${index + 1}">Remove</button>
+          <div class="row-grid">
+            <label class="row-field">
+              <span class="row-label">Type</span>
+              <select class="row-input" data-step-field="type">
+                ${MISSION_STEP_TYPES.map(
+                  (t) => `<option value="${t}" ${t === step.type ? 'selected' : ''}>${esc(MISSION_STEP_LABELS[t])}</option>`,
+                ).join('')}
+              </select>
+            </label>
+            <label class="row-field">
+              <span class="row-label">Description</span>
+              <input type="text" class="row-input" data-step-field="description" value="${escAttr(step.description)}" placeholder="What happens at this step">
+            </label>
+            <label class="row-field" data-step-tool-field ${isAction ? '' : 'hidden'}>
+              <span class="row-label">Calls tool</span>
+              <select class="row-input" data-step-field="toolId" ${isAction ? '' : 'disabled'}>${toolOptionsHtml(tools, step.toolId)}</select>
+            </label>
+            <label class="row-field">
+              <span class="row-label">Part of loop</span>
+              <select class="row-input" data-step-field="loopId">${loopOptionsHtml(loops, step.loopId)}</select>
+            </label>
+          </div>
+        </fieldset>`;
+    }
+
+    function teammateRowHtml(member: TeammateAgent, index: number): string {
+      return `
+        <fieldset class="row" data-team-row data-team-id="${escAttr(member.id)}">
+          <legend class="row-legend">Teammate ${index + 1}</legend>
+          <button type="button" class="row-remove" data-remove-team aria-label="Remove teammate ${index + 1}">Remove</button>
+          <div class="row-grid">
+            <label class="row-field">
+              <span class="row-label">Name</span>
+              <input type="text" class="row-input" data-team-field="name" value="${escAttr(member.name)}" placeholder="For example, Billing agent">
+            </label>
+            <label class="row-field">
+              <span class="row-label">Role</span>
+              <input type="text" class="row-input" data-team-field="role" value="${escAttr(member.role)}" placeholder="What this teammate is responsible for">
+            </label>
+          </div>
+        </fieldset>`;
+    }
+
     function renderToolRows(tools: ToolSpec[]) {
       const list = el('[data-tools-list]');
       if (!list) return;
@@ -660,6 +1091,30 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
       list.innerHTML = handoffs.length
         ? handoffs.map((h, i) => handoffRowHtml(h, i)).join('')
         : '<p class="empty-list-note">No handoffs yet. Most bounded agents need at least one escalation path.</p>';
+    }
+
+    function renderLoopRows(loops: MissionLoop[]) {
+      const list = el('[data-loops-list]');
+      if (!list) return;
+      list.innerHTML = loops.length
+        ? loops.map((l, i) => loopRowHtml(l, i)).join('')
+        : '<p class="empty-list-note">No loops yet. Most missions do not need one.</p>';
+    }
+
+    function renderStepRows(steps: MissionStep[], tools: ToolSpec[], loops: MissionLoop[]) {
+      const list = el('[data-steps-list]');
+      if (!list) return;
+      list.innerHTML = steps.length
+        ? steps.map((s, i) => stepRowHtml(s, i, tools, loops)).join('')
+        : '<p class="empty-list-note">No steps yet. Add at least one to produce a timeline in Observatory.</p>';
+    }
+
+    function renderTeamRows(team: TeammateAgent[]) {
+      const list = el('[data-team-list]');
+      if (!list) return;
+      list.innerHTML = team.length
+        ? team.map((t, i) => teammateRowHtml(t, i)).join('')
+        : '<p class="empty-list-note">Solo agent. No teammates defined, and none are required.</p>';
     }
 
     /* ---------------------------------------------------------------- *
@@ -690,6 +1145,35 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
       }));
     }
 
+    function readLoops(): MissionLoop[] {
+      return Array.from(root.querySelectorAll<HTMLElement>('[data-loop-row]')).map((row) => ({
+        id: row.dataset.loopId ?? nextId('loop'),
+        label: row.querySelector<HTMLInputElement>('[data-loop-field="label"]')?.value ?? '',
+        maxIterations:
+          Number(row.querySelector<HTMLInputElement>('[data-loop-field="maxIterations"]')?.value ?? 0) || 0,
+        exitCondition: row.querySelector<HTMLInputElement>('[data-loop-field="exitCondition"]')?.value ?? '',
+      }));
+    }
+
+    function readSteps(): MissionStep[] {
+      return Array.from(root.querySelectorAll<HTMLElement>('[data-step-row]')).map((row) => ({
+        id: row.dataset.stepId ?? nextId('step'),
+        type: (row.querySelector<HTMLSelectElement>('[data-step-field="type"]')?.value ??
+          'observation') as MissionStepType,
+        description: row.querySelector<HTMLInputElement>('[data-step-field="description"]')?.value ?? '',
+        toolId: row.querySelector<HTMLSelectElement>('[data-step-field="toolId"]')?.value ?? '',
+        loopId: row.querySelector<HTMLSelectElement>('[data-step-field="loopId"]')?.value ?? '',
+      }));
+    }
+
+    function readTeam(): TeammateAgent[] {
+      return Array.from(root.querySelectorAll<HTMLElement>('[data-team-row]')).map((row) => ({
+        id: row.dataset.teamId ?? nextId('team'),
+        name: row.querySelector<HTMLInputElement>('[data-team-field="name"]')?.value ?? '',
+        role: row.querySelector<HTMLInputElement>('[data-team-field="role"]')?.value ?? '',
+      }));
+    }
+
     function readState(): AgentSpecState {
       const level = (byName<HTMLSelectElement>('autonomy-level')?.value ?? 'suggest-only') as AutonomyLevel;
       return {
@@ -700,6 +1184,8 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
           doneLooksLike: byName<HTMLTextAreaElement>('purpose-done-looks-like')?.value ?? '',
           successMeasure: byName<HTMLTextAreaElement>('purpose-success-measure')?.value ?? '',
         },
+        memory: byName<HTMLTextAreaElement>('agent-memory')?.value ?? '',
+        triggers: byName<HTMLTextAreaElement>('agent-triggers')?.value ?? '',
         tools: readTools(),
         autonomy: {
           level: AUTONOMY_LEVELS.includes(level) ? level : 'suggest-only',
@@ -721,6 +1207,12 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
           onUncertainty: byName<HTMLTextAreaElement>('failure-uncertainty')?.value ?? '',
           onLoopDetected: byName<HTMLTextAreaElement>('failure-loop')?.value ?? '',
         },
+        mission: {
+          task: byName<HTMLTextAreaElement>('mission-task')?.value ?? '',
+          steps: readSteps(),
+          loops: readLoops(),
+        },
+        team: readTeam(),
       };
     }
 
@@ -735,6 +1227,8 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
       setValue('purpose-must-never', state.purpose.mustNever);
       setValue('purpose-done-looks-like', state.purpose.doneLooksLike);
       setValue('purpose-success-measure', state.purpose.successMeasure);
+      setValue('agent-memory', state.memory);
+      setValue('agent-triggers', state.triggers);
       setValue('autonomy-level', state.autonomy.level);
       setValue('autonomy-rationale', state.autonomy.rationale);
       setValue('limits-step-budget', state.limits.stepBudget > 0 ? String(state.limits.stepBudget) : '');
@@ -748,9 +1242,13 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
       setValue('failure-tool-failure', state.failure.onToolFailure);
       setValue('failure-uncertainty', state.failure.onUncertainty);
       setValue('failure-loop', state.failure.onLoopDetected);
+      setValue('mission-task', state.mission.task);
 
       renderToolRows(state.tools);
       renderHandoffRows(state.handoffs);
+      renderLoopRows(state.mission.loops);
+      renderStepRows(state.mission.steps, state.tools, state.mission.loops);
+      renderTeamRows(state.team);
       updateAutonomyDescription();
     }
 
@@ -762,6 +1260,23 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
       const level = (byName<HTMLSelectElement>('autonomy-level')?.value ?? 'suggest-only') as AutonomyLevel;
       const description = el('[data-autonomy-description]');
       if (description) description.textContent = AUTONOMY_DESCRIPTIONS[level] ?? '';
+    }
+
+    // A step's tool select and loop select list OTHER rows' data, so
+    // they need refreshing whenever a tool is added, removed, or
+    // renamed, or a loop is added, removed, or relabeled. Only the
+    // <option> lists are rewritten, and the row's own current value is
+    // preserved when it still exists, so this never disturbs whatever
+    // the user is typing elsewhere, including in the very same row.
+    function refreshStepOptions() {
+      const tools = readTools();
+      const loops = readLoops();
+      root.querySelectorAll<HTMLElement>('[data-step-row]').forEach((row) => {
+        const toolSelect = row.querySelector<HTMLSelectElement>('[data-step-field="toolId"]');
+        const loopSelect = row.querySelector<HTMLSelectElement>('[data-step-field="loopId"]');
+        if (toolSelect) toolSelect.innerHTML = toolOptionsHtml(tools, toolSelect.value);
+        if (loopSelect) loopSelect.innerHTML = loopOptionsHtml(loops, loopSelect.value);
+      });
     }
 
     function renderCompleteness(state: AgentSpecState) {
@@ -812,16 +1327,62 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
         : 'Not ready to build yet. See the missing fields and risk flags below.';
     }
 
+    function renderObservatory(state: AgentSpecState) {
+      const run = runMission(state.mission, state.tools);
+
+      const timeline = el('[data-timeline]');
+      if (timeline) {
+        timeline.innerHTML = run.timeline.length
+          ? run.timeline
+              .map((entry) => {
+                const loopNote = entry.loopLabel ? `${esc(entry.loopLabel)}, iteration ${entry.iteration}` : 'runs once';
+                const toolLine =
+                  entry.type === 'action'
+                    ? `<p class="timeline-tool ${entry.authorized ? '' : 'timeline-tool-bad'}">${
+                        entry.authorized ? `Calls ${esc(entry.toolName)}` : 'UNAUTHORIZED, no matching tool'
+                      }</p>`
+                    : '';
+                return `
+            <div class="timeline-entry" data-type="${entry.type}" data-authorized="${entry.authorized}">
+              <div class="timeline-head">
+                <span class="timeline-order mono">${entry.order + 1}</span>
+                <span class="timeline-type">${esc(MISSION_STEP_LABELS[entry.type])}</span>
+                <span class="timeline-loop">${esc(loopNote)}</span>
+              </div>
+              <p class="timeline-desc">${esc(entry.description)}</p>
+              ${toolLine}
+            </div>`;
+              })
+              .join('')
+          : '<p class="clean-note">No mission steps authored yet. Add at least one step above to produce a timeline.</p>';
+      }
+
+      const summary = el('[data-observatory-summary]');
+      if (summary) {
+        const lines = [
+          `Simulated tool calls: ${run.totalCostUnits}. This counts action steps in the run; it is not a real dollar cost. Stated cost ceiling: ${state.limits.costCeiling.trim() || 'not stated'}.`,
+          run.haltedByLimit ? run.haltReason : 'No loop reached a limit in this run.',
+          run.unauthorizedCount > 0
+            ? `Failures: ${run.unauthorizedCount} unauthorized action step(s). See Risk flags below.`
+            : 'Failures: none detected by these checks.',
+          `Recovery. Tool failure: ${state.failure.onToolFailure.trim() || 'not stated'} Uncertainty: ${state.failure.onUncertainty.trim() || 'not stated'} Loop detected: ${state.failure.onLoopDetected.trim() || 'not stated'}`,
+        ];
+        summary.innerHTML = lines.map((line) => `<p class="observatory-line">${esc(line)}</p>`).join('');
+      }
+    }
+
     function renderSpecPreview(state: AgentSpecState) {
       const target = el<HTMLElement>('[data-spec-preview]');
       if (target) target.textContent = serialize(state, 'markdown');
     }
 
     function renderAll() {
+      refreshStepOptions();
       const state = readState();
       renderReadyLine(state);
       renderCompleteness(state);
       renderFlags(state);
+      renderObservatory(state);
       renderSpecPreview(state);
     }
 
@@ -844,6 +1405,20 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
           if (!target.checked) irreversible.checked = false;
         }
       }
+      // A step's type governs whether the tool select is even a
+      // meaningful question for that row: only an action step calls a
+      // tool at all.
+      if (target instanceof HTMLSelectElement && target.dataset.stepField === 'type') {
+        const row = target.closest<HTMLElement>('[data-step-row]');
+        const toolField = row?.querySelector<HTMLElement>('[data-step-tool-field]');
+        const toolSelect = row?.querySelector<HTMLSelectElement>('[data-step-field="toolId"]');
+        const isAction = target.value === 'action';
+        if (toolField) toolField.hidden = !isAction;
+        if (toolSelect) {
+          toolSelect.disabled = !isAction;
+          if (!isAction) toolSelect.value = '';
+        }
+      }
       renderAll();
     });
 
@@ -859,6 +1434,24 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
       if (target.closest('[data-remove-handoff]')) {
         target.closest('[data-handoff-row]')?.remove();
         renumberRows('[data-handoff-row]', 'Handoff');
+        renderAll();
+        return;
+      }
+      if (target.closest('[data-remove-loop]')) {
+        target.closest('[data-loop-row]')?.remove();
+        renumberRows('[data-loop-row]', 'Loop');
+        renderAll();
+        return;
+      }
+      if (target.closest('[data-remove-step]')) {
+        target.closest('[data-step-row]')?.remove();
+        renumberRows('[data-step-row]', 'Step');
+        renderAll();
+        return;
+      }
+      if (target.closest('[data-remove-team]')) {
+        target.closest('[data-team-row]')?.remove();
+        renumberRows('[data-team-row]', 'Teammate');
         renderAll();
         return;
       }
@@ -892,6 +1485,27 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
       const handoffs = readHandoffs();
       handoffs.push({ id: nextId('handoff'), trigger: '', target: '', contextTransferred: '', owner: '' });
       renderHandoffRows(handoffs);
+      renderAll();
+    });
+
+    el('[data-add-loop]')?.addEventListener('click', () => {
+      const loops = readLoops();
+      loops.push({ id: nextId('loop'), label: '', maxIterations: 0, exitCondition: '' });
+      renderLoopRows(loops);
+      renderAll();
+    });
+
+    el('[data-add-step]')?.addEventListener('click', () => {
+      const steps = readSteps();
+      steps.push({ id: nextId('step'), type: 'observation', description: '', toolId: '', loopId: '' });
+      renderStepRows(steps, readTools(), readLoops());
+      renderAll();
+    });
+
+    el('[data-add-team]')?.addEventListener('click', () => {
+      const team = readTeam();
+      team.push({ id: nextId('team'), name: '', role: '' });
+      renderTeamRows(team);
       renderAll();
     });
 
@@ -936,7 +1550,8 @@ const autonomyOptions = AUTONOMY_LEVELS.map((level) => ({ value: level, label: A
     });
 
     // Start from the empty state so the empty case (zero tools, zero
-    // handoffs) renders its own list note rather than nothing at all.
+    // handoffs, zero mission steps) renders its own list note rather
+    // than nothing at all.
     writeState(emptyState());
     renderAll();
   }

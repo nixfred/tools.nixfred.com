@@ -45,7 +45,10 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
         character trigram overlap, computed in this browser from the
         text you can see. None of the three understands meaning, and
         none of them is a neural embedding model. Pick a ranking method
-        below to read exactly what it can and cannot do.
+        below to read exactly what it can and cannot do. Whatever you
+        paste into the text field below is chunked and ranked the same
+        way, in this tab, and is never transmitted, logged, or stored
+        anywhere else.
       </p>
     </WarningNote>
 
@@ -94,7 +97,8 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
         id="custom-text"
         type="textarea"
         rows={8}
-        placeholder="Paste text here. It is chunked and ranked exactly like the sample corpus, as a single document, and it stays in this tab."
+        placeholder="Paste text here. It is chunked and ranked as a single document."
+        hint="This stays local. Pasted text is never sent to a server, logged, or stored, and this note stays here after you paste, it is not only a placeholder."
       />
     </div>
 
@@ -192,13 +196,22 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
       }
     </div>
 
+    <ResultPanel
+      title="Compare Config A and Config B"
+      id="comparison-panel"
+      description="What each configuration retrieved that the other did not, for the same query and corpus. This is the point of running two configurations at once."
+    >
+      <div class="compare-summary" data-compare-summary role="status" aria-live="polite" />
+      <div class="compare-table" data-compare-table />
+    </ResultPanel>
+
     <div class="results">
       {
         (['a', 'b'] as const).map((slot) => (
           <ResultPanel
             title={`Config ${slot.toUpperCase()} results`}
             id={`results-${slot}`}
-            description="The chunks this configuration produced, what it retrieved, and what it left out."
+            description="The chunks this configuration produced, what it retrieved, and what it left out. Every entry names its document and the exact characters it covers."
           >
             <div class="verdict" data-verdict={slot} role="status" aria-live="polite" />
 
@@ -213,10 +226,12 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
 
             <p class="section-label">Grounded answer template</p>
             <p class="answer-note">
-              Not a generated answer. A citation scaffold built from the
-              selected chunks, for a human or a model to answer inside.
+              Not a generated answer. Exactly top k numbered citation
+              slots, each bound to a retrieved chunk or marked GAP when
+              nothing cleared the current settings. A GAP is the shape
+              of a hallucination before it happens, not an error.
             </p>
-            <pre class="answer-template" data-answer={slot} />
+            <div data-answer-slots={slot} />
           </ResultPanel>
         ))
       }
@@ -391,16 +406,18 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
     margin: 0 0 var(--space-2);
   }
 
-  .answer-template {
-    font-family: var(--font-mono);
+  .compare-summary {
     font-size: var(--text-sm);
-    white-space: pre-wrap;
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: var(--space-3);
-    background: var(--bg);
-    overflow-wrap: anywhere;
-    margin: 0;
+    line-height: 1.6;
+    color: var(--text);
+    margin: 0 0 var(--space-3);
+    max-width: var(--measure);
+  }
+
+  .compare-table {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
   }
 </style>
 
@@ -537,6 +554,71 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
     font-size: var(--text-sm);
     color: var(--text-faint);
   }
+
+  /* Answer template slots. A filled slot reuses .scored. A gap is its
+     own visibly distinct state, never color alone: the word GAP is
+     always printed, the border goes to the alert token, and the body
+     text explains why nothing was cited there. */
+  .slot-gap {
+    border-left-color: var(--status-alert);
+    background: var(--bg-alt);
+  }
+
+  .gap-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--status-alert);
+    font-weight: 700;
+  }
+
+  /* Comparison panel. */
+  .compare-row {
+    display: grid;
+    grid-template-columns: minmax(140px, 1.2fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-3);
+    align-items: start;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--line-faint);
+    border-radius: var(--radius);
+    background: var(--bg-alt);
+  }
+
+  .compare-doc {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .compare-cell {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+    color: var(--text-faint);
+  }
+
+  .compare-cell[data-present='true'] {
+    color: var(--accent);
+  }
+
+  .compare-cell[data-present='false'] {
+    color: var(--text-dim);
+  }
+
+  .compare-note {
+    display: block;
+    margin-top: var(--space-1);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+  }
+
+  @media (max-width: 34rem) {
+    .compare-row {
+      grid-template-columns: 1fr;
+    }
+  }
 </style>
 
 <script>
@@ -547,6 +629,7 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
     CHUNK_STRATEGY_HELP,
     RANK_METHOD_HONESTY,
     runForState,
+    compareConfigs,
     emptyState,
     sampleState,
     getSampleQuery,
@@ -554,6 +637,8 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
     type RetrievalConfig,
     type RetrievalResult,
     type ScoredChunk,
+    type AnswerSlot,
+    type ConfigComparison,
     type Chunk,
     type ChunkStrategy,
     type RankMethod,
@@ -672,13 +757,19 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
           : '');
     }
 
+    // Every entry names its document id and the exact characters it
+    // covers into that document. That is the whole proof behind "every
+    // selected passage can be traced to its source": the trace is
+    // printed right here, not just carried in the data.
+    const whereText = (c: Chunk) => `${esc(c.docTitle)} (${esc(c.docId)}), chunk ${c.index + 1}, characters ${c.start} to ${c.end}`;
+
     function scoredItem(rank: number | null, s: ScoredChunk, extraClass = ''): string {
       const rankLabel = rank === null ? '' : `<span class="scored-rank">#${rank}</span>`;
       return `
       <div class="scored ${extraClass}">
         <div class="scored-head">
           ${rankLabel}
-          <span class="scored-where">${esc(s.chunk.docTitle)}, chunk ${s.chunk.index + 1}</span>
+          <span class="scored-where">${whereText(s.chunk)}</span>
           <span class="scored-score">score ${s.score.toFixed(3)}</span>
         </div>
         <p class="scored-text">${esc(s.chunk.text)}</p>
@@ -703,7 +794,7 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
               (m) => `
         <div class="scored missed">
           <div class="scored-head">
-            <span class="scored-where">${esc(m.scored.chunk.docTitle)}, chunk ${m.scored.chunk.index + 1}</span>
+            <span class="scored-where">${whereText(m.scored.chunk)}</span>
             <span class="scored-score">score ${m.scored.score.toFixed(3)}</span>
           </div>
           <p class="scored-text">${esc(m.scored.chunk.text)}</p>
@@ -714,9 +805,77 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
         : '<p class="empty-note">Nothing else scored high enough to be worth showing.</p>';
     }
 
-    function renderAnswer(slot: 'a' | 'b', text: string) {
-      const target = el(`[data-answer="${slot}"]`);
-      if (target) target.textContent = text;
+    // The answer template is exactly top k slots. A filled slot looks
+    // like a citation. An empty one says GAP, in words, not just by a
+    // missing entry, because a missing entry is easy to not notice.
+    function renderAnswerSlots(slot: 'a' | 'b', slots: AnswerSlot[]) {
+      const target = el(`[data-answer-slots="${slot}"]`);
+      if (!target) return;
+      if (!slots.length) {
+        target.innerHTML = '<p class="empty-note">Enter a query, and set top k to at least 1, to generate citation slots.</p>';
+        return;
+      }
+      target.innerHTML = slots
+        .map((s) => {
+          if (!s.chunk) {
+            return `
+          <div class="scored slot-gap">
+            <div class="scored-head">
+              <span class="scored-rank">#${s.index}</span>
+              <span class="gap-label">GAP</span>
+            </div>
+            <p class="scored-reason">No chunk cleared the current settings for this slot. Do not write a claim here without evidence.</p>
+          </div>`;
+          }
+          return `
+        <div class="scored">
+          <div class="scored-head">
+            <span class="scored-rank">#${s.index}</span>
+            <span class="scored-where">${whereText(s.chunk.chunk)}</span>
+            <span class="scored-score">score ${s.chunk.score.toFixed(3)}</span>
+          </div>
+          <p class="scored-text">${esc(s.chunk.chunk.text)}</p>
+        </div>`;
+        })
+        .join('');
+    }
+
+    function renderComparison(comparison: ConfigComparison) {
+      const summary = el('[data-compare-summary]');
+      const table = el('[data-compare-table]');
+      if (!summary || !table) return;
+
+      const list = (titles: string[]) => (titles.length ? titles.join(', ') : 'none');
+      summary.innerHTML = `
+        <span>Config A found ${comparison.onlyInA.length} document(s) Config B did not: ${esc(list(comparison.onlyInA))}.</span><br />
+        <span>Config B found ${comparison.onlyInB.length} document(s) Config A did not: ${esc(list(comparison.onlyInB))}.</span><br />
+        <span>Both configurations found: ${esc(list(comparison.inBoth))}.</span>`;
+
+      if (!comparison.rows.length) {
+        table.innerHTML = '<p class="empty-note">Neither configuration retrieved anything yet. Enter a query or load a sample.</p>';
+        return;
+      }
+
+      table.innerHTML = comparison.rows
+        .map((row) => {
+          const cell = (chunks: typeof row.inA) =>
+            chunks.length
+              ? `${chunks.length} chunk(s): ${chunks.map((c) => `characters ${c.chunk.start} to ${c.chunk.end}`).join(', ')}`
+              : 'not retrieved';
+          const note =
+            row.inA.length && row.inB.length
+              ? row.spansOverlap
+                ? '<span class="compare-note">Both configurations point at overlapping text.</span>'
+                : '<span class="compare-note">Both retrieved this document, but from different, non overlapping fragments.</span>'
+              : '';
+          return `
+        <div class="compare-row">
+          <span class="compare-doc">${esc(row.docTitle)}</span>
+          <span class="compare-cell" data-present="${row.inA.length > 0}">Config A: ${esc(cell(row.inA))}</span>
+          <span class="compare-cell" data-present="${row.inB.length > 0}">Config B: ${esc(cell(row.inB))}${note}</span>
+        </div>`;
+        })
+        .join('');
     }
 
     function renderVerdict(
@@ -756,13 +915,17 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
       if (teaches) teaches.textContent = sample ? sample.teaches : '';
       if (explanation) explanation.textContent = sample ? sample.explanation : '';
 
+      const resultA = runForState(state, 'a');
+      const resultB = runForState(state, 'b');
+      const results: Record<'a' | 'b', RetrievalResult> = { a: resultA, b: resultB };
+
       for (const slot of ['a', 'b'] as const) {
         const config = slot === 'a' ? state.configA : state.configB;
-        const result = runForState(state, slot);
+        const result = results[slot];
         renderChunks(slot, result.chunks);
         renderSelected(slot, result.selected);
         renderMissed(slot, result.missed);
-        renderAnswer(slot, result.answerTemplate);
+        renderAnswerSlots(slot, result.answerSlots);
         renderVerdict(slot, result, sample, state.corpusSource);
         renderHelp(slot, config);
 
@@ -770,6 +933,12 @@ const sampleOptions = SAMPLE_QUERIES.map((s) => ({ value: s.id, label: s.query }
         if (panel) {
           panel.dataset.resultStatus = state.query.trim() ? 'ready' : 'idle';
         }
+      }
+
+      renderComparison(compareConfigs(resultA, resultB));
+      const comparePanel = document.getElementById('comparison-panel');
+      if (comparePanel) {
+        comparePanel.dataset.resultStatus = state.query.trim() ? 'ready' : 'idle';
       }
     }
 

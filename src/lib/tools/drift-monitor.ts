@@ -1,28 +1,37 @@
 /**
- * Drift Monitor, statistical engine.
+ * Drift Monitor.
  *
  * PRD: tools-nixfred-prds/tools/12-DRIFT-MONITOR.md
- * User outcome: tell a real behavior change apart from ordinary
+ * User outcome: compare two snapshots of an AI system, catch the
+ * change nobody flagged, especially a widened permission, and tell a
+ * real behavior change in the eval numbers apart from ordinary
  * sampling noise before you go chasing it.
  *
- * SCOPE NOTE, worth stating plainly because the PRD text and this file
- * do not match line for line. The PRD's listed acceptance criteria
- * describe a full system snapshot differ (prompts, tools, permissions,
- * knowledge sources, model settings, with permission expansion called
- * out for prominent treatment). This build implements the specific
- * instrument for the "evaluation results" input the PRD also lists,
- * and that framing was handed down directly for this build: compare a
- * baseline pass rate against a current pass rate and answer, with real
- * statistics, whether the movement is a real change or ordinary
- * sampling noise. Structural snapshot diffing is out of scope here.
+ * REVISION HISTORY, kept because the first version of this file
+ * shipped the wrong tool and it is worth being honest about that. The
+ * first build read the PRD's "evaluation results" input as the whole
+ * product and implemented only a two proportion significance engine
+ * (sections 1 through 12 below). That missed all four of the PRD's
+ * actual acceptance criteria: it separated nothing, gave permissions
+ * no treatment at all, cited no field paths, and had no versioned
+ * snapshot format. This revision adds the snapshot differ the PRD
+ * actually specifies as sections 13 onward, and PROMOTES IT to the
+ * primary function. Sections 1 through 12 are UNCHANGED on purpose:
+ * that engine was correct, every one of its 155 checks still passes,
+ * and it is now the secondary panel that tests the "evaluation
+ * results" field of each snapshot, one legitimate input among the
+ * seven the PRD lists rather than the whole tool.
  *
- * THE WHOLE VALUE OF THIS TOOL IS GETTING THE MATH RIGHT. A scary
- * looking drop that is actually noise, or an unremarkable drop that is
- * actually real, are both useless findings if the arithmetic is wrong.
- * Every function below states its method and its assumptions rather
- * than presenting a bare number, and tests/tool-drift-monitor.mjs
- * checks each one against a hand worked or independently derived
- * reference value, not just against itself.
+ * THE WHOLE VALUE OF THIS TOOL IS GETTING THE MATH AND THE CITATIONS
+ * RIGHT. A permission that quietly widened, a scary looking eval drop
+ * that is actually noise, or an unremarkable drop that is actually
+ * real, are all useless findings if the underlying arithmetic or the
+ * field path pointing at them is wrong. Every function below states
+ * its method and its assumptions rather than presenting a bare
+ * conclusion, and tests/tool-drift-monitor.mjs checks each one against
+ * a hand worked or independently derived reference value, or against a
+ * path that is proven to resolve in the actual snapshot, not just
+ * against itself.
  *
  * Pure functions only. No DOM, no globals, no I/O.
  */
@@ -952,4 +961,1306 @@ export function serialize(state: DriftState, format: ExportFormat): string {
 
 export function filename(_state: DriftState, _format: ExportFormat): string {
   return 'drift-monitor-report';
+}
+
+/* ====================================================================
+   13. SNAPSHOT SHAPE
+
+   03-SHARED-PLATFORM.md and the PRD's own acceptance criterion 4:
+   "snapshot format is versioned and exportable." SNAPSHOT_SCHEMA_VERSION
+   is bumped whenever a field is added, renamed, or removed below, and
+   validateSnapshot rejects anything that does not declare a version
+   this file understands, rather than guessing at an old shape.
+
+   The seven inputs are the PRD's own list: versioned prompts, tools,
+   permissions, knowledge sources, model settings, evaluation results,
+   and optional metrics. evaluation reuses DriftSnapshot from section 2
+   above unchanged, which is what lets the significance engine run
+   against it with no changes of its own.
+   ==================================================================== */
+
+export const SNAPSHOT_SCHEMA_VERSION = 1;
+
+export interface PromptVersion {
+  /** Stable identifier, e.g. "system-prompt". Field paths cite this. */
+  id: string;
+  /** Free text version label, e.g. "1.5.0" or a commit hash. */
+  version: string;
+  text: string;
+}
+
+export interface ToolDefinition {
+  /** Stable identifier. Field paths cite this. */
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+
+/**
+ * Ordinal scale of how much a permission grants, widest last. The
+ * order here, not the label text, is what widened and narrowed are
+ * computed from, via permissionRank below.
+ */
+export const PERMISSION_LEVELS = [
+  'none',
+  'read-only',
+  'scoped',
+  'read-write',
+  'unrestricted',
+] as const;
+export type PermissionLevel = (typeof PERMISSION_LEVELS)[number];
+
+export function permissionRank(level: PermissionLevel): number {
+  return PERMISSION_LEVELS.indexOf(level);
+}
+
+export interface PermissionGrant {
+  /** Stable identifier, e.g. "filesystem", "network", "payments". */
+  name: string;
+  level: PermissionLevel;
+  /** Free text scope description, e.g. "project directory only". */
+  detail: string;
+}
+
+export interface KnowledgeSource {
+  /** Stable identifier. Field paths cite this. */
+  id: string;
+  description: string;
+}
+
+export interface ModelSettings {
+  modelName: string;
+  temperature: number;
+  maxOutputTokens: number;
+  topP: number;
+}
+
+export interface MetricValue {
+  /** Stable identifier, e.g. "p50-latency-ms". */
+  key: string;
+  value: number;
+  unit?: string;
+}
+
+/**
+ * Criterion 1: "separates intentional change from unexplained drift."
+ * A changelog entry cites the same field path a finding would cite,
+ * so isIntentional below is a direct lookup, not a fuzzy match. This
+ * lives on the CURRENT snapshot because it explains what changed to
+ * arrive at this snapshot from whatever came before it, the same way
+ * a real release changelog does.
+ */
+export interface ChangelogEntry {
+  path: string;
+  note: string;
+}
+
+export interface SystemSnapshot {
+  schemaVersion: number;
+  /** Human label, e.g. "v1.5, this week's release". */
+  label: string;
+  /** Free text date or version marker. Not parsed, only displayed. */
+  capturedAt: string;
+  prompts: PromptVersion[];
+  tools: ToolDefinition[];
+  permissions: PermissionGrant[];
+  knowledgeSources: KnowledgeSource[];
+  modelSettings: ModelSettings;
+  /** The one input with a real significance test behind it. See
+   * section 2 through 10 above. */
+  evaluation: DriftSnapshot;
+  metrics: MetricValue[];
+  changelog: ChangelogEntry[];
+  /**
+   * Field paths (or category prefixes) this snapshot's evaluation is
+   * asserted to actually exercise. Empty by default, which is the
+   * honest default: a single aggregate pass rate does not, on its own,
+   * tell you which changed surface it covers. See
+   * missingEvaluationCoverage below for what this drives.
+   */
+  evaluationCoverage: string[];
+}
+
+export function emptySnapshot(label: string): SystemSnapshot {
+  return {
+    schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+    label,
+    capturedAt: '',
+    prompts: [],
+    tools: [],
+    permissions: [],
+    knowledgeSources: [],
+    modelSettings: { modelName: '', temperature: 0, maxOutputTokens: 0, topP: 1 },
+    evaluation: { n: 0, successes: 0 },
+    metrics: [],
+    changelog: [],
+    evaluationCoverage: [],
+  };
+}
+
+/**
+ * Shape and range checks. Deliberately permissive about label and
+ * capturedAt (free text, not load bearing for any calculation) and
+ * strict about everything the diff and significance engines actually
+ * read, since a bad value there produces a silently wrong finding
+ * rather than a loud error.
+ */
+export function validateSnapshot(snapshot: SystemSnapshot): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const req = (cond: boolean, field: string, message: string) => {
+    if (!cond) issues.push({ field, message, severity: 'error' });
+  };
+
+  req(
+    snapshot.schemaVersion === SNAPSHOT_SCHEMA_VERSION,
+    'schemaVersion',
+    `Snapshot schema version must be ${SNAPSHOT_SCHEMA_VERSION}, got ${snapshot.schemaVersion}.`,
+  );
+  req(Array.isArray(snapshot.prompts), 'prompts', 'Prompts must be an array.');
+  req(Array.isArray(snapshot.tools), 'tools', 'Tools must be an array.');
+  req(Array.isArray(snapshot.permissions), 'permissions', 'Permissions must be an array.');
+  req(
+    Array.isArray(snapshot.knowledgeSources),
+    'knowledgeSources',
+    'Knowledge sources must be an array.',
+  );
+  req(Array.isArray(snapshot.metrics), 'metrics', 'Metrics must be an array.');
+  req(Array.isArray(snapshot.changelog), 'changelog', 'Changelog must be an array.');
+  req(
+    Array.isArray(snapshot.evaluationCoverage),
+    'evaluationCoverage',
+    'Evaluation coverage must be an array of field paths.',
+  );
+
+  for (const p of snapshot.permissions ?? []) {
+    req(
+      PERMISSION_LEVELS.includes(p.level),
+      `permissions.${p.name}`,
+      `Permission "${p.name}" has an unknown level "${p.level}". Must be one of ${PERMISSION_LEVELS.join(', ')}.`,
+    );
+  }
+
+  const modelSettings = snapshot.modelSettings ?? ({} as ModelSettings);
+  req(
+    Number.isFinite(modelSettings.temperature),
+    'modelSettings.temperature',
+    'Model temperature must be a number.',
+  );
+  req(
+    Number.isFinite(modelSettings.maxOutputTokens) && modelSettings.maxOutputTokens >= 0,
+    'modelSettings.maxOutputTokens',
+    'Max output tokens must be a number of at least 0.',
+  );
+  req(
+    Number.isFinite(modelSettings.topP),
+    'modelSettings.topP',
+    'Model top P must be a number.',
+  );
+
+  const evaluation = snapshot.evaluation ?? ({} as DriftSnapshot);
+  req(
+    Number.isFinite(evaluation.n) && evaluation.n >= 1 && Number.isInteger(evaluation.n),
+    'evaluation.n',
+    'Evaluation sample size must be a whole number of at least 1.',
+  );
+  req(
+    Number.isFinite(evaluation.successes) &&
+      evaluation.successes >= 0 &&
+      evaluation.successes <= (evaluation.n ?? 0) &&
+      Number.isInteger(evaluation.successes),
+    'evaluation.successes',
+    'Evaluation successes must be a whole number between 0 and the sample size.',
+  );
+
+  return issues;
+}
+
+export function serializeSnapshot(snapshot: SystemSnapshot): string {
+  return JSON.stringify(snapshot, null, 2);
+}
+
+export type ParsedSnapshot =
+  | { ok: true; snapshot: SystemSnapshot }
+  | { ok: false; error: string };
+
+/**
+ * Never throws. A tool that crashes the page on a malformed paste is
+ * worse than one that shows a clear, specific parse error, per Law 7,
+ * fail loudly rather than silently or catastrophically.
+ */
+export function parseSnapshotJSON(text: string): ParsedSnapshot {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (err) {
+    return { ok: false, error: `Invalid JSON: ${(err as Error).message}` };
+  }
+  if (typeof raw !== 'object' || raw === null) {
+    return { ok: false, error: 'Snapshot must be a JSON object.' };
+  }
+  const candidate = raw as Partial<SystemSnapshot>;
+  const filled: SystemSnapshot = {
+    schemaVersion: candidate.schemaVersion ?? -1,
+    label: candidate.label ?? '',
+    capturedAt: candidate.capturedAt ?? '',
+    prompts: candidate.prompts ?? [],
+    tools: candidate.tools ?? [],
+    permissions: candidate.permissions ?? [],
+    knowledgeSources: candidate.knowledgeSources ?? [],
+    modelSettings: candidate.modelSettings ?? { modelName: '', temperature: 0, maxOutputTokens: 0, topP: 1 },
+    evaluation: candidate.evaluation ?? { n: 0, successes: 0 },
+    metrics: candidate.metrics ?? [],
+    changelog: candidate.changelog ?? [],
+    evaluationCoverage: candidate.evaluationCoverage ?? [],
+  };
+  const issues = validateSnapshot(filled);
+  const blocking = issues.filter((i) => i.severity === 'error');
+  if (blocking.length) {
+    return { ok: false, error: blocking.map((i) => i.message).join(' ') };
+  }
+  return { ok: true, snapshot: filled };
+}
+
+/* ====================================================================
+   14. FIELD PATH RESOLUTION
+
+   Criterion 3: "each finding cites its changed fields." A citation
+   that cannot be traced back to the actual data is decoration, not
+   evidence, the same lesson prompt-lab's exact character offsets
+   teach for prompt text. resolveFieldPath is the trace: given a
+   snapshot and a path a finding cited, it returns the real value at
+   that path, or undefined if the path names nothing. tests/
+   tool-drift-monitor.mjs calls this on every path every finding cites
+   and checks it resolves where the finding's direction says it should.
+
+   Path grammar: "<category>.<itemKey>" for a whole item, or
+   "<category>.<itemKey>.<field>" for one field of it. modelSettings
+   has no itemKey, since it is a single object rather than a keyed
+   list: "modelSettings.temperature" resolves directly.
+   ==================================================================== */
+
+function findByKey<T>(items: T[] | undefined, key: string, getKey: (item: T) => string): T | undefined {
+  return (items ?? []).find((item) => getKey(item) === key);
+}
+
+export function resolveFieldPath(snapshot: SystemSnapshot, path: string): unknown {
+  const [category, ...rest] = path.split('.');
+
+  switch (category) {
+    case 'prompts': {
+      const [id, field] = rest;
+      const item = findByKey(snapshot.prompts, id, (p) => p.id);
+      if (!item) return undefined;
+      return field ? (item as Record<string, unknown>)[field] : item;
+    }
+    case 'tools': {
+      const [name, field] = rest;
+      const item = findByKey(snapshot.tools, name, (t) => t.name);
+      if (!item) return undefined;
+      return field ? (item as Record<string, unknown>)[field] : item;
+    }
+    case 'permissions': {
+      const [name, field] = rest;
+      const item = findByKey(snapshot.permissions, name, (p) => p.name);
+      if (!item) return undefined;
+      return field ? (item as Record<string, unknown>)[field] : item;
+    }
+    case 'knowledgeSources': {
+      const [id, field] = rest;
+      const item = findByKey(snapshot.knowledgeSources, id, (k) => k.id);
+      if (!item) return undefined;
+      return field ? (item as Record<string, unknown>)[field] : item;
+    }
+    case 'modelSettings': {
+      const [field] = rest;
+      if (!field) return snapshot.modelSettings;
+      return (snapshot.modelSettings as unknown as Record<string, unknown>)[field];
+    }
+    case 'metrics': {
+      const [key, field] = rest;
+      const item = findByKey(snapshot.metrics, key, (m) => m.key);
+      if (!item) return undefined;
+      return field ? (item as Record<string, unknown>)[field] : item;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/* ====================================================================
+   15. STRUCTURED DIFF
+
+   Criterion 3 again, plus criterion 2, permission expansion prominent,
+   and criterion 1, intentional versus unexplained. Every category
+   below produces DriftFinding records with the same shape, so sorting,
+   the rollback checklist, and the missing coverage check all work
+   against one uniform list regardless of which of the seven inputs a
+   finding came from.
+   ==================================================================== */
+
+export type ChangeCategory =
+  | 'prompt'
+  | 'tool'
+  | 'permission'
+  | 'knowledge-source'
+  | 'model-setting'
+  | 'metric';
+
+export type ChangeDirection = 'added' | 'removed' | 'modified' | 'widened' | 'narrowed';
+
+/**
+ * widened and narrowed exist ONLY for the permission category, on
+ * purpose: those are the two words the PRD uses, and reserving them
+ * for the one category that has a real ordinal scale (permissionRank
+ * above) keeps them meaning exactly one thing everywhere they appear,
+ * rather than becoming a vague synonym for "got bigger" applied loosely
+ * to tools or prompts.
+ */
+export type RiskLevel = 'critical' | 'high' | 'medium' | 'low' | 'info';
+
+export const RISK_RANK: Record<RiskLevel, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  info: 4,
+};
+
+export interface FieldChange {
+  path: string;
+  before: string;
+  after: string;
+}
+
+export interface DriftFinding {
+  /** Stable id, derived from the primary field path. */
+  id: string;
+  category: ChangeCategory;
+  direction: ChangeDirection;
+  risk: RiskLevel;
+  /** One or more cited fields. The first is the primary one that
+   * missing coverage and the rollback checklist key off of. */
+  fields: FieldChange[];
+  headline: string;
+  likelyEffect: string;
+  /** True when the current snapshot's changelog explains this exact
+   * field path. Criterion 1: unmarked is unexplained drift. */
+  intentional: boolean;
+}
+
+function isIntentional(current: SystemSnapshot, ...paths: string[]): boolean {
+  const changelog = current.changelog ?? [];
+  return paths.some((path) => changelog.some((entry) => entry.path === path));
+}
+
+function diffPrompts(baseline: SystemSnapshot, current: SystemSnapshot): DriftFinding[] {
+  const findings: DriftFinding[] = [];
+  const before = byKeyMap(baseline.prompts, (p) => p.id);
+  const after = byKeyMap(current.prompts, (p) => p.id);
+  for (const id of allKeys(before, after)) {
+    const b = before.get(id);
+    const a = after.get(id);
+    const path = `prompts.${id}`;
+    if (!b && a) {
+      findings.push({
+        id: path,
+        category: 'prompt',
+        direction: 'added',
+        risk: 'medium',
+        fields: [{ path: `${path}.text`, before: '(not present)', after: a.text }],
+        headline: `Prompt "${id}" is new, at version ${a.version}.`,
+        likelyEffect:
+          'A new instruction surface exists that did not exist in the baseline. Review it with the same scrutiny as any other instruction the model receives.',
+        intentional: isIntentional(current, path, `${path}.text`),
+      });
+      continue;
+    }
+    if (b && !a) {
+      findings.push({
+        id: path,
+        category: 'prompt',
+        direction: 'removed',
+        risk: 'medium',
+        fields: [{ path: `${path}.text`, before: b.text, after: '(not present)' }],
+        headline: `Prompt "${id}" was removed. It was at version ${b.version}.`,
+        likelyEffect: 'Any behavior that depended on this instruction is now unconstrained by it.',
+        intentional: isIntentional(current, path, `${path}.text`),
+      });
+      continue;
+    }
+    if (b && a && (b.text !== a.text || b.version !== a.version)) {
+      findings.push({
+        id: `${path}.text`,
+        category: 'prompt',
+        direction: 'modified',
+        risk: 'medium',
+        fields: [
+          { path: `${path}.version`, before: b.version, after: a.version },
+          { path: `${path}.text`, before: b.text, after: a.text },
+        ],
+        headline: `Prompt "${id}" changed from version ${b.version} to ${a.version}.`,
+        likelyEffect:
+          'Instruction text the model reads on every turn is different. This is usually the highest leverage change in the whole comparison and the least visible from the outside.',
+        intentional: isIntentional(current, path, `${path}.text`, `${path}.version`),
+      });
+    }
+  }
+  return findings;
+}
+
+function diffTools(baseline: SystemSnapshot, current: SystemSnapshot): DriftFinding[] {
+  const findings: DriftFinding[] = [];
+  const before = byKeyMap(baseline.tools, (t) => t.name);
+  const after = byKeyMap(current.tools, (t) => t.name);
+  for (const name of allKeys(before, after)) {
+    const b = before.get(name);
+    const a = after.get(name);
+    const path = `tools.${name}`;
+    if (!b && a) {
+      findings.push({
+        id: path,
+        category: 'tool',
+        direction: 'added',
+        risk: a.enabled ? 'medium' : 'low',
+        fields: [{ path: `${path}.enabled`, before: '(not present)', after: String(a.enabled) }],
+        headline: `Tool "${name}" is new${a.enabled ? ' and enabled' : ', currently disabled'}.`,
+        likelyEffect: a.enabled
+          ? `The model can now call "${name}": ${a.description}`
+          : 'Defined but disabled, so it grants no capability yet. Worth watching for a future change that flips it on.',
+        intentional: isIntentional(current, path, `${path}.enabled`),
+      });
+      continue;
+    }
+    if (b && !a) {
+      findings.push({
+        id: path,
+        category: 'tool',
+        direction: 'removed',
+        risk: 'low',
+        fields: [{ path: `${path}.enabled`, before: String(b.enabled), after: '(not present)' }],
+        headline: `Tool "${name}" was removed.`,
+        likelyEffect: `Any behavior relying on "${name}" being callable will fail or fall back to something else.`,
+        intentional: isIntentional(current, path, `${path}.enabled`),
+      });
+      continue;
+    }
+    if (b && a && b.enabled !== a.enabled) {
+      findings.push({
+        id: `${path}.enabled`,
+        category: 'tool',
+        direction: 'modified',
+        risk: a.enabled ? 'medium' : 'low',
+        fields: [{ path: `${path}.enabled`, before: String(b.enabled), after: String(a.enabled) }],
+        headline: `Tool "${name}" was ${a.enabled ? 'enabled' : 'disabled'}.`,
+        likelyEffect: a.enabled
+          ? `The model gained the ability to call "${name}": ${a.description}`
+          : `The model lost the ability to call "${name}".`,
+        intentional: isIntentional(current, `${path}.enabled`),
+      });
+    }
+    if (b && a && b.description !== a.description) {
+      findings.push({
+        id: `${path}.description`,
+        category: 'tool',
+        direction: 'modified',
+        risk: 'info',
+        fields: [{ path: `${path}.description`, before: b.description, after: a.description }],
+        headline: `Tool "${name}" description text changed.`,
+        likelyEffect:
+          "The model's own sense of when to call this tool may shift, since it reads this description to decide.",
+        intentional: isIntentional(current, `${path}.description`),
+      });
+    }
+  }
+  return findings;
+}
+
+/**
+ * THE HEADLINE CATEGORY. Criterion 2: permission expansion receives
+ * prominent treatment, and a narrowing is not the same event as a
+ * widening. Both directions are computed from the same permissionRank
+ * comparison; only the risk assigned and the language used differ.
+ * An absent grant on either side counts as rank 0, "none", which is
+ * what makes a brand new permission read as a widening from nothing
+ * and a fully revoked one read as a narrowing to nothing, with no
+ * special casing needed for either.
+ */
+function diffPermissions(baseline: SystemSnapshot, current: SystemSnapshot): DriftFinding[] {
+  const findings: DriftFinding[] = [];
+  const before = byKeyMap(baseline.permissions, (p) => p.name);
+  const after = byKeyMap(current.permissions, (p) => p.name);
+  for (const name of allKeys(before, after)) {
+    const b = before.get(name);
+    const a = after.get(name);
+    const beforeLevel: PermissionLevel = b?.level ?? 'none';
+    const afterLevel: PermissionLevel = a?.level ?? 'none';
+    const path = `permissions.${name}`;
+
+    if (beforeLevel === afterLevel) {
+      const beforeDetail = b?.detail ?? '';
+      const afterDetail = a?.detail ?? '';
+      if (beforeDetail !== afterDetail) {
+        findings.push({
+          id: `${path}.detail`,
+          category: 'permission',
+          direction: 'modified',
+          risk: 'low',
+          fields: [{ path: `${path}.detail`, before: beforeDetail || '(none)', after: afterDetail || '(none)' }],
+          headline: `Permission "${name}" scope description changed while staying at the ${afterLevel} level.`,
+          likelyEffect:
+            'The boundary of what this permission covers moved without changing its overall level. Read the detail text; a level that did not change can still cover different ground.',
+          intentional: isIntentional(current, path, `${path}.detail`),
+        });
+      }
+      continue;
+    }
+
+    const widened = permissionRank(afterLevel) > permissionRank(beforeLevel);
+    if (widened) {
+      findings.push({
+        id: path,
+        category: 'permission',
+        direction: 'widened',
+        risk: afterLevel === 'unrestricted' ? 'critical' : 'high',
+        fields: [{ path: `${path}.level`, before: beforeLevel, after: afterLevel }],
+        headline: `Permission "${name}" widened from ${beforeLevel} to ${afterLevel}.`,
+        likelyEffect: `The system can now do strictly more than the baseline allowed under "${name}"${
+          a?.detail ? `. Current scope: ${a.detail}.` : '.'
+        } Review this before anything else in the comparison, not after.`,
+        intentional: isIntentional(current, path, `${path}.level`),
+      });
+    } else {
+      findings.push({
+        id: path,
+        category: 'permission',
+        direction: 'narrowed',
+        risk: 'info',
+        fields: [{ path: `${path}.level`, before: beforeLevel, after: afterLevel }],
+        headline: `Permission "${name}" narrowed from ${beforeLevel} to ${afterLevel}.`,
+        likelyEffect:
+          'The system can now do strictly less than the baseline allowed here. This reduces blast radius. It is not the same event as a widening and is not treated as a risk.',
+        intentional: isIntentional(current, path, `${path}.level`),
+      });
+    }
+  }
+  return findings;
+}
+
+function diffKnowledgeSources(baseline: SystemSnapshot, current: SystemSnapshot): DriftFinding[] {
+  const findings: DriftFinding[] = [];
+  const before = byKeyMap(baseline.knowledgeSources, (k) => k.id);
+  const after = byKeyMap(current.knowledgeSources, (k) => k.id);
+  for (const id of allKeys(before, after)) {
+    const b = before.get(id);
+    const a = after.get(id);
+    const path = `knowledgeSources.${id}`;
+    if (!b && a) {
+      findings.push({
+        id: path,
+        category: 'knowledge-source',
+        direction: 'added',
+        risk: 'medium',
+        fields: [{ path: `${path}.description`, before: '(not present)', after: a.description }],
+        headline: `Knowledge source "${id}" is new.`,
+        likelyEffect: `The model can now draw on material it could not see before: ${a.description}`,
+        intentional: isIntentional(current, path, `${path}.description`),
+      });
+      continue;
+    }
+    if (b && !a) {
+      findings.push({
+        id: path,
+        category: 'knowledge-source',
+        direction: 'removed',
+        risk: 'low',
+        fields: [{ path: `${path}.description`, before: b.description, after: '(not present)' }],
+        headline: `Knowledge source "${id}" was removed.`,
+        likelyEffect: 'Answers that relied on this source will lose that grounding.',
+        intentional: isIntentional(current, path, `${path}.description`),
+      });
+      continue;
+    }
+    if (b && a && b.description !== a.description) {
+      findings.push({
+        id: `${path}.description`,
+        category: 'knowledge-source',
+        direction: 'modified',
+        risk: 'info',
+        fields: [{ path: `${path}.description`, before: b.description, after: a.description }],
+        headline: `Knowledge source "${id}" description changed.`,
+        likelyEffect: 'What this source actually covers may be different from what its name implies.',
+        intentional: isIntentional(current, `${path}.description`),
+      });
+    }
+  }
+  return findings;
+}
+
+const MODEL_SETTING_RISK: Record<keyof ModelSettings, RiskLevel> = {
+  modelName: 'high',
+  temperature: 'medium',
+  maxOutputTokens: 'low',
+  topP: 'low',
+};
+
+const MODEL_SETTING_EFFECT: Record<keyof ModelSettings, string> = {
+  modelName: 'A different model can differ in every dimension at once: capability, style, safety behavior, and cost.',
+  temperature: 'Higher values spread the output distribution wider, so the same prompt gets less consistent answers.',
+  maxOutputTokens: 'Changes the hard ceiling on response length, which can silently truncate output near the old limit.',
+  topP: 'Changes how much of the probability distribution the model is allowed to sample from at each token.',
+};
+
+function diffModelSettings(baseline: SystemSnapshot, current: SystemSnapshot): DriftFinding[] {
+  const findings: DriftFinding[] = [];
+  const keys = Object.keys(MODEL_SETTING_RISK) as Array<keyof ModelSettings>;
+  for (const key of keys) {
+    const b = baseline.modelSettings[key];
+    const a = current.modelSettings[key];
+    if (b === a) continue;
+    const path = `modelSettings.${key}`;
+    findings.push({
+      id: path,
+      category: 'model-setting',
+      direction: 'modified',
+      risk: MODEL_SETTING_RISK[key],
+      fields: [{ path, before: String(b), after: String(a) }],
+      headline: `Model setting "${key}" changed from ${b} to ${a}.`,
+      likelyEffect: MODEL_SETTING_EFFECT[key],
+      intentional: isIntentional(current, path),
+    });
+  }
+  return findings;
+}
+
+/**
+ * Purely informational. The one metric with a real significance test
+ * behind it is evaluation, tested in section 10 above; these are
+ * whatever else the snapshot chose to record, reported as a raw delta
+ * with no claim about whether the delta is real.
+ */
+function diffMetrics(baseline: SystemSnapshot, current: SystemSnapshot): DriftFinding[] {
+  const findings: DriftFinding[] = [];
+  const before = byKeyMap(baseline.metrics, (m) => m.key);
+  const after = byKeyMap(current.metrics, (m) => m.key);
+  for (const key of allKeys(before, after)) {
+    const b = before.get(key);
+    const a = after.get(key);
+    const path = `metrics.${key}`;
+    if (!b || !a) {
+      findings.push({
+        id: path,
+        category: 'metric',
+        direction: !b ? 'added' : 'removed',
+        risk: 'info',
+        fields: [
+          {
+            path,
+            before: b ? String(b.value) : '(not present)',
+            after: a ? String(a.value) : '(not present)',
+          },
+        ],
+        headline: `Metric "${key}" ${!b ? 'is newly tracked' : 'is no longer tracked'}.`,
+        likelyEffect:
+          'Informational only. This is a raw value with no significance test behind it; see the evaluation results panel for the one number this tool tests rigorously.',
+        intentional: isIntentional(current, path),
+      });
+      continue;
+    }
+    if (b.value !== a.value) {
+      const delta = a.value - b.value;
+      const unit = a.unit ?? b.unit ?? '';
+      findings.push({
+        id: path,
+        category: 'metric',
+        direction: 'modified',
+        risk: 'info',
+        fields: [{ path, before: String(b.value), after: String(a.value) }],
+        headline: `Metric "${key}" moved from ${b.value}${unit} to ${a.value}${unit} (${delta >= 0 ? '+' : ''}${delta}${unit}).`,
+        likelyEffect:
+          'Informational only, not a significance tested comparison. If this is the number you actually need to trust statistically, it belongs in evaluation results instead, which does get tested.',
+        intentional: isIntentional(current, path),
+      });
+    }
+  }
+  return findings;
+}
+
+function byKeyMap<T>(items: T[] | undefined, getKey: (item: T) => string): Map<string, T> {
+  const map = new Map<string, T>();
+  for (const item of items ?? []) map.set(getKey(item), item);
+  return map;
+}
+
+function allKeys<T>(a: Map<string, T>, b: Map<string, T>): string[] {
+  return [...new Set([...a.keys(), ...b.keys()])];
+}
+
+/**
+ * Sort order the UI and the export both use. Tier 0 is permission
+ * widenings and ONLY permission widenings, so criterion 2, permission
+ * expansion outranks everything else, holds regardless of what other
+ * risk levels happen to be in play in a given comparison.
+ */
+function findingTier(f: DriftFinding): number {
+  return f.category === 'permission' && f.direction === 'widened' ? 0 : 1;
+}
+
+export function sortFindings(findings: DriftFinding[]): DriftFinding[] {
+  return [...findings].sort((x, y) => {
+    const tierDiff = findingTier(x) - findingTier(y);
+    if (tierDiff !== 0) return tierDiff;
+    const riskDiff = RISK_RANK[x.risk] - RISK_RANK[y.risk];
+    if (riskDiff !== 0) return riskDiff;
+    return x.id.localeCompare(y.id);
+  });
+}
+
+export function diffSnapshots(baseline: SystemSnapshot, current: SystemSnapshot): DriftFinding[] {
+  const findings = [
+    ...diffPermissions(baseline, current),
+    ...diffTools(baseline, current),
+    ...diffPrompts(baseline, current),
+    ...diffKnowledgeSources(baseline, current),
+    ...diffModelSettings(baseline, current),
+    ...diffMetrics(baseline, current),
+  ];
+  return sortFindings(findings);
+}
+
+/* ====================================================================
+   16. MISSING EVALUATION COVERAGE
+
+   A genuinely useful output the PRD asks for by name: which changed
+   surfaces have no eval touching them. Honest by construction, since
+   evaluationCoverage defaults to empty: unless a snapshot explicitly
+   declares what its evaluation exercises, every structural change
+   reports as uncovered, which is the conservative, correct default
+   rather than assuming coverage that was never demonstrated.
+   ==================================================================== */
+
+export interface MissingCoverageItem {
+  path: string;
+  category: ChangeCategory;
+  description: string;
+}
+
+function pathIsCovered(path: string, coverage: string[]): boolean {
+  return coverage.some((c) => path === c || path.startsWith(`${c}.`));
+}
+
+/** Strips a leaf field suffix back to the item level, so a prompt's
+ * .text and .version changes collapse to one coverage question about
+ * "prompts.system-prompt" rather than two. */
+function primaryPathOf(finding: DriftFinding): string {
+  const first = finding.fields[0]?.path ?? finding.id;
+  return first.replace(/\.(level|enabled|text|version|description)$/, '');
+}
+
+export function missingEvaluationCoverage(
+  findings: DriftFinding[],
+  current: SystemSnapshot,
+): MissingCoverageItem[] {
+  const coverage = current.evaluationCoverage ?? [];
+  const structural = findings.filter((f) => f.category !== 'metric');
+  const seen = new Set<string>();
+  const out: MissingCoverageItem[] = [];
+  for (const f of structural) {
+    const path = primaryPathOf(f);
+    if (seen.has(path)) continue;
+    seen.add(path);
+    if (!pathIsCovered(path, coverage)) {
+      out.push({ path, category: f.category, description: f.headline });
+    }
+  }
+  return out;
+}
+
+/* ====================================================================
+   17. ROLLBACK CHECKLIST
+
+   Ordered by containment logic, not just by risk: cut off anything
+   that grants new access first (a widened permission, then a newly
+   capable tool), correct the model's own configuration next, then
+   restore context (knowledge sources, prompts), and list capability
+   REDUCTIONS (a narrowing, a removed tool) last, since reverting those
+   would mean granting access back, not containing anything. Metrics
+   are excluded entirely: they are observed numbers, not configuration,
+   and there is nothing in a metric to revert.
+   ==================================================================== */
+
+export interface RollbackStep {
+  order: number;
+  path: string;
+  instruction: string;
+}
+
+const ROLLBACK_ELIGIBLE: ChangeCategory[] = [
+  'permission',
+  'tool',
+  'model-setting',
+  'knowledge-source',
+  'prompt',
+];
+
+function rollbackTier(f: DriftFinding): number {
+  if (f.category === 'permission' && f.direction === 'widened') return 0;
+  if (f.category === 'tool' && f.direction !== 'removed') return 1;
+  if (f.category === 'model-setting') return 2;
+  if (f.category === 'knowledge-source') return 3;
+  if (f.category === 'prompt') return 4;
+  return 5; // narrowed permissions, removed tools: capability reductions.
+}
+
+export function buildRollbackChecklist(findings: DriftFinding[]): RollbackStep[] {
+  const eligible = findings.filter((f) => ROLLBACK_ELIGIBLE.includes(f.category));
+  const ordered = [...eligible].sort((x, y) => {
+    const tierDiff = rollbackTier(x) - rollbackTier(y);
+    if (tierDiff !== 0) return tierDiff;
+    const riskDiff = RISK_RANK[x.risk] - RISK_RANK[y.risk];
+    if (riskDiff !== 0) return riskDiff;
+    return x.id.localeCompare(y.id);
+  });
+  return ordered.map((f, i) => {
+    const primary = f.fields[0];
+    const urgency = f.intentional
+      ? 'Marked intentional: confirm with whoever approved it before reverting.'
+      : 'Unexplained: prioritize confirming and reverting this one.';
+    return {
+      order: i + 1,
+      path: primary?.path ?? f.id,
+      instruction: `Revert ${primary?.path ?? f.id} from "${primary?.after ?? '?'}" back to "${primary?.before ?? '?'}". ${urgency}`,
+    };
+  });
+}
+
+/* ====================================================================
+   18. THE COMPARISON, TOP LEVEL
+
+   Wires the structured diff (sections 13 through 17) to the
+   significance engine (sections 2 through 10) by reading each
+   snapshot's own evaluation field, so the two proportion machinery
+   above runs completely unmodified. This is the primary tool module
+   contract surface: DriftComparison is the state, analyzeComparison is
+   the one function the page calls to get everything it renders.
+   ==================================================================== */
+
+export interface DriftComparison {
+  baseline: SystemSnapshot;
+  current: SystemSnapshot;
+  /** Significance settings for the evaluation field. Same meaning as
+   * the matching fields on DriftState in section 2. */
+  alpha: number;
+  metricsMonitored: number;
+  targetPower: number;
+  minMeaningfulEffect: number;
+  evalSetChanged: EvalSetChanged;
+}
+
+export interface ComparisonAnalysis {
+  findings: DriftFinding[];
+  /** Permission widenings only, already the front of findings, split
+   * out again so the UI can render them as a distinct callout. */
+  headlineFindings: DriftFinding[];
+  missingCoverage: MissingCoverageItem[];
+  rollback: RollbackStep[];
+  /** The full section 2 through 10 analysis, unmodified, run against
+   * baseline.evaluation and current.evaluation. */
+  significance: DriftAnalysis;
+}
+
+function toSignificanceState(comparison: DriftComparison): DriftState {
+  return {
+    metricName: `${comparison.current.label || 'current'} vs ${comparison.baseline.label || 'baseline'}`,
+    baseline: comparison.baseline.evaluation,
+    current: comparison.current.evaluation,
+    alpha: comparison.alpha,
+    metricsMonitored: comparison.metricsMonitored,
+    targetPower: comparison.targetPower,
+    minMeaningfulEffect: comparison.minMeaningfulEffect,
+    evalSetChanged: comparison.evalSetChanged,
+  };
+}
+
+export function analyzeComparison(comparison: DriftComparison): ComparisonAnalysis {
+  const findings = diffSnapshots(comparison.baseline, comparison.current);
+  return {
+    findings,
+    headlineFindings: findings.filter((f) => f.category === 'permission' && f.direction === 'widened'),
+    missingCoverage: missingEvaluationCoverage(findings, comparison.current),
+    rollback: buildRollbackChecklist(findings),
+    significance: analyzeDrift(toSignificanceState(comparison)),
+  };
+}
+
+function pushSignificanceIssues(
+  issues: ValidationIssue[],
+  comparison: Pick<
+    DriftComparison,
+    'alpha' | 'metricsMonitored' | 'targetPower' | 'minMeaningfulEffect' | 'evalSetChanged'
+  >,
+): void {
+  if (!Number.isFinite(comparison.alpha) || comparison.alpha <= 0 || comparison.alpha >= 1) {
+    issues.push({ field: 'alpha', message: 'Significance level must be strictly between 0 and 1.', severity: 'error' });
+  }
+  if (
+    !Number.isFinite(comparison.metricsMonitored) ||
+    comparison.metricsMonitored < 1 ||
+    !Number.isInteger(comparison.metricsMonitored)
+  ) {
+    issues.push({
+      field: 'metricsMonitored',
+      message: 'Number of metrics monitored must be a whole number of at least 1.',
+      severity: 'error',
+    });
+  }
+  if (!Number.isFinite(comparison.targetPower) || comparison.targetPower <= 0 || comparison.targetPower >= 1) {
+    issues.push({ field: 'targetPower', message: 'Target power must be strictly between 0 and 1.', severity: 'error' });
+  }
+  if (!Number.isFinite(comparison.minMeaningfulEffect) || comparison.minMeaningfulEffect <= 0) {
+    issues.push({
+      field: 'minMeaningfulEffect',
+      message: 'The smallest change that matters must be greater than zero.',
+      severity: 'error',
+    });
+  }
+  if (comparison.evalSetChanged === 'yes') {
+    issues.push({
+      field: 'evalSetChanged',
+      message: 'The evaluation set changed, so the significance panel cannot produce a valid verdict.',
+      severity: 'warning',
+    });
+  }
+}
+
+export function validateComparison(comparison: DriftComparison): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  for (const issue of validateSnapshot(comparison.baseline)) {
+    issues.push({ ...issue, field: `baseline.${issue.field}` });
+  }
+  for (const issue of validateSnapshot(comparison.current)) {
+    issues.push({ ...issue, field: `current.${issue.field}` });
+  }
+  pushSignificanceIssues(issues, comparison);
+  return issues;
+}
+
+export function emptyComparison(): DriftComparison {
+  return {
+    baseline: emptySnapshot('Baseline'),
+    current: emptySnapshot('Current'),
+    alpha: 0.05,
+    metricsMonitored: 1,
+    targetPower: 0.8,
+    minMeaningfulEffect: 0.05,
+    evalSetChanged: 'no',
+  };
+}
+
+export function resetComparison(): DriftComparison {
+  return emptyComparison();
+}
+
+/* ====================================================================
+   19. COMPARISON SAMPLES
+
+   Criterion 4 again: "make the two sample snapshots real and
+   loadable." Two ship, each a complete, schema valid snapshot pair
+   rather than a fragment, and each tuned to teach a different half of
+   the tool: one where a permission widened quietly and the eval
+   number genuinely moved, one where every change is explained,
+   a permission narrowed, and the eval movement is noise.
+   ==================================================================== */
+
+export interface ComparisonSample {
+  id: string;
+  name: string;
+  teaches: string;
+  comparison: DriftComparison;
+}
+
+export const COMPARISON_SAMPLES: ComparisonSample[] = [
+  {
+    id: 'unexplained-permission-widening',
+    name: 'A release with a quiet permission widening',
+    teaches:
+      'The headline case this tool exists for. Network access widened from none to unrestricted and a new payments permission appeared, neither one in the changelog, alongside a prompt change that WAS explained. The eval score also genuinely dropped. Both facts matter and neither is obvious from a changelog alone.',
+    comparison: {
+      baseline: {
+        schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        label: 'v1.4 baseline, last known good',
+        capturedAt: '2026-06-01',
+        prompts: [
+          {
+            id: 'system-prompt',
+            version: '1.4.0',
+            text: 'You are a support assistant. Answer using only the provided knowledge base. Escalate anything about billing disputes to a human.',
+          },
+        ],
+        tools: [
+          { name: 'search-knowledge-base', description: 'Full text search over the support knowledge base.', enabled: true },
+          { name: 'create-ticket', description: 'Open a support ticket for a human to handle.', enabled: true },
+        ],
+        permissions: [
+          { name: 'filesystem', level: 'read-only', detail: 'Read access to the knowledge base directory only.' },
+          { name: 'network', level: 'none', detail: 'No outbound network access.' },
+          { name: 'ticketing-system', level: 'scoped', detail: 'Create and read tickets, cannot close or delete them.' },
+        ],
+        knowledgeSources: [
+          { id: 'kb-support-articles', description: 'Public facing support articles, 400 documents.' },
+          { id: 'kb-internal-runbook', description: 'Internal escalation runbook, staff only.' },
+        ],
+        modelSettings: { modelName: 'claude-sonnet-5', temperature: 0.2, maxOutputTokens: 800, topP: 1 },
+        evaluation: { n: 500, successes: 460 },
+        metrics: [
+          { key: 'p50-latency-ms', value: 820, unit: 'ms' },
+          { key: 'cost-per-call-usd', value: 0.004, unit: 'usd' },
+        ],
+        changelog: [],
+        evaluationCoverage: [],
+      },
+      current: {
+        schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        label: "v1.5, this week's release",
+        capturedAt: '2026-07-20',
+        prompts: [
+          {
+            id: 'system-prompt',
+            version: '1.5.0',
+            text: 'You are a support assistant. Answer using the knowledge base and your own judgment when it is incomplete. Escalate anything about billing disputes to a human.',
+          },
+        ],
+        tools: [
+          { name: 'search-knowledge-base', description: 'Full text search over the support knowledge base.', enabled: true },
+          { name: 'create-ticket', description: 'Open a support ticket for a human to handle.', enabled: true },
+          { name: 'issue-refund', description: 'Issue a refund up to 50 dollars without approval.', enabled: true },
+        ],
+        permissions: [
+          { name: 'filesystem', level: 'read-only', detail: 'Read access to the knowledge base directory only.' },
+          { name: 'network', level: 'unrestricted', detail: 'No outbound restriction list configured.' },
+          { name: 'ticketing-system', level: 'scoped', detail: 'Create and read tickets, cannot close or delete them.' },
+          { name: 'payments', level: 'scoped', detail: 'Issue refunds up to 50 dollars per ticket.' },
+        ],
+        knowledgeSources: [
+          { id: 'kb-support-articles', description: 'Public facing support articles, 420 documents.' },
+          { id: 'kb-internal-runbook', description: 'Internal escalation runbook, staff only.' },
+        ],
+        modelSettings: { modelName: 'claude-sonnet-5', temperature: 0.4, maxOutputTokens: 800, topP: 1 },
+        evaluation: { n: 500, successes: 430 },
+        metrics: [
+          { key: 'p50-latency-ms', value: 910, unit: 'ms' },
+          { key: 'cost-per-call-usd', value: 0.005, unit: 'usd' },
+        ],
+        changelog: [
+          { path: 'prompts.system-prompt', note: 'Loosened grounding language to reduce over escalation. Approved by product.' },
+          { path: 'modelSettings.temperature', note: 'Raised temperature for more natural phrasing, per support team feedback.' },
+        ],
+        evaluationCoverage: ['prompts.system-prompt'],
+      },
+      alpha: 0.05,
+      metricsMonitored: 1,
+      targetPower: 0.8,
+      minMeaningfulEffect: 0.05,
+      evalSetChanged: 'no',
+    },
+  },
+  {
+    id: 'routine-explained-release',
+    name: 'A routine release, fully explained',
+    teaches:
+      'What a clean release looks like. Every change has a changelog entry, a permission narrowed rather than widened, and the raw eval movement, which looks like a real one point drop, turns out to be noise once the interval is checked instead of the bare number.',
+    comparison: {
+      baseline: {
+        schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        label: 'v2.0 baseline',
+        capturedAt: '2026-05-01',
+        prompts: [
+          {
+            id: 'summarizer-prompt',
+            version: '2.0.0',
+            text: 'Summarize the document in five bullet points for an executive reader.',
+          },
+        ],
+        tools: [
+          { name: 'fetch-document', description: 'Retrieve a document by id from the document store.', enabled: true },
+        ],
+        permissions: [
+          { name: 'filesystem', level: 'read-write', detail: 'Read and write access to the scratch directory.' },
+          { name: 'network', level: 'none', detail: 'No outbound network access.' },
+        ],
+        knowledgeSources: [{ id: 'kb-style-guide', description: 'Company writing style guide.' }],
+        modelSettings: { modelName: 'claude-sonnet-5', temperature: 0.3, maxOutputTokens: 500, topP: 1 },
+        evaluation: { n: 3000, successes: 1500 },
+        metrics: [{ key: 'p50-latency-ms', value: 640, unit: 'ms' }],
+        changelog: [],
+        evaluationCoverage: [],
+      },
+      current: {
+        schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        label: 'v2.1, security hardening pass',
+        capturedAt: '2026-07-15',
+        prompts: [
+          {
+            id: 'summarizer-prompt',
+            version: '2.1.0',
+            text: 'Summarize the document in five bullet points for an executive reader. Do not include numbers you cannot verify against the source text.',
+          },
+        ],
+        tools: [
+          { name: 'fetch-document', description: 'Retrieve a document by id from the document store.', enabled: true },
+        ],
+        permissions: [
+          {
+            name: 'filesystem',
+            level: 'read-only',
+            detail: 'Read access to the scratch directory. Write access removed in the security pass.',
+          },
+          { name: 'network', level: 'none', detail: 'No outbound network access.' },
+        ],
+        knowledgeSources: [{ id: 'kb-style-guide', description: 'Company writing style guide.' }],
+        modelSettings: { modelName: 'claude-sonnet-5', temperature: 0.3, maxOutputTokens: 500, topP: 1 },
+        evaluation: { n: 3000, successes: 1470 },
+        metrics: [{ key: 'p50-latency-ms', value: 615, unit: 'ms' }],
+        changelog: [
+          {
+            path: 'permissions.filesystem',
+            note: 'Removed write access in the quarterly security hardening pass. Filesystem writes were unused in production.',
+          },
+          {
+            path: 'prompts.summarizer-prompt',
+            note: 'Added a verification clause after two Customer reports of fabricated numbers.',
+          },
+        ],
+        evaluationCoverage: ['prompts.summarizer-prompt', 'permissions.filesystem'],
+      },
+      alpha: 0.05,
+      metricsMonitored: 1,
+      targetPower: 0.8,
+      minMeaningfulEffect: 0.05,
+      evalSetChanged: 'no',
+    },
+  },
+];
+
+export function getComparisonSample(id: string): ComparisonSample | undefined {
+  return COMPARISON_SAMPLES.find((s) => s.id === id);
+}
+
+export function sampleComparison(id: string = COMPARISON_SAMPLES[0].id): DriftComparison {
+  const sample = getComparisonSample(id) ?? COMPARISON_SAMPLES[0];
+  // Structured clone via JSON round trip: cheap, and guarantees the
+  // caller can mutate the returned comparison (for example, toggling
+  // an intentional mark) without corrupting the shared sample constant.
+  return JSON.parse(JSON.stringify(sample.comparison)) as DriftComparison;
+}
+
+/* ====================================================================
+   20. COMPARISON EXPORT
+
+   Criterion 4, the exportable half. JSON carries both full snapshots
+   verbatim, so the output of this export is itself valid input to the
+   two snapshot text boxes on the page: paste it back in and every
+   number reproduces. Markdown carries the same plain language report
+   structure as section 12's serialize, extended with the findings,
+   the missing coverage list, and the rollback checklist ahead of the
+   significance section.
+   ==================================================================== */
+
+export type ComparisonExportFormat = 'json' | 'markdown';
+
+function directionWord(f: DriftFinding): string {
+  return f.direction === 'widened'
+    ? 'WIDENED'
+    : f.direction === 'narrowed'
+      ? 'narrowed'
+      : f.direction === 'added'
+        ? 'added'
+        : f.direction === 'removed'
+          ? 'removed'
+          : 'modified';
+}
+
+function renderFindingLine(f: DriftFinding): string {
+  const paths = f.fields.map((field) => field.path).join(', ');
+  return `1. [${f.risk}] ${directionWord(f)} (${f.category}): ${f.headline} Fields: ${paths}. ${
+    f.intentional ? 'Marked intentional.' : 'UNEXPLAINED.'
+  } ${f.likelyEffect}`;
+}
+
+export function serializeComparison(comparison: DriftComparison, format: ComparisonExportFormat): string {
+  const analysis = analyzeComparison(comparison);
+
+  if (format === 'json') {
+    return JSON.stringify(
+      {
+        generatedBy: 'Nixfred AI Systems Workbench, Drift Monitor',
+        note: 'Local structured diff and statistical analysis. No model or external service produced these findings.',
+        schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        baseline: comparison.baseline,
+        current: comparison.current,
+        significanceSettings: {
+          alpha: comparison.alpha,
+          metricsMonitored: comparison.metricsMonitored,
+          targetPower: comparison.targetPower,
+          minMeaningfulEffect: comparison.minMeaningfulEffect,
+          evalSetChanged: comparison.evalSetChanged,
+        },
+        findings: analysis.findings,
+        missingCoverage: analysis.missingCoverage,
+        rollback: analysis.rollback,
+        significance: analysis.significance,
+      },
+      null,
+      2,
+    );
+  }
+
+  const lines = [
+    '# Drift Monitor report',
+    '',
+    `Baseline: ${comparison.baseline.label || '(unlabeled)'} (${comparison.baseline.capturedAt || 'no date given'})`,
+    `Current: ${comparison.current.label || '(unlabeled)'} (${comparison.current.capturedAt || 'no date given'})`,
+    '',
+    'Local structured diff and statistical analysis. No model or external service produced these findings.',
+    '',
+    '## Findings, permission widenings first',
+    '',
+    analysis.findings.length
+      ? analysis.findings.map(renderFindingLine).join('\n')
+      : 'No structural or metric changes detected between the two snapshots.',
+    '',
+    '## Missing evaluation coverage',
+    '',
+    analysis.missingCoverage.length
+      ? analysis.missingCoverage.map((m) => `1. ${m.description} (${m.path}) has no declared evaluation coverage.`).join('\n')
+      : 'Every changed surface is declared as covered by the current snapshot evaluationCoverage list.',
+    '',
+    '## Rollback checklist, in order',
+    '',
+    analysis.rollback.length
+      ? analysis.rollback.map((r) => `${r.order}. ${r.instruction}`).join('\n')
+      : 'No configuration change requires a rollback step.',
+    '',
+    '## Evaluation results, significance panel',
+    '',
+    `Verdict: ${VERDICT_LABELS[analysis.significance.verdict]}`,
+    analysis.significance.verdictReason,
+    '',
+    `Baseline: ${comparison.baseline.evaluation.successes} of ${comparison.baseline.evaluation.n} (${formatPoints(analysis.significance.baselineRate)})`,
+    `Current: ${comparison.current.evaluation.successes} of ${comparison.current.evaluation.n} (${formatPoints(analysis.significance.currentRate)})`,
+    `Confidence interval on the difference (${(analysis.significance.adjustedConfidence * 100).toFixed(2)} percent): ${formatSignedPoints(analysis.significance.differenceInterval.lower)} to ${formatSignedPoints(analysis.significance.differenceInterval.upper)}`,
+    `Two proportion z test: z = ${analysis.significance.zTest.z.toFixed(4)}, p = ${analysis.significance.zTest.pValue.toFixed(4)}`,
+    `Fisher exact test: ${analysis.significance.fisher.computed ? `p = ${analysis.significance.fisher.pValue.toFixed(4)}` : analysis.significance.fisher.note}`,
+    `Which applies: ${analysis.significance.primary.reason}`,
+    `Minimum detectable effect at ${(comparison.targetPower * 100).toFixed(0)} percent power: ${formatPoints(analysis.significance.minimumDetectableEffect)}`,
+    '',
+    '## Assumptions behind the significance panel',
+    '',
+    ...ASSUMPTIONS_TEXT.map((a) => `1. ${a}`),
+    '',
+  ];
+  return lines.join('\n');
+}
+
+export function comparisonFilename(_comparison: DriftComparison, _format: ComparisonExportFormat): string {
+  return 'drift-monitor-comparison-report';
 }

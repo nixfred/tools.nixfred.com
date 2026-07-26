@@ -2,72 +2,658 @@
  * Signal Tester, analysis engine.
  *
  * PRD: tools-nixfred-prds/tools/13-SIGNAL-TESTER.md
- * User outcome: check whether your evaluation signal measures the thing
- * you care about, or something adjacent to it.
+ * User outcome, quoted directly from the PRD: "Evaluate whether an
+ * AI-generated claim is supported, specific, attributable, and
+ * decision-relevant."
  *
- * THE IDEA THIS TOOL TESTS: construct validity. A proxy (what you can
- * cheaply measure) is only useful to the extent it tracks an outcome
- * (what you actually care about). Most AI evaluation quietly fails in
- * the gap between the two. This tool does not close that gap. It makes
- * the gap visible: it asks the two questions that define it, ships a
- * catalog of known ways a proxy gets gamed once someone optimizes it on
- * purpose, and computes real agreement statistics when paired data is
- * supplied.
+ * Workflow: paste a claim and its cited evidence, mark each source's
+ * type and date, inspect a structured quality assessment: a support
+ * map, unsupported leaps, ambiguity, source gaps, freshness risk, and a
+ * rewritten evidence calibrated claim.
  *
- * HARD BOUNDARY: this tool never certifies a proxy as valid. Validity
- * is relative to a use, not a property a number can award. Every
- * assessment states what the evidence supports and what it does not,
- * and a documented failure mode is never dropped from that list just
- * because a statistic looks good. Nothing here fetches, scores against
- * a live model, or checks a fact. It is local, deterministic analysis
- * over whatever the user typed in.
+ * HARD BOUNDARY FROM THE PRD: "This is not a general truth machine or
+ * live fact-checker. It evaluates supplied evidence." Nothing here
+ * fetches, searches, or checks a fact against the world. Every finding
+ * is computed from the claim text and the evidence text the user typed
+ * in, and the UI says so. "Supported" means the evidence supplied
+ * literally backs the fragment, not that the fragment is true.
  *
  * Pure functions only. No DOM, no globals, no I/O.
  */
 
 /* ------------------------------------------------------------------ *
- * Core state
+ * Claim fragments
  * ------------------------------------------------------------------ */
 
-export type ProxyKind = 'categorical' | 'continuous';
+export type FragmentKind = 'fact' | 'inference' | 'prediction' | 'opinion';
 
-export const PROXY_KIND_OPTIONS: Array<{ value: ProxyKind; label: string }> = [
-  { value: 'categorical', label: 'Categorical labels, for example yes/no or pass/fail' },
-  { value: 'continuous', label: 'Continuous numbers, for example a score or a percentage' },
-];
+export const FRAGMENT_KIND_LABELS: Record<FragmentKind, string> = {
+  fact: 'Fact',
+  inference: 'Inference',
+  prediction: 'Prediction',
+  opinion: 'Opinion',
+};
 
 /**
- * The two questions that are the core of this whole tool. Everything
- * else, the catalog, the statistics, exists to help answer these with
- * something more concrete than a shrug.
+ * One sentence level piece of the claim, carrying real offsets into the
+ * claim text. `text` is always exactly `claim.slice(start, end)`, the
+ * same discipline prompt-lab.ts uses for its findings: a fragment's
+ * coordinates are checked by slicing, not asserted.
  */
-export const GAP_QUESTIONS = {
-  proxySucceedsOutcomeFails:
-    'Can the proxy be satisfied while the outcome still fails? Give a concrete case.',
-  outcomeHoldsProxyFails:
-    'Can the outcome hold while the proxy still fails to show it? Give a concrete case.',
-} as const;
+export interface ClaimFragment {
+  index: number;
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * Splits on sentence ending punctuation while keeping real offsets into
+ * the ORIGINAL claim string, the same shape prompt-lab.ts uses for its
+ * segment findings. A plain `.split(...)` would throw the positions
+ * away, which is exactly what criterion 1 ("claim fragments map to
+ * evidence passages") rules out: the map has to point at real text.
+ */
+export function splitClaimFragments(claim: string): ClaimFragment[] {
+  const fragments: ClaimFragment[] = [];
+  const re = /[^.!?]+[.!?]*/g;
+  let match: RegExpExecArray | null;
+  let index = 0;
+  while ((match = re.exec(claim)) !== null) {
+    const raw = match[0];
+    const leading = raw.length - raw.trimStart().length;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const start = match.index + leading;
+    const end = start + trimmed.length;
+    fragments.push({ index, start, end, text: claim.slice(start, end) });
+    index += 1;
+  }
+  return fragments;
+}
+
+/* ------------------------------------------------------------------ *
+ * Fact, inference, prediction, opinion
+ *
+ * Deliberately conservative, pattern based classification, the same
+ * ethos as prompt-lab.ts: a false finding trains the user to ignore the
+ * panel. Each category is checked in order, most specific first, and
+ * the matched phrase is always shown so the classification can be
+ * checked, not just trusted.
+ * ------------------------------------------------------------------ */
+
+interface ClassifierPattern {
+  re: RegExp;
+  label: string;
+}
+
+const PREDICTION_PATTERNS: ClassifierPattern[] = [
+  { re: /\bwill\b/i, label: 'the modal "will", asserting a future state' },
+  { re: /\bis going to\b/i, label: '"is going to", asserting a future state' },
+  { re: /\bis expected to\b/i, label: '"is expected to", a forecast' },
+  { re: /\bis projected to\b/i, label: '"is projected to", a forecast' },
+  { re: /\bis (forecast|forecasted) to\b/i, label: '"is forecast to", a forecast' },
+  { re: /\bby 20\d{2}\b/i, label: 'a future year target' },
+  { re: /\bis set to\b/i, label: '"is set to", asserting a future state' },
+];
+
+const OPINION_PATTERNS: ClassifierPattern[] = [
+  { re: /\bi (think|believe|feel)\b/i, label: 'a first person judgment' },
+  { re: /\barguably\b/i, label: '"arguably", a hedge marking a value judgment' },
+  { re: /\bin (my|our) view\b/i, label: 'a stated personal viewpoint' },
+  { re: /\bclearly the (best|worst|most|least)\b/i, label: 'a superlative value judgment' },
+  { re: /\bthe (best|worst)\b/i, label: 'a superlative value judgment' },
+  { re: /\bshould\b/i, label: '"should", a normative judgment' },
+  { re: /\bought to\b/i, label: '"ought to", a normative judgment' },
+  { re: /\bis (amazing|excellent|terrible|awful|disappointing|impressive)\b/i, label: 'an evaluative adjective' },
+];
+
+const INFERENCE_PATTERNS: ClassifierPattern[] = [
+  { re: /\bsuggests? that\b/i, label: '"suggests that", a reasoned conclusion rather than a direct observation' },
+  { re: /\bthis implies\b/i, label: '"this implies", a reasoned conclusion' },
+  { re: /\bindicates? that\b/i, label: '"indicates that", a reasoned conclusion' },
+  { re: /\bthis (shows|demonstrates) that\b/i, label: 'a reasoned conclusion drawn from something else' },
+  { re: /\btherefore\b/i, label: '"therefore", a conclusion drawn from a premise' },
+  { re: /\bas a result\b/i, label: '"as a result", a causal inference' },
+  { re: /\bpoints to\b/i, label: '"points to", a reasoned conclusion' },
+  { re: /\b(likely|probably) (because|due to)\b/i, label: 'a probabilistic causal inference' },
+];
+
+function firstMatch(text: string, patterns: ClassifierPattern[]): { label: string; excerpt: string } | null {
+  for (const p of patterns) {
+    const re = new RegExp(p.re.source, p.re.flags);
+    const m = re.exec(text);
+    if (m) return { label: p.label, excerpt: m[0] };
+  }
+  return null;
+}
+
+export function classifyFragment(text: string): { kind: FragmentKind; signal: string } {
+  const prediction = firstMatch(text, PREDICTION_PATTERNS);
+  if (prediction) return { kind: 'prediction', signal: `${prediction.label} ("${prediction.excerpt}")` };
+
+  const opinion = firstMatch(text, OPINION_PATTERNS);
+  if (opinion) return { kind: 'opinion', signal: `${opinion.label} ("${opinion.excerpt}")` };
+
+  const inference = firstMatch(text, INFERENCE_PATTERNS);
+  if (inference) return { kind: 'inference', signal: `${inference.label} ("${inference.excerpt}")` };
+
+  return {
+    kind: 'fact',
+    signal: 'No prediction, opinion, or inference marker found; read as a direct, checkable assertion.',
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Ambiguity
+ *
+ * Language in the CLAIM that appeals to an unnamed authority or an
+ * unquantified magnitude, so it cannot be checked against a specific
+ * source even when evidence exists. This is a property of the wording,
+ * independent of whether a source happens to be attached.
+ * ------------------------------------------------------------------ */
+
+const AMBIGUITY_PATTERN =
+  /\b(many experts|several studies|research shows|studies suggest|some believe|industry observers|widely regarded|significant(ly)?|substantial(ly)?|considerable|considerably)\b/i;
+
+export function detectAmbiguity(text: string): string | null {
+  const re = new RegExp(AMBIGUITY_PATTERN.source, AMBIGUITY_PATTERN.flags);
+  const m = re.exec(text);
+  if (!m) return null;
+  return `Invokes an unnamed authority or an unquantified magnitude ("${m[0]}") that cannot be checked against a specific source.`;
+}
+
+/* ------------------------------------------------------------------ *
+ * Evidence sources
+ * ------------------------------------------------------------------ */
+
+export type SourceType =
+  | 'unspecified'
+  | 'primary-data'
+  | 'official-record'
+  | 'news-report'
+  | 'analysis-or-opinion'
+  | 'unverified-or-social';
+
+export const SOURCE_TYPE_OPTIONS: Array<{ value: SourceType; label: string }> = [
+  { value: 'unspecified', label: 'Not specified' },
+  { value: 'primary-data', label: 'Primary data: a dataset, log, or direct measurement' },
+  { value: 'official-record', label: 'Official record: a filing, changelog, or vendor statement' },
+  { value: 'news-report', label: 'News report: independent journalism' },
+  { value: 'analysis-or-opinion', label: 'Analysis or opinion: commentary or an editorial' },
+  { value: 'unverified-or-social', label: 'Unverified or social: a forum post or a single social post' },
+];
+
+export const SOURCE_TYPE_LABELS: Record<SourceType, string> = SOURCE_TYPE_OPTIONS.reduce(
+  (acc, o) => {
+    acc[o.value] = o.label;
+    return acc;
+  },
+  {} as Record<SourceType, string>,
+);
+
+/** Source types too weak to carry a claim classified as fact on their own. */
+const WEAK_SOURCE_TYPES: SourceType[] = ['unspecified', 'analysis-or-opinion', 'unverified-or-social'];
+
+export interface EvidenceSource {
+  id: string;
+  text: string;
+  sourceType: SourceType;
+  /** ISO date, YYYY-MM-DD. Empty string means undated. */
+  date: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * Support mapping
+ *
+ * The core of the tool. Support is measured by literal word overlap,
+ * stated plainly because the UI shows this note next to every result:
+ * a word match, not a meaning match. It will not catch a paraphrase and
+ * it will not catch a negation, which is exactly the kind of honesty
+ * prompt-lab.ts applies to its own token estimate.
+ * ------------------------------------------------------------------ */
+
+export const SUPPORT_THRESHOLD = 0.5;
+
+export const SUPPORT_METHOD =
+  `Support is measured by literal word overlap: the share of a fragment's distinctive words ` +
+  `(length 4 or more, common words excluded) that appear as whole words anywhere in a source's text. ` +
+  `At or above ${Math.round(SUPPORT_THRESHOLD * 100)} percent overlap counts as supported. This is a word ` +
+  `match, not a meaning match. It will not catch a paraphrase, and it will not catch a negation, so read ` +
+  `the excerpt rather than trusting the ratio alone.`;
+
+const STOPWORDS = new Set([
+  'this', 'that', 'these', 'those', 'with', 'from', 'have', 'will', 'into', 'also',
+  'some', 'other', 'than', 'then', 'been', 'were', 'being', 'they', 'their', 'them',
+  'about', 'after', 'before', 'over', 'under', 'such', 'only', 'more', 'most', 'each',
+  'both', 'same', 'very', 'just', 'while', 'when', 'where', 'which', 'what', 'because',
+  'through', 'during', 'between', 'among', 'within', 'without', 'against', 'upon',
+  'said', 'says', 'say', 'told', 'according',
+]);
+
+function contentWords(text: string): string[] {
+  const seen = new Set<string>();
+  for (const raw of text.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
+    if (raw.length >= 4 && !STOPWORDS.has(raw)) seen.add(raw);
+  }
+  return Array.from(seen);
+}
+
+export interface SupportLink {
+  fragmentIndex: number;
+  sourceId: string;
+  /** Offsets into the SOURCE's text. excerpt is always source.text.slice(start, end). */
+  start: number;
+  end: number;
+  excerpt: string;
+  matchedWords: string[];
+  overlapRatio: number;
+}
+
+function findSupportLink(fragment: ClaimFragment, source: EvidenceSource): SupportLink | null {
+  const words = contentWords(fragment.text);
+  if (words.length === 0) return null;
+
+  const positions: Array<{ word: string; start: number; end: number }> = [];
+  for (const word of words) {
+    const re = new RegExp(`\\b${word}\\b`, 'i');
+    const m = re.exec(source.text);
+    if (m) positions.push({ word, start: m.index, end: m.index + m[0].length });
+  }
+  if (positions.length === 0) return null;
+
+  positions.sort((a, b) => a.start - b.start);
+  const start = positions[0].start;
+  const end = positions[positions.length - 1].end;
+
+  return {
+    fragmentIndex: fragment.index,
+    sourceId: source.id,
+    start,
+    end,
+    excerpt: source.text.slice(start, end),
+    matchedWords: positions.map((p) => p.word),
+    overlapRatio: positions.length / words.length,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Unsupported leaps
+ *
+ * The sharpest failure mode named in the PRD's design notes: the
+ * evidence says "in one trial", the claim says "in general". That gap
+ * is detected specifically, not folded into a generic low score.
+ * ------------------------------------------------------------------ */
+
+const GENERALIZING_PATTERN =
+  /\b(in general|always|universally|every|all (supported versions|users|customers|cases)|across the board|as a rule|typically|generally|invariably|without exception|no matter what)\b/i;
+
+const NARROWING_PATTERN =
+  /\b(only in version|only for|limited to|in this release only|does not apply to|in one trial|in a small (sample|study|trial)|among (the )?(surveyed|sampled|interviewed)|preliminary|small sample|limited sample|anecdotal|in a single|a handful of)\b/i;
+
+export interface TextSpan {
+  start: number;
+  end: number;
+  excerpt: string;
+}
+
+function findSpan(text: string, pattern: RegExp): TextSpan | null {
+  const re = new RegExp(pattern.source, pattern.flags);
+  const m = re.exec(text);
+  if (!m) return null;
+  return { start: m.index, end: m.index + m[0].length, excerpt: m[0] };
+}
+
+export type SupportStatus = 'supported' | 'overgeneralized' | 'weak-evidence' | 'no-evidence';
+
+export const SUPPORT_STATUS_LABELS: Record<SupportStatus, string> = {
+  supported: 'Supported',
+  overgeneralized: 'Overgeneralized',
+  'weak-evidence': 'Weak evidence',
+  'no-evidence': 'No evidence',
+};
+
+export interface FragmentAnalysis {
+  fragment: ClaimFragment;
+  kind: FragmentKind;
+  kindSignal: string;
+  /** Every source with any overlap at all, best first. */
+  links: SupportLink[];
+  bestLink: SupportLink | null;
+  status: SupportStatus;
+  /** Offsets into fragment.text. Present whenever the fragment itself overgeneralizes, regardless of status. */
+  generalizing: TextSpan | null;
+  /** Offsets into the best source's text. Present only when status is 'overgeneralized'. */
+  narrowing: (TextSpan & { sourceId: string }) | null;
+  ambiguous: boolean;
+  ambiguitySignal: string | null;
+}
+
+export function analyzeFragment(fragment: ClaimFragment, sources: EvidenceSource[]): FragmentAnalysis {
+  const { kind, signal: kindSignal } = classifyFragment(fragment.text);
+
+  const links = sources
+    .map((s) => findSupportLink(fragment, s))
+    .filter((l): l is SupportLink => l !== null)
+    .sort((a, b) => b.overlapRatio - a.overlapRatio);
+  const bestLink = links[0] ?? null;
+
+  const generalizing = findSpan(fragment.text, GENERALIZING_PATTERN);
+  let status: SupportStatus;
+  let narrowing: FragmentAnalysis['narrowing'] = null;
+
+  if (!bestLink || bestLink.overlapRatio <= 0) {
+    status = 'no-evidence';
+  } else if (bestLink.overlapRatio < SUPPORT_THRESHOLD) {
+    status = 'weak-evidence';
+  } else {
+    const source = sources.find((s) => s.id === bestLink.sourceId);
+    const foundNarrowing = generalizing && source ? findSpan(source.text, NARROWING_PATTERN) : null;
+    if (generalizing && foundNarrowing) {
+      status = 'overgeneralized';
+      narrowing = { sourceId: bestLink.sourceId, ...foundNarrowing };
+    } else {
+      status = 'supported';
+    }
+  }
+
+  const ambiguitySignal = detectAmbiguity(fragment.text);
+
+  return {
+    fragment,
+    kind,
+    kindSignal,
+    links,
+    bestLink,
+    status,
+    generalizing,
+    narrowing,
+    ambiguous: Boolean(ambiguitySignal),
+    ambiguitySignal,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Freshness risk
+ *
+ * An undated source is its own risk category, not a neutral middle
+ * ground: it cannot be checked for recency at all. Bands are a
+ * generic, stated heuristic, the same honesty prompt-lab.ts applies to
+ * its token estimate.
+ * ------------------------------------------------------------------ */
+
+export type FreshnessRisk = 'undated' | 'future-dated' | 'fresh' | 'aging' | 'stale';
+
+const FRESHNESS_FRESH_DAYS = 365;
+const FRESHNESS_AGING_DAYS = 730;
+
+export const FRESHNESS_METHOD =
+  `Freshness bands are a generic heuristic, not a citation standard: fresh up to ${FRESHNESS_FRESH_DAYS} days ` +
+  `old, aging up to ${FRESHNESS_AGING_DAYS} days, stale beyond that. Some domains go stale far faster than ` +
+  `this; treat the bands as a starting point to override for your own field.`;
+
+export interface FreshnessAssessment {
+  sourceId: string;
+  risk: FreshnessRisk;
+  ageDays: number | null;
+  note: string;
+}
+
+/** `asOf` is injectable so results are deterministic and testable; it defaults to the real clock at call time. */
+export function assessFreshness(source: EvidenceSource, asOf: Date = new Date()): FreshnessAssessment {
+  if (!source.date.trim()) {
+    return {
+      sourceId: source.id,
+      risk: 'undated',
+      ageDays: null,
+      note: 'No date was given for this source. An undated source cannot be checked for freshness at all, which is its own risk, not a neutral middle ground.',
+    };
+  }
+
+  const parsed = new Date(source.date);
+  if (Number.isNaN(parsed.getTime())) {
+    return {
+      sourceId: source.id,
+      risk: 'undated',
+      ageDays: null,
+      note: `The date "${source.date}" could not be read. Treated the same as undated.`,
+    };
+  }
+
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const ageDays = Math.round((asOf.getTime() - parsed.getTime()) / msPerDay);
+
+  if (ageDays < 0) {
+    const days = Math.abs(ageDays);
+    return {
+      sourceId: source.id,
+      risk: 'future-dated',
+      ageDays,
+      note: `This source is dated ${days} day${days === 1 ? '' : 's'} in the future. Treat this as a data problem, not evidence of freshness.`,
+    };
+  }
+  if (ageDays <= FRESHNESS_FRESH_DAYS) {
+    return { sourceId: source.id, risk: 'fresh', ageDays, note: `${ageDays} days old, within the ${FRESHNESS_FRESH_DAYS} day fresh window.` };
+  }
+  if (ageDays <= FRESHNESS_AGING_DAYS) {
+    return {
+      sourceId: source.id,
+      risk: 'aging',
+      ageDays,
+      note: `${ageDays} days old, past the ${FRESHNESS_FRESH_DAYS} day fresh window but within ${FRESHNESS_AGING_DAYS} days.`,
+    };
+  }
+  return {
+    sourceId: source.id,
+    risk: 'stale',
+    ageDays,
+    note: `${ageDays} days old, past the ${FRESHNESS_AGING_DAYS} day window most fields would call stale.`,
+  };
+}
+
+/** Builds an ISO date string relative to today, so shipped samples stay accurate without hand maintenance. */
+export function isoDaysAgo(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+/* ------------------------------------------------------------------ *
+ * Source gaps
+ * ------------------------------------------------------------------ */
+
+export function computeSourceGaps(fragments: FragmentAnalysis[], sources: EvidenceSource[]): string[] {
+  const gaps: string[] = [];
+  const sourceById = new Map(sources.map((s) => [s.id, s]));
+  const usedIds = new Set<string>();
+
+  for (const f of fragments) {
+    if (!f.bestLink || f.bestLink.overlapRatio <= 0) continue;
+    usedIds.add(f.bestLink.sourceId);
+
+    if (f.status === 'supported' || f.status === 'overgeneralized') {
+      const source = sourceById.get(f.bestLink.sourceId);
+      if (!source) continue;
+      if (source.sourceType === 'unspecified') {
+        gaps.push(`Fragment "${f.fragment.text}" relies on a source with no stated source type, so its reliability cannot be weighed.`);
+      }
+      if (f.kind === 'fact' && WEAK_SOURCE_TYPES.includes(source.sourceType)) {
+        gaps.push(
+          `Fragment "${f.fragment.text}" is stated as fact but is backed only by a ${SOURCE_TYPE_LABELS[source.sourceType].toLowerCase()} source, a weaker type than a factual claim needs.`,
+        );
+      }
+    }
+  }
+
+  for (const source of sources) {
+    if (!usedIds.has(source.id)) {
+      gaps.push(
+        `Source "${source.id}" was supplied but does not support any claim fragment above the weak evidence threshold. Either it is unnecessary or the claim is missing something it could support.`,
+      );
+    }
+  }
+
+  return gaps;
+}
+
+/* ------------------------------------------------------------------ *
+ * Confidence
+ *
+ * "Missing evidence reduces confidence visibly", per the PRD. The
+ * mechanism is the ledger: every number below is a plain count, and the
+ * headline ratio is nothing but supportedCount / totalFragments. There
+ * is no hidden weighting to distrust.
+ * ------------------------------------------------------------------ */
+
+export interface ConfidenceBreakdown {
+  totalFragments: number;
+  supportedCount: number;
+  overgeneralizedCount: number;
+  weakEvidenceCount: number;
+  noEvidenceCount: number;
+  supportRatio: number;
+  sourceGapCount: number;
+  freshnessRiskCount: number;
+  ledger: string[];
+}
+
+export function computeConfidence(
+  fragments: FragmentAnalysis[],
+  freshness: FreshnessAssessment[],
+  sourceGaps: string[],
+): ConfidenceBreakdown {
+  const totalFragments = fragments.length;
+  const supportedCount = fragments.filter((f) => f.status === 'supported').length;
+  const overgeneralizedCount = fragments.filter((f) => f.status === 'overgeneralized').length;
+  const weakEvidenceCount = fragments.filter((f) => f.status === 'weak-evidence').length;
+  const noEvidenceCount = fragments.filter((f) => f.status === 'no-evidence').length;
+  const supportRatio = totalFragments === 0 ? 0 : supportedCount / totalFragments;
+  const freshnessRiskCount = freshness.filter((f) => f.risk !== 'fresh').length;
+
+  const ledger: string[] = [];
+  ledger.push(
+    totalFragments === 0
+      ? 'No claim fragments to assess yet.'
+      : `${supportedCount} of ${totalFragments} fragment${totalFragments === 1 ? '' : 's'} (${Math.round(supportRatio * 100)} percent) are supported by evidence at or above the word overlap threshold.`,
+  );
+  if (overgeneralizedCount > 0) {
+    ledger.push(`${overgeneralizedCount} fragment${overgeneralizedCount === 1 ? '' : 's'} overgeneralize a narrower piece of evidence.`);
+  }
+  if (weakEvidenceCount > 0) {
+    ledger.push(`${weakEvidenceCount} fragment${weakEvidenceCount === 1 ? '' : 's'} have only weak evidence overlap.`);
+  }
+  if (noEvidenceCount > 0) {
+    ledger.push(`${noEvidenceCount} fragment${noEvidenceCount === 1 ? '' : 's'} have no supporting evidence at all.`);
+  }
+  if (sourceGaps.length > 0) {
+    ledger.push(`${sourceGaps.length} source gap${sourceGaps.length === 1 ? '' : 's'} found, listed below.`);
+  }
+  if (freshnessRiskCount > 0) {
+    ledger.push(`${freshnessRiskCount} of ${freshness.length} source${freshness.length === 1 ? '' : 's'} carry freshness risk.`);
+  }
+
+  return {
+    totalFragments,
+    supportedCount,
+    overgeneralizedCount,
+    weakEvidenceCount,
+    noEvidenceCount,
+    supportRatio,
+    sourceGapCount: sourceGaps.length,
+    freshnessRiskCount,
+    ledger,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Rewritten evidence calibrated claim
+ *
+ * The same discipline as prompt-lab.ts's improvePrompt: a rule based
+ * rewrite, every change carries a stated reason, and nothing is
+ * invented. A fragment the evidence does not support gets flagged, not
+ * silently kept; a fragment that overgeneralizes gets narrowed to the
+ * scope the evidence actually showed.
+ * ------------------------------------------------------------------ */
+
+export interface Change {
+  fragmentIndex: number;
+  before: string;
+  after: string;
+  reason: string;
+}
+
+export interface Rewrite {
+  text: string;
+  changes: Change[];
+}
+
+export function rewriteClaim(fragments: FragmentAnalysis[]): Rewrite {
+  const changes: Change[] = [];
+  const parts: string[] = [];
+
+  for (const f of fragments) {
+    const original = f.fragment.text;
+    let next = original;
+
+    if (f.status === 'no-evidence') {
+      next = `${original} [No supplied evidence supports this.]`;
+      changes.push({
+        fragmentIndex: f.fragment.index,
+        before: original,
+        after: next,
+        reason: 'No source overlaps this fragment at all, so the calibrated claim marks it unsupported rather than silently repeating it.',
+      });
+    } else if (f.status === 'weak-evidence') {
+      next = `${original} [Only weak evidence overlap found; treat as unverified.]`;
+      changes.push({
+        fragmentIndex: f.fragment.index,
+        before: original,
+        after: next,
+        reason: 'The best matching source shares some wording with this fragment but not enough to call it supported.',
+      });
+    } else if (f.status === 'overgeneralized' && f.generalizing && f.narrowing) {
+      const g = f.generalizing;
+      const replacement = `in the narrower scope the evidence covers ("${f.narrowing.excerpt}")`;
+      next = original.slice(0, g.start) + replacement + original.slice(g.end);
+      changes.push({
+        fragmentIndex: f.fragment.index,
+        before: original,
+        after: next,
+        reason: `The claim generalized with "${g.excerpt}" but the best matching evidence is narrower ("${f.narrowing.excerpt}"), so the calibrated claim is scoped down to match what was actually shown.`,
+      });
+    } else if (f.ambiguous) {
+      next = `${original} [Name the specific source behind this.]`;
+      changes.push({
+        fragmentIndex: f.fragment.index,
+        before: original,
+        after: next,
+        reason: 'This fragment appeals to an unnamed authority or an unquantified magnitude, which cannot be checked against a specific source.',
+      });
+    }
+
+    parts.push(next);
+  }
+
+  return { text: parts.join(' '), changes };
+}
+
+/* ------------------------------------------------------------------ *
+ * Claim state and analysis
+ * ------------------------------------------------------------------ */
+
+export type RaterAgreementKind = 'categorical' | 'continuous';
+
+export const RATER_AGREEMENT_KIND_OPTIONS: Array<{ value: RaterAgreementKind; label: string }> = [
+  { value: 'categorical', label: 'Categorical labels, for example supported/unsupported' },
+  { value: 'continuous', label: 'Continuous numbers, for example a 1 to 10 confidence score' },
+];
 
 export interface SignalState {
-  /** The outcome the user actually cares about, in plain words. */
-  outcome: string;
-  /** What is actually being measured instead. */
-  proxy: string;
-  /** Whether paired data, when supplied, is read as labels or numbers. */
-  proxyKind: ProxyKind;
-  /** Answer to GAP_QUESTIONS.proxySucceedsOutcomeFails. */
-  proxySucceedsOutcomeFails: string;
-  /** Answer to GAP_QUESTIONS.outcomeHoldsProxyFails. */
-  outcomeHoldsProxyFails: string;
-  /** Ids into GAMEABILITY_CATALOG the user has confirmed apply here. */
-  selectedFailureModes: string[];
-  /** A gameable path the catalog does not already name. */
-  customFailureMode: string;
-  /**
-   * Paired evidence, one row per line: "proxy value, outcome value".
-   * Optional. Blank lines and lines starting with # are ignored.
-   */
-  pairedDataRaw: string;
+  claim: string;
+  /** Always exactly four slots, source-1 through source-4. Blank text means the slot is unused. */
+  sources: EvidenceSource[];
+  raterAgreementKind: RaterAgreementKind;
+  raterPairedDataRaw: string;
 }
 
 export interface ValidationIssue {
@@ -76,119 +662,37 @@ export interface ValidationIssue {
   severity: 'error' | 'warning';
 }
 
+export function activeSources(state: SignalState): EvidenceSource[] {
+  return state.sources.filter((s) => s.text.trim().length > 0);
+}
+
+export interface ClaimAnalysis {
+  fragments: FragmentAnalysis[];
+  freshness: FreshnessAssessment[];
+  sourceGaps: string[];
+  confidence: ConfidenceBreakdown;
+  rewrite: Rewrite;
+}
+
+export function analyzeClaim(state: SignalState, asOf: Date = new Date()): ClaimAnalysis {
+  const sources = activeSources(state);
+  const fragments = splitClaimFragments(state.claim).map((f) => analyzeFragment(f, sources));
+  const freshness = sources.map((s) => assessFreshness(s, asOf));
+  const sourceGaps = computeSourceGaps(fragments, sources);
+  const confidence = computeConfidence(fragments, freshness, sourceGaps);
+  const rewrite = rewriteClaim(fragments);
+  return { fragments, freshness, sourceGaps, confidence, rewrite };
+}
+
 /* ------------------------------------------------------------------ *
- * Gameability catalog
+ * Inter-rater agreement, a secondary panel
  *
- * Goodhart's law made concrete. For each entry: the proxy, the outcome
- * it stands in for, exactly what an optimizer does to satisfy the proxy
- * without the outcome, and why that move is available at all. Every
- * field is required, checked by the logic gate, because a catalog entry
- * with an empty explanation teaches nothing.
- * ------------------------------------------------------------------ */
-
-export interface GameabilityEntry {
-  id: string;
-  label: string;
-  /** The proxy, stated as what actually gets measured. */
-  proxy: string;
-  /** The outcome the proxy is standing in for. */
-  outcome: string;
-  /** What a system optimized purely for the proxy would do. */
-  gameMove: string;
-  /** Why the proxy admits that move without the outcome objecting. */
-  whyItFails: string;
-  /** Regex source used to detect this pattern in a user's own wording. */
-  detectPattern: string;
-}
-
-export const GAMEABILITY_CATALOG: GameabilityEntry[] = [
-  {
-    id: 'response-length',
-    label: 'Response length as a proxy for quality',
-    proxy: 'Longer responses score higher.',
-    outcome: 'The response actually helps the reader.',
-    gameMove:
-      'Pad the answer with restated context, hedges, and filler until it reaches the length that scores well, without adding one new correct fact.',
-    whyItFails:
-      'Length measures effort spent writing, not correctness or usefulness. A system rewarded for length learns to write more, not to help more.',
-    detectPattern: '\\b(length|word count|character count|number of words|longer response)\\b',
-  },
-  {
-    id: 'thumbs-up-rate',
-    label: 'User thumbs up as a proxy for correctness',
-    proxy: 'The user clicked thumbs up.',
-    outcome: 'The answer was factually correct.',
-    gameMove:
-      'Produce a confident, agreeable answer the user wants to hear, whether or not it is true. A confident wrong answer gets upvoted as often as a correct one when the user cannot check the fact themselves.',
-    whyItFails:
-      'Thumbs up measures the user immediate trust and satisfaction, not the truth of the claim. The two only agree when the user is equipped to verify the answer, which is rarely true for the questions worth asking.',
-    detectPattern: '\\b(thumbs up|thumbs down|upvote|downvote|user rating|star rating|like button)\\b',
-  },
-  {
-    id: 'exact-match',
-    label: 'Exact match as a proxy for semantic correctness',
-    proxy: 'The output string matches the reference string exactly.',
-    outcome: 'The output means the same thing as the reference.',
-    gameMove:
-      'Output a correct paraphrase, a synonym, an equivalent unit, or a differently formatted but equivalent value, all penalized as wrong by exact match despite being correct.',
-    whyItFails:
-      'Natural language and structured values both admit many correct surface forms. Exact match only agrees with meaning when exactly one wording counts as right.',
-    detectPattern: '\\b(exact match|string match|exact string|literal match)\\b',
-  },
-  {
-    id: 'latency',
-    label: 'Latency as a proxy for satisfaction',
-    proxy: 'The response arrived quickly.',
-    outcome: 'The user was satisfied with the interaction.',
-    gameMove:
-      'Return a fast, low effort, or truncated answer, or stream an immediate filler acknowledgement while the real work is skipped or degraded, so the clock looks good regardless of whether the request was actually served.',
-    whyItFails:
-      'Speed is one input to satisfaction, not a stand in for it. A fast wrong answer scores well on latency and poorly on the outcome it is supposed to predict.',
-    detectPattern: '\\b(latency|response time|time to first token|how fast|speed of the reply)\\b',
-  },
-  {
-    id: 'refusal-rate',
-    label: 'Refusal rate as a proxy for safety',
-    proxy: 'The system refuses to answer.',
-    outcome: 'The system avoids causing harm.',
-    gameMove:
-      'Refuse broadly, including safe and legitimate requests, so the refusal count looks protective without any judgment about which requests were actually risky.',
-    whyItFails:
-      'Refusing everything drives refusal rate up and harm down at the cost of every request the system exists to serve. Safety is about refusing the right requests, not refusing often.',
-    detectPattern: '\\b(refusal|refuse|decline to answer|declined to respond)\\b',
-  },
-  {
-    id: 'test-pass-rate',
-    label: 'Test pass rate as a proxy for working software',
-    proxy: 'The test suite passes.',
-    outcome: 'The software works correctly for its users.',
-    gameMove:
-      'Write the code to satisfy the specific assertions in the test suite, including the exact cases the tests check, without handling the inputs the tests never imagined.',
-    whyItFails:
-      'A test suite only samples the input space. Passing every test the author thought to write says nothing about the inputs the author did not think of, which is most of them in any real system.',
-    detectPattern: '\\b(test pass|tests pass|passing tests|ci green|unit tests? passing)\\b',
-  },
-];
-
-/**
- * Scans free text for wording that resembles a cataloged failure mode.
- * Deliberately advisory: a keyword match is a prompt to go read the
- * catalog entry and decide, not a verdict. Confirming a failure mode
- * for the validity assessment is a separate, explicit user action
- * (SignalState.selectedFailureModes), the same way prompt-lab keeps its
- * detectors conservative because a false finding trains the user to
- * ignore the panel.
- */
-export function detectGameabilityMatches(outcome: string, proxy: string): string[] {
-  const text = `${outcome} ${proxy}`;
-  if (!text.trim()) return [];
-  return GAMEABILITY_CATALOG.filter((entry) => new RegExp(entry.detectPattern, 'i').test(text)).map(
-    (entry) => entry.id,
-  );
-}
-
-/* ------------------------------------------------------------------ *
- * Paired data parsing
+ * Where a user has two people independently judging whether each
+ * fragment is supported, agreement statistics are a legitimate check on
+ * the JUDGES, distinct from the primary claim assessment above. Cohen's
+ * kappa and Pearson correlation are unchanged from their original
+ * verification: only the framing moved, from measuring a proxy metric
+ * to measuring whether two annotators agree on claim support.
  * ------------------------------------------------------------------ */
 
 export interface PairedRow {
@@ -198,15 +702,10 @@ export interface PairedRow {
 
 export interface ParsedPairedData {
   rows: PairedRow[];
-  /** Lines that were not blank or a comment but could not be split into a pair. */
   skipped: number;
 }
 
-/**
- * One pair per line: "proxy value, outcome value". A line starting with
- * # is a comment. Everything after the first comma belongs to the
- * outcome value, so an outcome value may itself contain a comma.
- */
+/** One pair per line: "rater A value, rater B value". # starts a comment line. */
 export function parsePairedRows(raw: string): ParsedPairedData {
   const rows: PairedRow[] = [];
   let skipped = 0;
@@ -234,7 +733,6 @@ export interface ParsedNumericPairs {
   skipped: number;
 }
 
-/** Reads parsed rows as numbers. A row either side cannot parse is dropped, not zeroed. */
 export function parseNumericPairs(rows: PairedRow[]): ParsedNumericPairs {
   const pairs: Array<{ x: number; y: number }> = [];
   let skipped = 0;
@@ -250,12 +748,7 @@ export function parseNumericPairs(rows: PairedRow[]): ParsedNumericPairs {
   return { pairs, skipped };
 }
 
-/**
- * Builds the "proxy value, outcome value" raw text a sample ships, from
- * counts rather than hundreds of typed literal lines. Exported because
- * the logic gate reconstructs the same tables independently to verify
- * that the shipped samples were assembled correctly.
- */
+/** Builds "a, b" raw text from counts rather than typing hundreds of literal lines. */
 export function buildPairedRaw(counts: Array<[string, string, number]>): string {
   const lines: string[] = [];
   for (const [proxyValue, outcomeValue, n] of counts) {
@@ -264,61 +757,27 @@ export function buildPairedRaw(counts: Array<[string, string, number]>): string 
   return lines.join('\n');
 }
 
-/* ------------------------------------------------------------------ *
- * Cohen's kappa
- *
- * Generalized to any number of categories; the familiar 2x2 case is
- * just k=2. Verified against the standard worked example in
- * tests/tool-signal-tester.mjs: a=20, b=5, c=10, d=15 gives kappa 0.4.
- * ------------------------------------------------------------------ */
-
 export interface KappaResult {
   kappa: number;
-  /** Raw percent agreement, po. What a naive check would report. */
   observedAgreement: number;
-  /** Agreement expected from the marginal distributions alone, pe. */
   chanceAgreement: number;
   n: number;
   categories: string[];
-  /** Rows are proxy categories, columns are outcome categories, in `categories` order. */
   confusionMatrix: number[][];
-  /**
-   * True when chance agreement is 1 and the denominator, 1 minus pe, is
-   * zero, meaning every rating on both sides fell into a single
-   * category. Naive implementations divide by zero here; this one
-   * reports kappa 1 with the degenerate flag set, because po must also
-   * be 1 whenever pe is 1, but that number reflects an absence of
-   * variation, not a demonstrated ability to separate signal from
-   * chance. Read the interpretation string, not the raw number, when
-   * this is true.
-   */
   degenerate: boolean;
 }
 
 /**
- * IMPORTANT ON LABELS: kappa only means agreement when the proxy and
- * the outcome are rated on the SAME set of category labels, the same
- * way two human raters must both use "yes" and "no" rather than one
- * saying "yes/no" and the other "high/low". If the two sides never use
- * an identical string, the diagonal of the confusion matrix is empty by
- * construction and kappa reports 0 regardless of how well the proxy
- * actually tracks the outcome. The UI hint on the paired data field
- * says this; a caller passing mismatched vocabularies gets a real,
- * honestly low kappa rather than a crash, which is itself informative
- * but is almost certainly not the comparison the user meant to run.
+ * IMPORTANT ON LABELS: kappa only means agreement when both raters use
+ * the SAME set of category labels, the same way two human raters must
+ * both use "supported" and "unsupported" rather than one saying
+ * "yes/no" and the other "strong/weak". A caller passing mismatched
+ * vocabularies gets a real, honestly low kappa rather than a crash.
  */
 export function cohensKappa(pairs: Array<{ proxy: string; outcome: string }>): KappaResult {
   const n = pairs.length;
   if (n === 0) {
-    return {
-      kappa: 0,
-      observedAgreement: 0,
-      chanceAgreement: 0,
-      n: 0,
-      categories: [],
-      confusionMatrix: [],
-      degenerate: true,
-    };
+    return { kappa: 0, observedAgreement: 0, chanceAgreement: 0, n: 0, categories: [], confusionMatrix: [], degenerate: true };
   }
 
   const categories = Array.from(new Set(pairs.flatMap((p) => [p.proxy, p.outcome]))).sort();
@@ -340,9 +799,7 @@ export function cohensKappa(pairs: Array<{ proxy: string; outcome: string }>): K
 
   const denom = 1 - chanceAgreement;
   const degenerate = Math.abs(denom) < 1e-9;
-  // Whenever pe is 1, po is provably 1 too: pe = 1 forces every row and
-  // column total but one to be zero, which forces every off diagonal
-  // cell to be zero, which forces po = 1. So the safe fallback is 1,
+  // Whenever pe is 1, po is provably 1 too, so the safe fallback is 1,
   // never a division that produces NaN.
   const kappa = degenerate ? 1 : (observedAgreement - chanceAgreement) / denom;
 
@@ -365,20 +822,14 @@ export function interpretKappa(result: KappaResult): string {
     return (
       'Degenerate: every case landed in the same single category on both sides, so no disagreement ' +
       'was even possible. Kappa reports 1.0 by convention, but that reflects an absence of variation ' +
-      'in your sample, not a demonstrated ability to track the outcome. Add cases that could plausibly ' +
-      'land in more than one category.'
+      'in the sample, not a demonstrated ability to distinguish agreement from chance.'
     );
   }
   const band = KAPPA_BANDS.find((b) => result.kappa <= b.max) ?? KAPPA_BANDS[KAPPA_BANDS.length - 1];
   return `${band.label} agreement (Landis and Koch scale), corrected for the agreement expected by chance alone`;
 }
 
-/* ------------------------------------------------------------------ *
- * Pearson correlation
- * ------------------------------------------------------------------ */
-
 export interface CorrelationResult {
-  /** null when either variable has zero variance, since r is then undefined, not zero. */
   r: number | null;
   n: number;
   degenerate: boolean;
@@ -403,16 +854,12 @@ export function pearsonCorrelation(pairs: Array<{ x: number; y: number }>): Corr
   }
 
   if (sumSqX === 0 || sumSqY === 0) {
-    // A constant has no variance to correlate with anything. Reporting
-    // 0 here would read as "no relationship" when the honest answer is
-    // "not computable from this data".
     return { r: null, n, degenerate: true };
   }
 
   return { r: numerator / Math.sqrt(sumSqX * sumSqY), n, degenerate: false };
 }
 
-/** Cohen's (1988) rough banding for the strength of a linear relationship. */
 export function interpretCorrelation(result: CorrelationResult): string {
   if (result.degenerate || result.r === null) {
     return (
@@ -430,47 +877,34 @@ export function interpretCorrelation(result: CorrelationResult): string {
   return `${strength} ${direction} linear relationship (rule of thumb banding, not a significance test)`;
 }
 
-/* ------------------------------------------------------------------ *
- * Statistics dispatch
- * ------------------------------------------------------------------ */
-
-export type StatisticsResult =
+export type RaterAgreementResult =
   | { kind: 'none'; reason: string }
   | { kind: 'categorical'; n: number; skipped: number; kappa: KappaResult; interpretation: string }
   | { kind: 'continuous'; n: number; skipped: number; correlation: CorrelationResult; interpretation: string };
 
-export function computeStatistics(state: SignalState): StatisticsResult {
-  const parsed = parsePairedRows(state.pairedDataRaw);
+export function computeRaterAgreement(state: SignalState): RaterAgreementResult {
+  const parsed = parsePairedRows(state.raterPairedDataRaw);
 
   if (parsed.rows.length === 0) {
     return {
       kind: 'none',
       reason: parsed.skipped > 0
-        ? `${parsed.skipped} line${parsed.skipped === 1 ? '' : 's'} could not be read as "proxy value, outcome value". No usable paired data yet.`
-        : 'No paired data supplied yet. Add rows to compute real agreement statistics instead of describing them.',
+        ? `${parsed.skipped} line${parsed.skipped === 1 ? '' : 's'} could not be read as "rater A value, rater B value". No usable paired data yet.`
+        : 'No paired rater data supplied. This panel is optional; the claim assessment above does not need it.',
     };
   }
 
-  if (state.proxyKind === 'categorical') {
+  if (state.raterAgreementKind === 'categorical') {
     if (parsed.rows.length < 2) {
       return { kind: 'none', reason: 'At least two paired rows are needed to compute a kappa.' };
     }
     const kappa = cohensKappa(parsed.rows.map((r) => ({ proxy: r.proxyValue, outcome: r.outcomeValue })));
-    return {
-      kind: 'categorical',
-      n: parsed.rows.length,
-      skipped: parsed.skipped,
-      kappa,
-      interpretation: interpretKappa(kappa),
-    };
+    return { kind: 'categorical', n: parsed.rows.length, skipped: parsed.skipped, kappa, interpretation: interpretKappa(kappa) };
   }
 
   const numeric = parseNumericPairs(parsed.rows);
   if (numeric.pairs.length < 2) {
-    return {
-      kind: 'none',
-      reason: 'At least two numeric paired rows are needed to compute a correlation. Check that both values on each row parse as numbers.',
-    };
+    return { kind: 'none', reason: 'At least two numeric paired rows are needed to compute a correlation.' };
   }
   const correlation = pearsonCorrelation(numeric.pairs);
   return {
@@ -483,170 +917,21 @@ export function computeStatistics(state: SignalState): StatisticsResult {
 }
 
 /* ------------------------------------------------------------------ *
- * Validity assessment
- *
- * The synthesis the PRD calls for: what the proxy supports concluding,
- * what it does not, and the specific cases to add that would catch the
- * gap. Never a certification. A documented failure mode always stays
- * in doesNotSupport, no matter how the statistics look.
- * ------------------------------------------------------------------ */
-
-export interface GapStatus {
-  proxySucceedsOutcomeFailsAnswered: boolean;
-  outcomeHoldsProxyFailsAnswered: boolean;
-}
-
-export interface ValidityAssessment {
-  supports: string[];
-  doesNotSupport: string[];
-  casesToAdd: string[];
-  /** One line. Never a certification of validity. */
-  headline: string;
-}
-
-function buildAssessment(
-  state: SignalState,
-  gap: GapStatus,
-  confirmedFailureModeIds: string[],
-  stats: StatisticsResult,
-): ValidityAssessment {
-  const outcomeLabel = state.outcome.trim() || 'the outcome you care about';
-  const proxyLabel = state.proxy.trim() || 'the proxy you are measuring';
-
-  const supports: string[] = [];
-  const doesNotSupport: string[] = [];
-  const casesToAdd: string[] = [];
-
-  if (stats.kind === 'categorical') {
-    const pct = Math.round(stats.kappa.observedAgreement * 100);
-    supports.push(
-      `On the ${stats.n} paired case${stats.n === 1 ? '' : 's'} supplied, ${proxyLabel} and ${outcomeLabel} ` +
-        `show ${stats.interpretation}, kappa ${stats.kappa.kappa.toFixed(2)}. Raw agreement alone was ${pct} ` +
-        `percent, which overstates the case because it does not correct for the agreement chance would produce ` +
-        `on its own.`,
-    );
-    doesNotSupport.push(
-      'Agreement measured on this sample does not extend to cases unlike the ones supplied, and it says ' +
-        'nothing about the specific cases where the two disagree.',
-    );
-  } else if (stats.kind === 'continuous') {
-    if (stats.correlation.degenerate || stats.correlation.r === null) {
-      doesNotSupport.push(
-        `Correlation could not be computed: one of ${proxyLabel} or ${outcomeLabel} never varied across the ` +
-          `rows supplied. Add cases where the value actually moves.`,
-      );
-    } else {
-      supports.push(
-        `On the ${stats.n} paired case${stats.n === 1 ? '' : 's'} supplied, ${proxyLabel} and ${outcomeLabel} ` +
-          `show a ${stats.interpretation}, r equals ${stats.correlation.r.toFixed(2)}.`,
-      );
-      doesNotSupport.push(
-        'Correlation describes association across this sample, not causation, and a real correlation can ' +
-          'still hide the specific divergent cases that matter most.',
-      );
-    }
-  } else {
-    doesNotSupport.push(
-      `No paired data has been supplied, so nothing here measures how often ${proxyLabel} actually tracks ` +
-        `${outcomeLabel} in practice. ${stats.reason}`,
-    );
-  }
-
-  if (!gap.proxySucceedsOutcomeFailsAnswered && !gap.outcomeHoldsProxyFailsAnswered) {
-    doesNotSupport.push(
-      'Neither gap question has been answered, so the proxy has not been tested against the failure mode ' +
-        'that matters most: looking fine while the outcome fails, or the reverse.',
-    );
-    casesToAdd.push(`A case where ${proxyLabel} looks good but ${outcomeLabel} did not actually happen.`);
-    casesToAdd.push(`A case where ${outcomeLabel} happened but ${proxyLabel} looks bad or is absent.`);
-  } else {
-    if (gap.proxySucceedsOutcomeFailsAnswered) {
-      doesNotSupport.push(
-        `A case is on record where ${proxyLabel} can be satisfied while ${outcomeLabel} still fails: ` +
-          `"${state.proxySucceedsOutcomeFails.trim()}". Any use of this proxy inherits that blind spot.`,
-      );
-      casesToAdd.push('Add that exact case to the evaluation set, so a future change that exploits it gets caught.');
-    } else {
-      casesToAdd.push(
-        `A case where ${proxyLabel} looks good but ${outcomeLabel} did not happen. Failing to construct one is ` +
-          `a data point worth writing down, not proof that none exists.`,
-      );
-    }
-    if (gap.outcomeHoldsProxyFailsAnswered) {
-      doesNotSupport.push(
-        `A case is on record where ${outcomeLabel} holds while ${proxyLabel} fails to reflect it: ` +
-          `"${state.outcomeHoldsProxyFails.trim()}". The proxy undercounts success shaped like that.`,
-      );
-      casesToAdd.push('Add that case too, on the other side of the confusion matrix.');
-    } else {
-      casesToAdd.push(`A case where ${outcomeLabel} happened but ${proxyLabel} looks bad or is absent.`);
-    }
-  }
-
-  for (const id of confirmedFailureModeIds) {
-    const entry = GAMEABILITY_CATALOG.find((e) => e.id === id);
-    if (!entry) continue;
-    doesNotSupport.push(`Confirmed known failure mode: ${entry.label}. ${entry.whyItFails}`);
-    casesToAdd.push(`A case shaped like "${entry.gameMove}" so the evaluation would catch it if it happened.`);
-  }
-
-  if (state.customFailureMode.trim()) {
-    doesNotSupport.push(`An additional gameable path was flagged: "${state.customFailureMode.trim()}".`);
-    casesToAdd.push('Write a concrete case for that path and add it to the evaluation set.');
-  }
-
-  if (supports.length === 0) {
-    supports.push(
-      'Nothing yet. Answer the gap questions above or add paired data to give this proxy something concrete to stand on.',
-    );
-  }
-
-  const hasDocumentedGap =
-    confirmedFailureModeIds.length > 0 ||
-    gap.proxySucceedsOutcomeFailsAnswered ||
-    gap.outcomeHoldsProxyFailsAnswered ||
-    Boolean(state.customFailureMode.trim());
-
-  let headline: string;
-  if (hasDocumentedGap) {
-    headline = `Do not treat ${proxyLabel} as interchangeable with ${outcomeLabel}. At least one concrete gap is documented above, and it does not go away because the statistics look good.`;
-  } else if (stats.kind !== 'none') {
-    headline = `${proxyLabel} shows a measured relationship to ${outcomeLabel} on the data given. That is evidence for this sample, not a certification, and no gap has been tested for yet.`;
-  } else {
-    headline = `Not enough is in yet to say anything about whether ${proxyLabel} tracks ${outcomeLabel}. That absence is itself the finding.`;
-  }
-
-  return { supports, doesNotSupport, casesToAdd, headline };
-}
-
-export interface SignalAnalysis {
-  gap: GapStatus;
-  /** Catalog ids whose wording pattern appears in the outcome or proxy text. Advisory only. */
-  detectedFailureModeIds: string[];
-  statistics: StatisticsResult;
-  assessment: ValidityAssessment;
-}
-
-export function analyzeSignal(state: SignalState): SignalAnalysis {
-  const gap: GapStatus = {
-    proxySucceedsOutcomeFailsAnswered: Boolean(state.proxySucceedsOutcomeFails.trim()),
-    outcomeHoldsProxyFailsAnswered: Boolean(state.outcomeHoldsProxyFails.trim()),
-  };
-  const detectedFailureModeIds = detectGameabilityMatches(state.outcome, state.proxy);
-  const statistics = computeStatistics(state);
-  const assessment = buildAssessment(state, gap, state.selectedFailureModes, statistics);
-  return { gap, detectedFailureModeIds, statistics, assessment };
-}
-
-/* ------------------------------------------------------------------ *
  * Samples
  *
- * Four samples, each teaching a different piece of the tool: the
- * textbook kappa worked example, a continuous correlation, a proxy
- * whose gap is visible with zero statistics, and a case with strong
- * looking agreement that still cannot be called valid because a
- * documented failure mode remains in play.
+ * Four samples. Each ships a claim, up to four evidence sources, and
+ * teaches a different piece of the tool: a clean overgeneralization
+ * leap, a version scoped narrowing with an undated source, an ambiguity
+ * flag alongside a properly scoped fact, and a fully supported baseline
+ * with a future dated anomaly. Two of the four also carry rater
+ * agreement data, keeping that panel proven end to end.
  * ------------------------------------------------------------------ */
+
+function padSources(sources: EvidenceSource[]): EvidenceSource[] {
+  const out = [...sources];
+  while (out.length < 4) out.push({ id: `source-${out.length + 1}`, text: '', sourceType: 'unspecified', date: '' });
+  return out.slice(0, 4);
+}
 
 export interface Sample {
   id: string;
@@ -657,100 +942,119 @@ export interface Sample {
 
 export const SAMPLES: Sample[] = [
   {
-    id: 'thumbs-up-fact-check',
-    name: 'Thumbs up rate for a support bot',
+    id: 'sensor-launch-claim',
+    name: 'Sensor launch claim',
     teaches:
-      'The textbook worked example. Raw agreement reads like a pass at 70 percent, but corrected for chance the kappa is only 0.4, fair agreement, because both raters lean toward the same answer most of the time regardless of the actual case.',
+      'A clean, well supported fact next to an overgeneralization: the evidence covers only a regional survey, but the claim generalizes to the whole market. Two fragments, a prediction and an opinion, have no evidence at all.',
     state: {
-      outcome: 'The answer was independently fact checked as correct.',
-      proxy: 'The user clicked thumbs up on the answer.',
-      proxyKind: 'categorical',
-      proxySucceedsOutcomeFails:
-        'A confident, well written, wrong answer about a topic the user cannot check themselves gets a thumbs up anyway.',
-      outcomeHoldsProxyFails:
-        'A correct but blunt answer that contradicts what the user hoped to hear gets a thumbs down even though it was right.',
-      selectedFailureModes: ['thumbs-up-rate'],
-      customFailureMode: '',
-      // Cohen's kappa needs both sides on the SAME label set, so "yes"
-      // means the proxy read positive (thumbs up) or the outcome held
-      // (fact checked correct), and "no" means the negative reading on
-      // whichever side it appears. This is the textbook a=20, b=5,
-      // c=10, d=15 table: kappa 0.4, verified by hand in the logic gate.
-      pairedDataRaw: buildPairedRaw([
-        ['yes', 'yes', 20],
-        ['yes', 'no', 5],
-        ['no', 'yes', 10],
-        ['no', 'no', 15],
+      claim:
+        'The new sensor sold two million units in its first month. This suggests strong regional demand in general. ' +
+        'Sales will exceed ten million units by 2027. This is clearly the best launch in the company history.',
+      sources: padSources([
+        {
+          id: 'source-1',
+          text: 'Internal sales records show the sensor sold 2,000,000 units in its first month across retail channels.',
+          sourceType: 'primary-data',
+          date: isoDaysAgo(20),
+        },
+        {
+          id: 'source-2',
+          text:
+            'Internal analysts said the data suggests strong regional demand, but only among surveyed buyers in the ' +
+            'northeast, not a general national trend.',
+          sourceType: 'analysis-or-opinion',
+          date: isoDaysAgo(25),
+        },
+      ]),
+      raterAgreementKind: 'categorical',
+      // The classic worked example, reframed: two annotators judged whether each of 50 claim
+      // fragments from a broader review batch were supported. Kappa 0.4, fair agreement, verified
+      // by hand in the logic gate.
+      raterPairedDataRaw: buildPairedRaw([
+        ['supported', 'supported', 20],
+        ['supported', 'unsupported', 5],
+        ['unsupported', 'supported', 10],
+        ['unsupported', 'unsupported', 15],
       ]),
     },
   },
   {
-    id: 'test-pass-rate-stability',
-    name: 'Test pass rate for release stability',
+    id: 'patch-version-claim',
+    name: 'Security patch claim',
     teaches:
-      'A continuous proxy and a continuous outcome, related by correlation rather than kappa. A strong positive correlation is still association across six releases, not proof the next release will hold.',
+      'The changelog is the only source and it is undated, its own freshness risk category. The claim generalizes to all supported versions while the changelog names two specific versions, an overgeneralization leap.',
     state: {
-      outcome: 'Incident free days in the two weeks after release, out of 14.',
-      proxy: 'Automated test pass rate before merge, as a percentage.',
-      proxyKind: 'continuous',
-      proxySucceedsOutcomeFails:
-        'A release hits 100 percent pass rate because the suite never exercises the third party payment webhook, which then fails in production for a week.',
-      outcomeHoldsProxyFails:
-        'A release ships with two known, accepted test failures in a rarely used export feature and still runs incident free for the full two weeks.',
-      selectedFailureModes: ['test-pass-rate'],
-      customFailureMode: '',
-      pairedDataRaw: buildPairedRaw([
-        ['62', '3', 1],
-        ['74', '6', 1],
-        ['81', '7', 1],
-        ['88', '10', 1],
-        ['93', '9', 1],
-        ['97', '13', 1],
+      claim:
+        'The patch fixes the authentication bypass in all supported versions. This indicates that every known attack path is closed.',
+      sources: padSources([
+        {
+          id: 'source-1',
+          text:
+            'The official changelog fixes the authentication bypass only in version 4.2 and 4.3; other supported ' +
+            'versions remain vulnerable pending a later release.',
+          sourceType: 'official-record',
+          date: '',
+        },
+      ]),
+      raterAgreementKind: 'categorical',
+      raterPairedDataRaw: '',
+    },
+  },
+  {
+    id: 'battery-longevity-claim',
+    name: 'Battery longevity claim',
+    teaches:
+      'An ambiguous "significantly longer" next to a fact that already scopes itself honestly to a single lab trial, so it is properly supported rather than flagged as a leap. The source is stale, over two years old.',
+    state: {
+      claim:
+        'The new battery lasts significantly longer than the previous model. In our testing, it retained 95 percent ' +
+        'capacity after 500 charge cycles in a single lab trial. This will change how people use the device daily.',
+      sources: padSources([
+        {
+          id: 'source-1',
+          text: 'Battery tests were conducted in a single lab trial and showed 95 percent capacity retention after 500 cycles.',
+          sourceType: 'primary-data',
+          date: isoDaysAgo(900),
+        },
+      ]),
+      raterAgreementKind: 'continuous',
+      // Two annotators each gave a 1 to 10 confidence score per fragment across a broader batch.
+      raterPairedDataRaw: buildPairedRaw([
+        ['6', '5', 1],
+        ['7', '6', 1],
+        ['4', '4', 1],
+        ['8', '9', 1],
+        ['5', '7', 1],
+        ['9', '8', 1],
       ]),
     },
   },
   {
-    id: 'response-length-helpfulness',
-    name: 'Reply length for support triage',
+    id: 'onboarding-flow-claim',
+    name: 'Onboarding flow claim',
     teaches:
-      'A gap that is visible with zero statistics. Two sentences of concrete counterexample are enough to show the proxy and the outcome can come apart; no paired data has been entered at all here.',
+      'A fully supported baseline: this tool is not only a doom machine. It still only confirms the claim matches the evidence supplied, not that the evidence is true. A second source is dated in the future, a data problem worth catching.',
     state: {
-      outcome: "The reply actually resolved the Customer's problem without a follow up message.",
-      proxy: 'Reply length in words.',
-      proxyKind: 'continuous',
-      proxySucceedsOutcomeFails:
-        'A long reply that restates the Customer policy three times and never names the actual fix scores high on length and resolves nothing.',
-      outcomeHoldsProxyFails:
-        'A five word reply, "refunded, confirmation email sent", fully resolves the ticket and scores near zero on length.',
-      selectedFailureModes: ['response-length'],
-      customFailureMode: '',
-      pairedDataRaw: '',
-    },
-  },
-  {
-    id: 'exact-match-extraction',
-    name: 'Exact match for invoice field extraction',
-    teaches:
-      'Strong looking agreement, kappa near 0.8, that still cannot be called valid because a documented failure mode, paraphrase and reformatting, remains unaddressed. High agreement on a sample is not a certification.',
-    state: {
-      outcome: 'The extracted field is semantically correct.',
-      proxy: 'The extracted field matches the reference string exactly.',
-      proxyKind: 'categorical',
-      proxySucceedsOutcomeFails:
-        'Every field in a batch happens to already be in canonical form, so exact match and semantic correctness agree by coincidence, not because the extractor understands meaning.',
-      outcomeHoldsProxyFails:
-        'The reference date is "2026-01-05" and the extractor returns "January 5, 2026", which is the same date and marked wrong by exact match.',
-      selectedFailureModes: ['exact-match'],
-      customFailureMode: '',
-      // Same shared label set as the sample above: "yes" means the
-      // proxy read positive (exact string match) or the outcome held
-      // (semantically correct), "no" means the negative reading.
-      pairedDataRaw: buildPairedRaw([
-        ['yes', 'yes', 40],
-        ['yes', 'no', 2],
-        ['no', 'yes', 8],
-        ['no', 'no', 50],
+      claim:
+        'The new onboarding flow reduced signup time from six minutes to two minutes in our A/B test. Completion rates rose from 61 percent to 84 percent among the test group.',
+      sources: padSources([
+        {
+          id: 'source-1',
+          text:
+            'The A/B test report shows signup time fell from six minutes to two minutes and completion rates rose ' +
+            'from 61 percent to 84 percent among the test group.',
+          sourceType: 'primary-data',
+          date: isoDaysAgo(10),
+        },
+        {
+          id: 'source-2',
+          text: 'A follow up report confirms the onboarding improvement held into the next quarter.',
+          sourceType: 'official-record',
+          date: isoDaysAgo(-30),
+        },
       ]),
+      raterAgreementKind: 'categorical',
+      raterPairedDataRaw: '',
     },
   },
 ];
@@ -763,28 +1067,22 @@ export function getSample(id: string): Sample | undefined {
  * Tool module contract, per src/data/types.ts
  * ------------------------------------------------------------------ */
 
-function emptyDraft(): SignalState {
-  return {
-    outcome: '',
-    proxy: '',
-    proxyKind: 'categorical',
-    proxySucceedsOutcomeFails: '',
-    outcomeHoldsProxyFails: '',
-    selectedFailureModes: [],
-    customFailureMode: '',
-    pairedDataRaw: '',
-  };
-}
-
 export function emptyState(): SignalState {
-  return emptyDraft();
+  return {
+    claim: '',
+    sources: padSources([]),
+    raterAgreementKind: 'categorical',
+    raterPairedDataRaw: '',
+  };
 }
 
 export function sampleState(id: string = SAMPLES[0].id): SignalState {
   const sample = getSample(id) ?? SAMPLES[0];
   return {
-    ...sample.state,
-    selectedFailureModes: [...sample.state.selectedFailureModes],
+    claim: sample.state.claim,
+    sources: sample.state.sources.map((s) => ({ ...s })),
+    raterAgreementKind: sample.state.raterAgreementKind,
+    raterPairedDataRaw: sample.state.raterPairedDataRaw,
   };
 }
 
@@ -795,35 +1093,27 @@ export function reset(): SignalState {
 export function validate(state: SignalState): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
-  if (!state.outcome.trim()) {
-    issues.push({
-      field: 'outcome',
-      message: 'State the outcome you actually care about before running an assessment.',
-      severity: 'error',
-    });
+  if (!state.claim.trim()) {
+    issues.push({ field: 'claim', message: 'Paste the claim you want to check before running an assessment.', severity: 'error' });
   }
-  if (!state.proxy.trim()) {
+
+  const active = activeSources(state);
+  if (state.claim.trim() && active.length === 0) {
     issues.push({
-      field: 'proxy',
-      message: 'State the proxy you are actually measuring before running an assessment.',
-      severity: 'error',
-    });
-  }
-  if (!state.proxySucceedsOutcomeFails.trim() && !state.outcomeHoldsProxyFails.trim()) {
-    issues.push({
-      field: 'gap',
-      message:
-        'Neither gap question is answered yet. The assessment will say so, but answering both is how this tool earns its keep.',
+      field: 'sources',
+      message: 'No evidence entered yet. Every fragment will show as unsupported until at least one source is added.',
       severity: 'warning',
     });
   }
-  const parsed = parsePairedRows(state.pairedDataRaw);
-  if (state.pairedDataRaw.trim() && parsed.rows.length === 0) {
-    issues.push({
-      field: 'pairedDataRaw',
-      message: 'No row in the paired data could be read. Use one "proxy value, outcome value" pair per line.',
-      severity: 'warning',
-    });
+
+  for (const s of active) {
+    if (s.date.trim() && Number.isNaN(new Date(s.date).getTime())) {
+      issues.push({
+        field: `${s.id}.date`,
+        message: `The date "${s.date}" for ${s.id} could not be read. Use YYYY-MM-DD or leave it blank.`,
+        severity: 'warning',
+      });
+    }
   }
 
   return issues;
@@ -832,89 +1122,88 @@ export function validate(state: SignalState): ValidationIssue[] {
 export type ExportFormat = 'json' | 'markdown';
 
 export function serialize(state: SignalState, format: ExportFormat): string {
-  const analysis = analyzeSignal(state);
+  const analysis = analyzeClaim(state);
+  const rater = computeRaterAgreement(state);
 
   if (format === 'json') {
     return JSON.stringify(
       {
         generatedBy: 'Nixfred AI Systems Workbench, Signal Tester',
-        note: 'Local static analysis. No model was scored and no fact was checked. This report never certifies a proxy as valid.',
+        note: 'Local static analysis. Nothing was fetched and no fact was checked against the world. This report only says whether the claim matches the evidence supplied.',
         state,
         analysis,
+        raterAgreement: rater,
       },
       null,
       2,
     );
   }
 
-  const list = (items: string[]) =>
-    items.length ? items.map((item) => `1. ${item}`).join('\n') : '1. None recorded.';
+  const list = (items: string[]) => (items.length ? items.map((item) => `1. ${item}`).join('\n') : '1. None recorded.');
 
-  const statsLines: string[] = [];
-  if (analysis.statistics.kind === 'categorical') {
-    const k = analysis.statistics.kappa;
-    statsLines.push(
-      `Categorical agreement over ${analysis.statistics.n} paired cases (${analysis.statistics.skipped} skipped).`,
-      `Raw agreement: ${(k.observedAgreement * 100).toFixed(1)} percent.`,
-      `Chance agreement: ${(k.chanceAgreement * 100).toFixed(1)} percent.`,
-      `Cohen's kappa: ${k.kappa.toFixed(3)}, ${analysis.statistics.interpretation}.`,
+  const fragmentLines = analysis.fragments.map((f) => {
+    const evidence = f.bestLink
+      ? `best evidence: "${f.bestLink.excerpt}" from ${f.bestLink.sourceId}, overlap ${(f.bestLink.overlapRatio * 100).toFixed(0)} percent`
+      : 'no evidence overlap found';
+    return `1. [${SUPPORT_STATUS_LABELS[f.status]}] (${FRAGMENT_KIND_LABELS[f.kind]}) "${f.fragment.text}". ${evidence}.`;
+  });
+
+  const sourceLines = activeSources(state).map((s, i) => {
+    const fresh = analysis.freshness[i];
+    return `1. ${s.id} (${SOURCE_TYPE_LABELS[s.sourceType]}, ${s.date || 'undated'}): ${fresh.note}`;
+  });
+
+  const raterLines: string[] = [];
+  if (rater.kind === 'categorical') {
+    raterLines.push(
+      `Categorical agreement over ${rater.n} paired cases (${rater.skipped} skipped).`,
+      `Raw agreement: ${(rater.kappa.observedAgreement * 100).toFixed(1)} percent.`,
+      `Cohen's kappa: ${rater.kappa.kappa.toFixed(3)}, ${rater.interpretation}.`,
     );
-  } else if (analysis.statistics.kind === 'continuous') {
-    const c = analysis.statistics.correlation;
-    statsLines.push(
-      `Continuous correlation over ${analysis.statistics.n} paired cases (${analysis.statistics.skipped} skipped).`,
-      `Pearson r: ${c.r === null ? 'undefined' : c.r.toFixed(3)}, ${analysis.statistics.interpretation}.`,
+  } else if (rater.kind === 'continuous') {
+    raterLines.push(
+      `Continuous correlation over ${rater.n} paired cases (${rater.skipped} skipped).`,
+      `Pearson r: ${rater.correlation.r === null ? 'undefined' : rater.correlation.r.toFixed(3)}, ${rater.interpretation}.`,
     );
   } else {
-    statsLines.push(`No statistics computed. ${analysis.statistics.reason}`);
+    raterLines.push(`No rater agreement computed. ${rater.reason}`);
   }
 
   const reportLines = [
     '# Signal Tester report',
     '',
-    'Local static analysis. No model was scored and no fact was checked. This report never certifies a proxy as valid.',
+    'Local static analysis. Nothing was fetched and no fact was checked against the world. This report only says whether the claim matches the evidence supplied.',
     '',
-    `Outcome: ${state.outcome || '(not stated)'}`,
-    `Proxy: ${state.proxy || '(not stated)'}`,
-    `Proxy kind: ${state.proxyKind}`,
+    `Claim: ${state.claim || '(not stated)'}`,
     '',
-    '## Gap interrogation',
+    '## Support map',
     '',
-    `Can the proxy be satisfied while the outcome fails? ${state.proxySucceedsOutcomeFails || '(not answered)'}`,
-    `Can the outcome hold while the proxy fails? ${state.outcomeHoldsProxyFails || '(not answered)'}`,
+    ...(fragmentLines.length ? fragmentLines : ['1. No claim fragments yet.']),
     '',
-    '## Confirmed failure modes',
+    '## Sources',
     '',
-    state.selectedFailureModes.length
-      ? state.selectedFailureModes
-          .map((id) => `1. ${GAMEABILITY_CATALOG.find((e) => e.id === id)?.label ?? id}`)
-          .join('\n')
-      : '1. None confirmed.',
-    state.customFailureMode ? `1. Custom: ${state.customFailureMode}` : '',
+    ...(sourceLines.length ? sourceLines : ['1. No evidence supplied.']),
     '',
-    '## Statistics',
+    '## Source gaps',
     '',
-    ...statsLines,
+    list(analysis.sourceGaps),
     '',
-    '## Validity assessment',
+    '## Confidence',
     '',
-    `Headline: ${analysis.assessment.headline}`,
+    ...analysis.confidence.ledger.map((l) => `1. ${l}`),
     '',
-    'Supports:',
-    list(analysis.assessment.supports),
+    '## Rewritten evidence calibrated claim',
     '',
-    'Does not support:',
-    list(analysis.assessment.doesNotSupport),
+    analysis.rewrite.text || '(nothing to rewrite yet)',
     '',
-    'Cases to add:',
-    list(analysis.assessment.casesToAdd),
+    ...analysis.rewrite.changes.map((c) => `1. ${c.reason}`),
+    '',
+    '## Rater agreement, secondary panel',
+    '',
+    ...raterLines,
     '',
   ];
 
-  // Collapse consecutive blank lines a skipped optional section (an
-  // empty custom failure mode, most often) would otherwise leave
-  // behind. Array.prototype.at keeps this readable without an index
-  // arithmetic expression sitting next to a quoted empty string.
   const collapsed: string[] = [];
   for (const line of reportLines) {
     if (line === '' && collapsed.at(-1) === '') continue;

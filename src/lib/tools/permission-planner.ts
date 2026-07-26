@@ -6,27 +6,49 @@
  * approve, or delete, and give it the narrowest authority that still
  * lets it finish the job.
  *
+ * PRD workflow, quoted because it is the shape of this whole file:
+ * "Add resources and actions; assign risk, reversibility, data
+ * sensitivity, and autonomy level; define approval and escalation
+ * rules." A Grant below is one row of that resource by action matrix.
+ * An action (read, write, delete, and so on) is a fixed template with
+ * objective facts about its worst case. A resource is free text the
+ * user names ("Email inbox", "Calendar events", "Production database").
+ * The same action can apply to many resources, each its own row, each
+ * assigned its own risk, sensitivity, autonomy level, and rules.
+ *
  * HARD BOUNDARY FROM THE PRD: "The tool provides design guidance, not
  * legal or security certification." Nothing here ever labels a grant
- * as safe. Every finding states what a capability allows and what
- * remains possible after the grant is narrowed, because least
- * privilege is a direction, not a finished state.
+ * as safe. Every finding states what a resource allows and what
+ * remains possible after the grant is narrowed.
  *
- * Pure functions only. No DOM, no globals, no I/O.
+ * THE SHARPEST RULE IN THE PRD, stated once here because it governs
+ * warningsFor below: "Destructive and externally visible actions
+ * cannot be marked low-risk without a warning." This is an interaction
+ * rule, not a static classification. A user may declare a destructive
+ * or externally visible action low risk. The tool does not silently
+ * accept that label, and it does not silently overrule it either. It
+ * keeps the label exactly as declared and attaches a warning that says
+ * why that label is disputed.
+ *
+ * Pure functions only. No DOM, no globals, no I/O, no randomness. Id
+ * assignment for a new grant is the caller's responsibility for
+ * exactly that reason.
  */
 
 /* ------------------------------------------------------------------ *
- * Capability catalog
+ * Action catalog
  *
- * The eleven capabilities named in the PRD workflow step 1. Order here
- * is display order and PRD order.
+ * The eleven actions named in the PRD workflow step 1. Each is a fixed,
+ * non editable set of facts about the action itself, never about any
+ * particular grant of it. A tool that let these move with user input
+ * could talk itself into calling anything low risk.
  *
- * NOTE ON THE LAST ID. The PRD calls this capability "act on behalf of
- * a Customer", and every user facing label and sentence below says
- * exactly that, capitalized. The machine id deliberately spells out
- * "on behalf" rather than naming the Customer directly, since the
- * house style gate requires that word capitalized everywhere it
- * appears, including inside a hyphenated identifier.
+ * NOTE ON THE LAST ID. The PRD calls this action "act on behalf of a
+ * Customer", and every user facing label and sentence below says
+ * exactly that, capitalized. The machine id spells out "on behalf"
+ * rather than naming the Customer directly, since the house style
+ * gate requires that word capitalized everywhere it appears, including
+ * inside a hyphenated identifier.
  * ------------------------------------------------------------------ */
 export const CAPABILITY_IDS = [
   'read-files',
@@ -56,24 +78,42 @@ export const SEVERITY_LABELS: Record<Severity, string> = {
   critical: 'Critical',
 };
 
-/**
- * The fixed, non editable facts about a capability. These describe
- * the worst case of the capability itself, not any particular grant of
- * it. A tool that let these move with user input would be able to talk
- * itself into calling anything low risk.
- */
+/** PRD workflow step 2: data sensitivity, a first class assignable property. */
+export type DataSensitivity = 'none' | 'low' | 'medium' | 'high';
+export const DATA_SENSITIVITIES: DataSensitivity[] = ['none', 'low', 'medium', 'high'];
+export const DATA_SENSITIVITY_LABELS: Record<DataSensitivity, string> = {
+  none: 'None',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+};
+
+/** PRD workflow step 2: autonomy level, a first class assignable property. */
+export type AutonomyLevel = 'proposes-only' | 'acts-with-confirmation' | 'acts-autonomously';
+export const AUTONOMY_LEVELS: AutonomyLevel[] = [
+  'proposes-only',
+  'acts-with-confirmation',
+  'acts-autonomously',
+];
+export const AUTONOMY_LEVEL_LABELS: Record<AutonomyLevel, string> = {
+  'proposes-only': 'Proposes only, a human acts',
+  'acts-with-confirmation': 'Acts, with confirmation',
+  'acts-autonomously': 'Acts autonomously',
+};
+
 export interface CapabilityTrait {
   id: CapabilityId;
-  label: string;
-  /** What granting this lets the agent do, one line. */
-  summary: string;
+  /** The verb: what this action does. Shown in the Action column. */
+  action: string;
+  /** Placeholder resource text shown when a grant has not named one yet. */
+  defaultResource: string;
   /** What an allow list scopes, used in recommendation text. */
   targetNoun: string;
-  /** The worst outcome if this capability fires on the wrong target. */
+  /** The worst outcome if this action fires on the wrong target. */
   worstOutcome: string;
   baselineReversibility: Reversibility;
   baselineDetectability: Detectability;
-  /** Can this capability, on its own, destroy something that existed. */
+  /** Can this action, on its own, destroy something that existed. */
   destructive: boolean;
   /** Does the effect land somewhere outside the system boundary. */
   externallyVisible: boolean;
@@ -85,18 +125,18 @@ export interface CapabilityTrait {
   canBeMadeReversible: boolean;
   /** The concrete mechanism, used only when canBeMadeReversible is true. */
   reversibleApproach: string;
-  /** What to log and alert on when this grant survives review. */
+  /** What to log and alert on when a grant of this action survives review. */
   auditRequirements: string[];
 }
 
 export const CAPABILITIES: Record<CapabilityId, CapabilityTrait> = {
   'read-files': {
     id: 'read-files',
-    label: 'Read files',
-    summary: "Read any file the grant's scope reaches.",
-    targetNoun: 'paths',
+    action: 'Read',
+    defaultResource: 'Files',
+    targetNoun: 'items',
     worstOutcome:
-      "A bad instruction or a prompt injection reads a file outside the intended project, for example a credentials file or another account's data, and that content ends up in the agent's context or its output.",
+      "A bad instruction or a prompt injection reads something outside the intended scope, and that content ends up in the agent's context or its output.",
     baselineReversibility: 'reversible',
     baselineDetectability: 'silent',
     destructive: false,
@@ -107,17 +147,16 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityTrait> = {
     canBeMadeReversible: false,
     reversibleApproach: '',
     auditRequirements: [
-      'Log every path read, not only the ones inside the intended scope.',
-      'Alert when a read touches a path outside the stated allow list.',
+      'Log every read with the resource it targeted, not only the ones inside the intended scope.',
+      'Alert when a read touches a resource outside the stated allow list.',
     ],
   },
   'write-files': {
     id: 'write-files',
-    label: 'Write files',
-    summary: "Create or overwrite files the grant's scope reaches.",
+    action: 'Write',
+    defaultResource: 'Files',
     targetNoun: 'paths',
-    worstOutcome:
-      'The agent overwrites a file that had no other copy, and the prior content is gone.',
+    worstOutcome: 'The agent overwrites something that had no other copy, and the prior content is gone.',
     baselineReversibility: 'irreversible',
     baselineDetectability: 'delayed',
     destructive: true,
@@ -129,15 +168,15 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityTrait> = {
     reversibleApproach:
       'write through version control or a backup so every write can be rolled back to the prior content',
     auditRequirements: [
-      'Log every path written, with a diff or a copy of the prior content.',
+      'Log every write with a diff or a copy of the prior content.',
       'Alert on any write outside the stated allow list.',
     ],
   },
   delete: {
     id: 'delete',
-    label: 'Delete',
-    summary: "Remove files or records the grant's scope reaches.",
-    targetNoun: 'paths',
+    action: 'Delete',
+    defaultResource: 'Files or records',
+    targetNoun: 'items',
     worstOutcome:
       'The agent deletes the only copy of something that mattered, and there is nothing left to recover.',
     baselineReversibility: 'irreversible',
@@ -157,8 +196,8 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityTrait> = {
   },
   'run-shell': {
     id: 'run-shell',
-    label: 'Run shell commands',
-    summary: 'Execute arbitrary commands on the host.',
+    action: 'Execute shell commands',
+    defaultResource: 'Host',
     targetNoun: 'commands',
     worstOutcome:
       'The agent runs a command that was never intended, from a typo, a bad instruction, or an injected one, with whatever authority the shell session holds.',
@@ -179,8 +218,8 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityTrait> = {
   },
   'network-egress': {
     id: 'network-egress',
-    label: 'Network egress',
-    summary: "Send outbound requests to destinations the grant's scope reaches.",
+    action: 'Send outbound',
+    defaultResource: 'Network',
     targetNoun: 'destinations',
     worstOutcome:
       'Data the agent holds, including anything it read from files or secrets, leaves the system boundary to a destination nobody approved.',
@@ -201,8 +240,8 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityTrait> = {
   },
   'send-email': {
     id: 'send-email',
-    label: 'Send email',
-    summary: "Deliver email to recipients the grant's scope reaches.",
+    action: 'Send',
+    defaultResource: 'Email',
     targetNoun: 'recipients',
     worstOutcome:
       'The agent sends a message to the wrong person, with the wrong content, or at a volume that reads as spam, and the recipient has already seen it.',
@@ -223,8 +262,8 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityTrait> = {
   },
   'call-internal-api': {
     id: 'call-internal-api',
-    label: 'Call an internal API',
-    summary: "Call internal service endpoints the grant's scope reaches.",
+    action: 'Call',
+    defaultResource: 'Internal API',
     targetNoun: 'endpoints',
     worstOutcome:
       'The agent calls an endpoint it was not meant to use, for example one that changes state instead of only reading it, using authority nobody scoped for that purpose.',
@@ -245,8 +284,8 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityTrait> = {
   },
   'spend-money': {
     id: 'spend-money',
-    label: 'Spend money',
-    summary: "Authorize payments up to the grant's scope and ceiling.",
+    action: 'Authorize payment',
+    defaultResource: 'Payment method',
     targetNoun: 'vendors or categories',
     worstOutcome:
       'The agent authorizes a charge that should never have happened, at an amount or to a vendor nobody approved.',
@@ -267,8 +306,8 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityTrait> = {
   },
   'modify-production': {
     id: 'modify-production',
-    label: 'Modify production',
-    summary: "Change production configuration, deployments, or data the grant's scope reaches.",
+    action: 'Modify',
+    defaultResource: 'Production',
     targetNoun: 'services',
     worstOutcome:
       'The agent pushes a change that breaks a live system, and every user of that system feels it until the change is rolled back.',
@@ -289,8 +328,8 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityTrait> = {
   },
   'access-secrets': {
     id: 'access-secrets',
-    label: 'Access secrets',
-    summary: "Read credentials, keys, or tokens the grant's scope reaches.",
+    action: 'Read',
+    defaultResource: 'Secrets',
     targetNoun: 'named secrets',
     worstOutcome:
       'The agent holds a credential it did not need for the task, and that exposure is now a permanent fact that rotation limits going forward but never erases.',
@@ -310,8 +349,8 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityTrait> = {
   },
   'act-on-behalf': {
     id: 'act-on-behalf',
-    label: 'Act on behalf of a Customer',
-    summary: "Take action inside the system using a Customer's own identity and authority.",
+    action: 'Act as',
+    defaultResource: 'Customer account',
     targetNoun: 'Customer records',
     worstOutcome:
       "The agent takes an action the Customer never asked for, and it lands in that Customer's own account history indistinguishable from something they did themselves.",
@@ -332,7 +371,7 @@ export const CAPABILITIES: Record<CapabilityId, CapabilityTrait> = {
   },
 };
 
-/** Capabilities where a rate or amount ceiling is a meaningful lever. */
+/** Actions where a rate or amount ceiling is a meaningful lever. */
 const RATE_RELEVANT = new Set<CapabilityId>([
   'run-shell',
   'network-egress',
@@ -343,41 +382,37 @@ const RATE_RELEVANT = new Set<CapabilityId>([
 ]);
 
 /* ------------------------------------------------------------------ *
- * Grant configuration
+ * Grants
  *
- * PRD workflow step 3: "It proposes the narrowest grant that still
- * works: scoping by path, by rate, by amount ceiling, by allow list,
- * by requiring confirmation, by dry run first, by making it reversible
- * instead of forbidden." scope covers path and allow list, ceiling
- * covers rate and amount, the remaining three are their own toggles.
+ * A grant is one row of the resource by action matrix: a named
+ * resource, paired with one of the eleven actions, plus everything the
+ * PRD workflow says to assign to it. The same action can appear on
+ * many grants, one per resource, which is what lets a single agent
+ * sample show that reading a calendar and reading email are not the
+ * same finding even though both are the Read action.
  * ------------------------------------------------------------------ */
-export interface CapabilityConfig {
-  /** Free text allow list. Empty, "*", or a word like "all" reads as wildcard. */
+export interface Grant {
+  /** Unique per grant. Assigned by the caller; this module never generates ids. */
+  id: string;
+  capabilityId: CapabilityId;
+  /** Free text: what this grant is about. "Email inbox", "Production database". */
+  resource: string;
+  /** Free text allow list narrowing that resource. Empty or "*" reads as wildcard. */
   scope: string;
   /** Free text rate or amount ceiling. Empty means unbounded. */
   ceiling: string;
+  /** Declared risk. Defaults to the assessed severity, but the user may override it. */
+  risk: Severity;
+  dataSensitivity: DataSensitivity;
+  autonomyLevel: AutonomyLevel;
   requiresConfirmation: boolean;
+  /** Free text: who or what approves this grant firing. */
+  approvalRule: string;
+  /** Free text: what happens when this grant fires outside the expected pattern. */
+  escalationRule: string;
   dryRunFirst: boolean;
   /** Claims a real reversibility mechanism is in place for this grant. */
   reversibleOverride: boolean;
-}
-
-export function defaultConfig(): CapabilityConfig {
-  return {
-    scope: '',
-    ceiling: '',
-    requiresConfirmation: false,
-    dryRunFirst: false,
-    reversibleOverride: false,
-  };
-}
-
-export interface PlannerState {
-  /** What the agent must accomplish. Free text. */
-  mission: string;
-  selected: Record<CapabilityId, boolean>;
-  configs: Record<CapabilityId, CapabilityConfig>;
-  scenarioId: string;
 }
 
 const WILDCARD_TOKENS = new Set(['*', 'all', 'any', 'everything', 'anything']);
@@ -393,15 +428,18 @@ export function isWildcardScope(scope: string): boolean {
 }
 
 /* ------------------------------------------------------------------ *
- * Blast radius
+ * Blast radius, the assessed severity
  *
  * PRD workflow step 2: "Per capability the tool computes blast radius:
  * what is the worst outcome if this fires wrongly, is it reversible,
  * is it detectable, and how fast could it be stopped."
  *
- * Deterministic on purpose. The same trait and the same config always
- * produce the same severity, because a blast radius that moved with
- * anything other than stated facts would be a guess wearing a number.
+ * This is the OBJECTIVE assessment: a pure function of the action's
+ * fixed traits and the one thing a grant can change about them, whether
+ * a real reversibility mechanism is in place. It never bends toward
+ * whatever the user declared. The declared risk on the grant is a
+ * separate, first class field the user assigns; warningsFor is where
+ * the two are reconciled, never here.
  * ------------------------------------------------------------------ */
 const REVERSIBILITY_SCORE: Record<Reversibility, number> = {
   reversible: 0,
@@ -422,14 +460,33 @@ const REVERSIBILITY_STEP_UP: Record<Reversibility, Reversibility> = {
   reversible: 'reversible',
 };
 
-export function effectiveReversibility(
-  trait: CapabilityTrait,
-  config: CapabilityConfig,
-): Reversibility {
-  if (!config.reversibleOverride || !trait.canBeMadeReversible) {
+export function effectiveReversibility(trait: CapabilityTrait, grant: Grant): Reversibility {
+  if (!grant.reversibleOverride || !trait.canBeMadeReversible) {
     return trait.baselineReversibility;
   }
   return REVERSIBILITY_STEP_UP[trait.baselineReversibility];
+}
+
+function scoreSeverity(
+  reversibility: Reversibility,
+  detectability: Detectability,
+  destructive: boolean,
+  externallyVisible: boolean,
+): Severity {
+  let score = REVERSIBILITY_SCORE[reversibility] + DETECTABILITY_SCORE[detectability];
+  if (destructive) score += 1;
+  if (externallyVisible) score += 1;
+  return score <= 1 ? 'low' : score <= 3 ? 'medium' : score <= 4 ? 'high' : 'critical';
+}
+
+/** The assessed severity a fresh grant of this action starts with, before any override. */
+export function baselineSeverity(trait: CapabilityTrait): Severity {
+  return scoreSeverity(
+    trait.baselineReversibility,
+    trait.baselineDetectability,
+    trait.destructive,
+    trait.externallyVisible,
+  );
 }
 
 export interface BlastRadius {
@@ -437,86 +494,86 @@ export interface BlastRadius {
   detectability: Detectability;
   destructive: boolean;
   externallyVisible: boolean;
+  /** The assessed severity: computed, objective, never overruled by a declared label. */
   severity: Severity;
-  /**
-   * True when the raw score computed low but the capability is
-   * destructive or externally visible, so the severity was forced up.
-   * PRD acceptance criterion: "Destructive and externally visible
-   * actions cannot be marked low risk without a warning." This is the
-   * flag that warningsFor turns into that warning.
-   */
-  forcedFromLow: boolean;
   worstOutcome: string;
   containment: string;
 }
 
-export function computeBlastRadius(
-  trait: CapabilityTrait,
-  config: CapabilityConfig,
-): BlastRadius {
-  const reversibility = effectiveReversibility(trait, config);
+export function computeBlastRadius(trait: CapabilityTrait, grant: Grant): BlastRadius {
+  const reversibility = effectiveReversibility(trait, grant);
   const detectability = trait.baselineDetectability;
-
-  let score = REVERSIBILITY_SCORE[reversibility] + DETECTABILITY_SCORE[detectability];
-  if (trait.destructive) score += 1;
-  if (trait.externallyVisible) score += 1;
-
-  let severity: Severity = score <= 1 ? 'low' : score <= 3 ? 'medium' : score <= 4 ? 'high' : 'critical';
-
-  let forcedFromLow = false;
-  if (severity === 'low' && (trait.destructive || trait.externallyVisible)) {
-    severity = 'medium';
-    forcedFromLow = true;
-  }
-
+  const severity = scoreSeverity(reversibility, detectability, trait.destructive, trait.externallyVisible);
   return {
     reversibility,
     detectability,
     destructive: trait.destructive,
     externallyVisible: trait.externallyVisible,
     severity,
-    forcedFromLow,
     worstOutcome: trait.worstOutcome,
     containment: trait.containment,
+  };
+}
+
+/**
+ * Build a fresh grant for a newly added resource and action. Risk
+ * starts equal to the assessed severity, an honest default the user is
+ * free to override, which is exactly the case warningsFor watches for.
+ */
+export function defaultGrant(id: string, capabilityId: CapabilityId, resource = ''): Grant {
+  const trait = CAPABILITIES[capabilityId];
+  return {
+    id,
+    capabilityId,
+    resource,
+    scope: '',
+    ceiling: '',
+    risk: baselineSeverity(trait),
+    dataSensitivity: 'none',
+    autonomyLevel: 'acts-with-confirmation',
+    requiresConfirmation: false,
+    approvalRule: '',
+    escalationRule: '',
+    dryRunFirst: false,
+    reversibleOverride: false,
   };
 }
 
 /* ------------------------------------------------------------------ *
  * Recommendations
  *
- * PRD workflow step 3, the least privilege proposal. Every entry
- * carries a reason, because a suggestion with no reason is a demand,
- * not design guidance.
+ * PRD workflow step 3, the least privilege proposal, extended to cover
+ * the newly assignable properties: an unstated approval rule or
+ * escalation rule is exactly as much of a gap as an unstated scope.
+ * Every entry carries a reason, because a suggestion with no reason is
+ * a demand, not design guidance.
  * ------------------------------------------------------------------ */
 export interface Recommendation {
   action: string;
   reason: string;
 }
 
-export function recommendationsFor(
-  trait: CapabilityTrait,
-  config: CapabilityConfig,
-  blast: BlastRadius,
-): Recommendation[] {
+export function recommendationsFor(trait: CapabilityTrait, grant: Grant, blast: BlastRadius): Recommendation[] {
   const recs: Recommendation[] = [];
+  const resourceLabel = grant.resource || trait.defaultResource;
 
-  if (isWildcardScope(config.scope)) {
+  if (isWildcardScope(grant.scope)) {
     recs.push({
-      action: `Scope ${trait.label.toLowerCase()} to an explicit allow list: name the exact ${trait.targetNoun} this task needs.`,
+      action: `Scope ${trait.action.toLowerCase()} on ${resourceLabel} to an explicit allow list: name the exact ${trait.targetNoun} this task needs.`,
       reason:
         'Wildcard access has no ceiling. A hijacked or malfunctioning grant with no boundary can reach anything, not only what the task required.',
     });
   }
 
-  if (trait.supportsDryRun && !config.dryRunFirst) {
+  if (trait.supportsDryRun && !grant.dryRunFirst) {
     recs.push({
-      action: `Require a dry run first: list what ${trait.label.toLowerCase()} would do, and execute only after that list is reviewed.`,
+      action: `Require a dry run first: list what this grant would do on ${resourceLabel}, and execute only after that list is reviewed.`,
       reason:
         'A preview that a human or a check can reject costs nothing when the action is correct, and it catches the case when it is not.',
     });
   }
 
-  if (trait.canBeMadeReversible && !config.reversibleOverride && blast.reversibility !== 'reversible') {
+  if (trait.canBeMadeReversible && !grant.reversibleOverride && blast.reversibility !== 'reversible') {
     recs.push({
       action: `Make this reversible instead of forbidding it: ${trait.reversibleApproach}.`,
       reason:
@@ -524,18 +581,42 @@ export function recommendationsFor(
     });
   }
 
-  if (!config.requiresConfirmation && (blast.severity === 'high' || blast.severity === 'critical')) {
+  if (!grant.requiresConfirmation && (grant.risk === 'high' || grant.risk === 'critical')) {
     recs.push({
-      action: `Require confirmation before ${trait.label.toLowerCase()} fires.`,
-      reason: `This capability scored ${blast.severity} blast radius. A human checkpoint is the cheapest control available before the worst case happens.`,
+      action: `Require confirmation before this grant fires on ${resourceLabel}.`,
+      reason: `This grant is declared ${grant.risk} risk. A human checkpoint is the cheapest control available before the worst case happens.`,
     });
   }
 
-  if (RATE_RELEVANT.has(trait.id) && config.ceiling.trim() === '') {
+  if (RATE_RELEVANT.has(trait.id) && grant.ceiling.trim() === '') {
     recs.push({
-      action: `Set an explicit ceiling: a rate or amount limit on ${trait.label.toLowerCase()}, not an unbounded allowance.`,
+      action: `Set an explicit ceiling: a rate or amount limit on ${resourceLabel}, not an unbounded allowance.`,
       reason:
         'Even a correctly scoped grant is unbounded in volume until a ceiling caps how much of it can happen before anyone notices.',
+    });
+  }
+
+  if ((grant.risk === 'high' || grant.risk === 'critical') && !grant.approvalRule.trim()) {
+    recs.push({
+      action: 'Name who or what approves this grant, not only whether confirmation happens.',
+      reason:
+        'Requiring confirmation without saying who gives it just moves the ambiguity one step down the chain.',
+    });
+  }
+
+  if ((grant.risk === 'high' || grant.risk === 'critical') && !grant.escalationRule.trim()) {
+    recs.push({
+      action: 'State an escalation rule: what happens when this grant fires outside the expected pattern.',
+      reason:
+        'Logging that something happened is not the same as someone finding out in time to act on it.',
+    });
+  }
+
+  if (grant.dataSensitivity === 'high' && grant.autonomyLevel === 'acts-autonomously') {
+    recs.push({
+      action: `Reduce autonomy on ${resourceLabel} to acting with confirmation, or narrow the data sensitivity down first.`,
+      reason:
+        'High sensitivity data paired with full autonomy removes the last human checkpoint before that data is used.',
     });
   }
 
@@ -554,38 +635,68 @@ export interface Warning {
   message: string;
 }
 
-export function warningsFor(
+/**
+ * THE INTERACTION RULE. "Destructive and externally visible actions
+ * cannot be marked low-risk without a warning." Returns null when the
+ * label is not low, or the action is neither destructive nor
+ * externally visible, so a real allow list of low risk items never
+ * trips this. Returns a warning otherwise, and the caller never
+ * changes the label because of it.
+ */
+function lowRiskWarning(
+  idSuffix: string,
+  source: 'declared' | 'assessed',
   trait: CapabilityTrait,
-  config: CapabilityConfig,
-  blast: BlastRadius,
-): Warning[] {
+  riskLabel: Severity,
+): Warning | null {
+  if (riskLabel !== 'low') return null;
+  if (!trait.destructive && !trait.externallyVisible) return null;
+  const why =
+    trait.destructive && trait.externallyVisible
+      ? 'it is both destructive and externally visible'
+      : trait.destructive
+        ? 'it is destructive'
+        : 'it is externally visible';
+  const framing =
+    source === 'declared'
+      ? 'This grant is declared low risk'
+      : 'The assessed severity for this grant computes to low';
+  return {
+    id: `${idSuffix}-${source}-low-risk`,
+    severity: 'critical',
+    message: `${framing}, but ${why}. The label stands as declared. State what you are accepting by calling it low, since low risk is not a claim this action supports on its own.`,
+  };
+}
+
+export function warningsFor(trait: CapabilityTrait, grant: Grant, blast: BlastRadius): Warning[] {
   const warnings: Warning[] = [];
 
-  if (blast.forcedFromLow) {
-    warnings.push({
-      id: `${trait.id}-forced-from-low`,
-      severity: 'critical',
-      message: `${trait.label} is destructive or externally visible. It cannot be treated as low risk regardless of how the raw score computes.`,
-    });
+  // Declared risk takes priority: it is the literal case the PRD names,
+  // a user marking the action low risk. The assessed check underneath
+  // is a defensive backstop for a future action whose formula alone
+  // lands on low while destructive or external, which none of the
+  // eleven shipped actions do, but the rule should hold regardless.
+  const declaredWarning = lowRiskWarning(grant.id, 'declared', trait, grant.risk);
+  if (declaredWarning) {
+    warnings.push(declaredWarning);
+  } else {
+    const assessedWarning = lowRiskWarning(grant.id, 'assessed', trait, blast.severity);
+    if (assessedWarning) warnings.push(assessedWarning);
   }
 
-  if (isWildcardScope(config.scope)) {
+  if (isWildcardScope(grant.scope)) {
     warnings.push({
-      id: `${trait.id}-wildcard`,
+      id: `${grant.id}-wildcard`,
       severity: 'warning',
-      message: `${trait.label} has wildcard access${config.scope.trim() ? `, stated as "${config.scope.trim()}"` : ', with no scope stated'}. Nothing bounds what this grant can reach.`,
+      message: `${trait.action} on ${grant.resource || trait.defaultResource} has wildcard access${grant.scope.trim() ? `, stated as "${grant.scope.trim()}"` : ', with no scope stated'}. Nothing bounds what this grant can reach.`,
     });
   }
 
-  // PRD is about capability design, not any one grant's paperwork, so
-  // this is the property the tool enforces without exception: a
-  // capability nobody would notice misfiring, and that cannot be
-  // undone once it does, must never be one step away from firing.
-  if (blast.reversibility === 'irreversible' && blast.detectability === 'silent' && !config.requiresConfirmation) {
+  if (blast.reversibility === 'irreversible' && blast.detectability === 'silent' && !grant.requiresConfirmation) {
     warnings.push({
-      id: `${trait.id}-mandatory-confirmation`,
+      id: `${grant.id}-mandatory-confirmation`,
       severity: 'critical',
-      message: `${trait.label} cannot be undone and would not be noticed on its own. It must require confirmation before it fires.`,
+      message: `${trait.action} on ${grant.resource || trait.defaultResource} cannot be undone and would not be noticed on its own. It must require confirmation before it fires.`,
     });
   }
 
@@ -597,89 +708,97 @@ export function warningsFor(
  *
  * PRD workflow step 4: "It flags dangerous combinations explicitly.
  * ... These compound risks are the real finding and the tool must name
- * them." Three named combinations, each testable as present when both
- * parts are present and absent when only one is.
+ * them." Rules match on the ACTION present anywhere among the grants,
+ * so two grants of the same action on different resources still only
+ * need one of each side to trip a combination. Each finding names the
+ * specific grants responsible rather than a generic pair of actions, so
+ * a reviewer never has to guess which resource is implicated.
  * ------------------------------------------------------------------ */
 export interface ComboFinding {
   id: string;
   name: string;
   message: string;
-  involves: CapabilityId[];
-}
-
-interface ComboContext {
-  selected: Set<CapabilityId>;
-  configs: Record<CapabilityId, CapabilityConfig>;
-  blast: Partial<Record<CapabilityId, BlastRadius>>;
+  triggeringGrants: Array<{ grantId: string; label: string }>;
 }
 
 interface ComboRule {
   id: string;
   name: string;
   message: string;
-  involves: CapabilityId[];
-  test: (ctx: ComboContext) => boolean;
+  find: (grants: Grant[]) => Grant[] | null;
+}
+
+function grantsFor(grants: Grant[], id: CapabilityId): Grant[] {
+  return grants.filter((g) => g.capabilityId === id);
 }
 
 const COMBO_RULES: ComboRule[] = [
   {
     id: 'exfiltration',
     name: 'Exfiltration path',
-    involves: ['access-secrets', 'network-egress'],
     message:
       'Access to secrets plus network egress lets the agent read a credential and send it anywhere the network reaches. Treat this as one exfiltration risk, not two separate line items.',
-    test: (ctx) => ctx.selected.has('access-secrets') && ctx.selected.has('network-egress'),
+    find: (grants) => {
+      const secrets = grantsFor(grants, 'access-secrets');
+      const egress = grantsFor(grants, 'network-egress');
+      if (!secrets.length || !egress.length) return null;
+      return [secrets[0], egress[0]];
+    },
   },
   {
     id: 'arbitrary-execution',
     name: 'Arbitrary code execution',
-    involves: ['run-shell', 'network-egress'],
     message:
       'Shell access plus network egress means the agent can fetch and run anything the network can reach, not only the commands you had in mind. Treat this as arbitrary code execution.',
-    test: (ctx) => ctx.selected.has('run-shell') && ctx.selected.has('network-egress'),
+    find: (grants) => {
+      const shell = grantsFor(grants, 'run-shell');
+      const egress = grantsFor(grants, 'network-egress');
+      if (!shell.length || !egress.length) return null;
+      return [shell[0], egress[0]];
+    },
   },
   {
     id: 'data-loss',
     name: 'Unconfirmed irreversible write',
-    involves: ['write-files', 'delete'],
     message:
       'A write or delete grant with no confirmation step and no reversibility mechanism means one wrong action destroys data with nothing standing in the way and nothing to undo it.',
-    test: (ctx) =>
-      (['write-files', 'delete'] as CapabilityId[]).some((id) => {
-        const b = ctx.blast[id];
-        return (
-          ctx.selected.has(id) &&
-          !ctx.configs[id].requiresConfirmation &&
-          b?.reversibility === 'irreversible'
-        );
-      }),
+    find: (grants) => {
+      const offenders = grants.filter((g) => {
+        if (g.capabilityId !== 'write-files' && g.capabilityId !== 'delete') return false;
+        if (g.requiresConfirmation) return false;
+        return effectiveReversibility(CAPABILITIES[g.capabilityId], g) === 'irreversible';
+      });
+      return offenders.length ? offenders : null;
+    },
   },
 ];
 
-export function findCombos(
-  selected: Set<CapabilityId>,
-  configs: Record<CapabilityId, CapabilityConfig>,
-  blast: Partial<Record<CapabilityId, BlastRadius>>,
-): ComboFinding[] {
-  const ctx: ComboContext = { selected, configs, blast };
-  return COMBO_RULES.filter((rule) => rule.test(ctx)).map((rule) => ({
-    id: rule.id,
-    name: rule.name,
-    message: rule.message,
-    involves: rule.involves,
-  }));
+export function findCombos(grants: Grant[]): ComboFinding[] {
+  const found: ComboFinding[] = [];
+  for (const rule of COMBO_RULES) {
+    const hits = rule.find(grants);
+    if (!hits) continue;
+    found.push({
+      id: rule.id,
+      name: rule.name,
+      message: rule.message,
+      triggeringGrants: hits.map((g) => ({
+        grantId: g.id,
+        label: `${CAPABILITIES[g.capabilityId].action}: ${g.resource || CAPABILITIES[g.capabilityId].defaultResource}`,
+      })),
+    });
+  }
+  return found;
 }
 
 /* ------------------------------------------------------------------ *
  * Analysis
  * ------------------------------------------------------------------ */
-export interface CapabilityFinding {
-  id: CapabilityId;
+export interface GrantFinding {
+  grant: Grant;
   label: string;
-  summary: string;
-  config: CapabilityConfig;
-  blast: BlastRadius;
   wildcard: boolean;
+  blast: BlastRadius;
   recommendations: Recommendation[];
   warnings: Warning[];
   /** What remains possible even after every recommendation is applied. */
@@ -687,75 +806,75 @@ export interface CapabilityFinding {
 }
 
 export interface AuditEntry {
-  id: CapabilityId;
+  grantId: string;
   label: string;
   log: string[];
 }
 
 export interface PlannerAnalysis {
   mission: string;
-  findings: CapabilityFinding[];
+  findings: GrantFinding[];
   combos: ComboFinding[];
   auditLog: AuditEntry[];
-  severityCounts: Record<Severity, number>;
+  /** Counts by DECLARED risk, the label a human would actually implement from. */
+  riskCounts: Record<Severity, number>;
+  wildcardCount: number;
+  /** Grants where the declared risk and the assessed severity disagree. */
+  riskMismatchCount: number;
 }
 
 export function analyze(state: PlannerState): PlannerAnalysis {
-  const selectedIds = CAPABILITY_IDS.filter((id) => state.selected[id]);
-  const selectedSet = new Set(selectedIds);
-
-  const blastMap: Partial<Record<CapabilityId, BlastRadius>> = {};
-  for (const id of selectedIds) {
-    blastMap[id] = computeBlastRadius(CAPABILITIES[id], state.configs[id]);
-  }
-
-  const findings: CapabilityFinding[] = selectedIds.map((id) => {
-    const trait = CAPABILITIES[id];
-    const config = state.configs[id];
-    const blast = blastMap[id]!;
+  const findings: GrantFinding[] = state.grants.map((grant) => {
+    const trait = CAPABILITIES[grant.capabilityId];
+    const blast = computeBlastRadius(trait, grant);
     return {
-      id,
-      label: trait.label,
-      summary: trait.summary,
-      config,
+      grant,
+      label: `${trait.action}: ${grant.resource || trait.defaultResource}`,
+      wildcard: isWildcardScope(grant.scope),
       blast,
-      wildcard: isWildcardScope(config.scope),
-      recommendations: recommendationsFor(trait, config, blast),
-      warnings: warningsFor(trait, config, blast),
+      recommendations: recommendationsFor(trait, grant, blast),
+      warnings: warningsFor(trait, grant, blast),
       whatRemainsPossible: `Even scoped and confirmed, this grant still allows: ${trait.worstOutcome}`,
     };
   });
 
-  const combos = findCombos(selectedSet, state.configs, blastMap);
+  const combos = findCombos(state.grants);
 
-  const auditLog: AuditEntry[] = selectedIds.map((id) => ({
-    id,
-    label: CAPABILITIES[id].label,
-    log: CAPABILITIES[id].auditRequirements,
+  const auditLog: AuditEntry[] = state.grants.map((grant) => ({
+    grantId: grant.id,
+    label: `${CAPABILITIES[grant.capabilityId].action}: ${grant.resource || CAPABILITIES[grant.capabilityId].defaultResource}`,
+    log: CAPABILITIES[grant.capabilityId].auditRequirements,
   }));
 
-  const severityCounts: Record<Severity, number> = { low: 0, medium: 0, high: 0, critical: 0 };
-  for (const f of findings) severityCounts[f.blast.severity] += 1;
+  const riskCounts: Record<Severity, number> = { low: 0, medium: 0, high: 0, critical: 0 };
+  let wildcardCount = 0;
+  let riskMismatchCount = 0;
+  for (const f of findings) {
+    riskCounts[f.grant.risk] += 1;
+    if (f.wildcard) wildcardCount += 1;
+    if (f.grant.risk !== f.blast.severity) riskMismatchCount += 1;
+  }
 
-  return { mission: state.mission, findings, combos, auditLog, severityCounts };
+  return { mission: state.mission, findings, combos, auditLog, riskCounts, wildcardCount, riskMismatchCount };
 }
 
 /* ------------------------------------------------------------------ *
  * Samples
  *
  * PRD acceptance criterion: "Includes a realistic email and calendar
- * agent sample." That one ships plus two more, each chosen to teach a
- * different lesson: a partially scoped first draft, a worst case that
- * trips all three named combinations, and a grant that is actually
- * scoped, to show that scoping narrows exposure, it does not remove it.
+ * agent sample." That sample is built to exercise every rule in the
+ * tool at once: a low risk read (the calendar), a sensitive read with
+ * wildcard access (the inbox), a send that is irreversible and
+ * externally visible by nature (send email), and a delete that is
+ * destructive but made recoverable, declared low risk anyway to show
+ * the low-risk warning fire on a real, sympathetic mistake.
  * ------------------------------------------------------------------ */
 export interface Sample {
   id: string;
   name: string;
   teaches: string;
   mission: string;
-  selected: CapabilityId[];
-  configs: Partial<Record<CapabilityId, Partial<CapabilityConfig>>>;
+  grants: Grant[];
 }
 
 export const SAMPLES: Sample[] = [
@@ -763,65 +882,226 @@ export const SAMPLES: Sample[] = [
     id: 'email-calendar-assistant',
     name: 'Email and calendar assistant',
     teaches:
-      'A first draft grant with a wildcard file scope and no send ceiling. Fixing the wildcard and adding a ceiling is the actual work of least privilege here, not forbidding the agent from doing its job.',
+      'The same Read action on two resources gets two different declared risks because of data sensitivity, not mechanics. A wildcard read of the inbox. A delete that is destructive but made recoverable, and still trips the low-risk warning because destructive is a fact about the action, not about how forgiving the outcome turned out to be.',
     mission:
-      "Read the user's saved draft replies, send email to contacts already in their address book, and create or move calendar events through the internal calendar service.",
-    selected: ['read-files', 'send-email', 'call-internal-api', 'access-secrets'],
-    configs: {
-      'read-files': { scope: '*' },
-      'send-email': {
-        scope: "contacts already saved in the user's address book",
-        dryRunFirst: true,
+      "Read the user's calendar and inbox, send replies to contacts already in their address book, schedule events through the internal calendar service, and clear events the user marked done.",
+    grants: [
+      {
+        id: 'ec-calendar-read',
+        capabilityId: 'read-files',
+        resource: 'Calendar events',
+        scope: "this user's primary calendar only",
+        ceiling: '',
+        risk: 'low',
+        dataSensitivity: 'low',
+        autonomyLevel: 'acts-autonomously',
+        requiresConfirmation: false,
+        approvalRule: '',
+        escalationRule: '',
+        dryRunFirst: false,
+        reversibleOverride: false,
       },
-      'call-internal-api': {
-        scope: 'the calendar service, read and create event endpoints only',
+      {
+        id: 'ec-email-read',
+        capabilityId: 'read-files',
+        resource: 'Email inbox',
+        scope: '',
+        ceiling: '',
+        risk: 'medium',
+        dataSensitivity: 'high',
+        autonomyLevel: 'acts-with-confirmation',
+        requiresConfirmation: false,
+        approvalRule: '',
+        escalationRule: '',
+        dryRunFirst: false,
+        reversibleOverride: false,
+      },
+      {
+        id: 'ec-email-send',
+        capabilityId: 'send-email',
+        resource: 'Email',
+        scope: "contacts already saved in the user's address book",
+        ceiling: '20 per day',
+        risk: 'high',
+        dataSensitivity: 'medium',
+        autonomyLevel: 'acts-with-confirmation',
+        requiresConfirmation: true,
+        approvalRule: 'Held in a two minute send queue the user can cancel from.',
+        escalationRule: 'Escalate to the user immediately if a recipient outside the address book is attempted.',
+        dryRunFirst: true,
+        reversibleOverride: false,
+      },
+      {
+        id: 'ec-calendar-delete',
+        capabilityId: 'delete',
+        resource: 'Calendar event',
+        scope: 'events this agent created only',
+        ceiling: '',
+        risk: 'low',
+        dataSensitivity: 'low',
+        autonomyLevel: 'acts-with-confirmation',
+        requiresConfirmation: true,
+        approvalRule: '',
+        escalationRule: 'Escalate if a deleted event had external attendees.',
+        dryRunFirst: false,
         reversibleOverride: true,
       },
-      'access-secrets': { scope: 'the mailbox OAuth token only' },
-    },
+      {
+        id: 'ec-calendar-api',
+        capabilityId: 'call-internal-api',
+        resource: 'Calendar service',
+        scope: 'read and create event endpoints only',
+        ceiling: '',
+        risk: 'low',
+        dataSensitivity: 'low',
+        autonomyLevel: 'acts-autonomously',
+        requiresConfirmation: false,
+        approvalRule: '',
+        escalationRule: '',
+        dryRunFirst: false,
+        reversibleOverride: true,
+      },
+      {
+        id: 'ec-mailbox-secret',
+        capabilityId: 'access-secrets',
+        resource: 'Mailbox OAuth token',
+        scope: 'the mailbox token only',
+        ceiling: '',
+        risk: 'high',
+        dataSensitivity: 'high',
+        autonomyLevel: 'acts-with-confirmation',
+        requiresConfirmation: false,
+        approvalRule: '',
+        escalationRule: '',
+        dryRunFirst: false,
+        reversibleOverride: false,
+      },
+    ],
   },
   {
     id: 'cleanup-agent-worst-case',
     name: 'Autonomous cleanup agent',
     teaches:
-      'All three named dangerous combinations at once: secrets plus egress is exfiltration, shell plus egress is arbitrary code execution, and an unconfirmed irreversible delete is data loss. Each capability alone might look manageable. Granted together with no scoping, they compound.',
+      'All three named dangerous combinations at once: secrets plus egress is exfiltration, shell plus egress is arbitrary code execution, and an unconfirmed irreversible delete is data loss. Each grant alone might look manageable. Granted together with no scoping, no approval rule, and no escalation rule, they compound.',
     mission:
       'Find files that look unused, free disk space by deleting them, and notify the team by whatever channel is fastest.',
-    selected: ['delete', 'run-shell', 'network-egress', 'access-secrets'],
-    configs: {
-      delete: { scope: '*' },
-      'run-shell': { scope: '*' },
-      'network-egress': { scope: '*' },
-      'access-secrets': { scope: '*' },
-    },
+    grants: [
+      {
+        id: 'cu-delete',
+        capabilityId: 'delete',
+        resource: 'Project files',
+        scope: '*',
+        ceiling: '',
+        risk: 'critical',
+        dataSensitivity: 'none',
+        autonomyLevel: 'acts-autonomously',
+        requiresConfirmation: false,
+        approvalRule: '',
+        escalationRule: '',
+        dryRunFirst: false,
+        reversibleOverride: false,
+      },
+      {
+        id: 'cu-shell',
+        capabilityId: 'run-shell',
+        resource: 'Cleanup host',
+        scope: '*',
+        ceiling: '',
+        risk: 'high',
+        dataSensitivity: 'none',
+        autonomyLevel: 'acts-autonomously',
+        requiresConfirmation: false,
+        approvalRule: '',
+        escalationRule: '',
+        dryRunFirst: false,
+        reversibleOverride: false,
+      },
+      {
+        id: 'cu-egress',
+        capabilityId: 'network-egress',
+        resource: 'Notification webhook',
+        scope: '*',
+        ceiling: '',
+        risk: 'critical',
+        dataSensitivity: 'none',
+        autonomyLevel: 'acts-autonomously',
+        requiresConfirmation: false,
+        approvalRule: '',
+        escalationRule: '',
+        dryRunFirst: false,
+        reversibleOverride: false,
+      },
+      {
+        id: 'cu-secrets',
+        capabilityId: 'access-secrets',
+        resource: 'Deploy credentials',
+        scope: '*',
+        ceiling: '',
+        risk: 'high',
+        dataSensitivity: 'high',
+        autonomyLevel: 'acts-autonomously',
+        requiresConfirmation: false,
+        approvalRule: '',
+        escalationRule: '',
+        dryRunFirst: false,
+        reversibleOverride: false,
+      },
+    ],
   },
   {
     id: 'support-refund-agent',
     name: 'Support refund agent',
     teaches:
-      'A grant that is actually scoped: named endpoints, a stated ceiling, and confirmation on the parts that are irreversible. The matrix still states plainly what remains possible. Good scoping narrows exposure. It does not remove it.',
+      'A grant that is actually scoped: named endpoints, a stated ceiling, confirmation on the irreversible parts, and an approval rule and an escalation rule both written down. The matrix still states plainly what remains possible. Good scoping narrows exposure. It does not remove it.',
     mission:
       "Review a support ticket, and if it qualifies, issue a refund to the ticket's linked Customer account through the billing service.",
-    selected: ['act-on-behalf', 'call-internal-api', 'spend-money'],
-    configs: {
-      'act-on-behalf': {
+    grants: [
+      {
+        id: 'sr-act-as',
+        capabilityId: 'act-on-behalf',
+        resource: "Ticket's linked Customer account",
         scope: "the ticket's linked Customer account only",
+        ceiling: '',
+        risk: 'medium',
+        dataSensitivity: 'high',
+        autonomyLevel: 'acts-with-confirmation',
         requiresConfirmation: true,
+        approvalRule: 'Support lead approves any action taken under a Customer identity.',
+        escalationRule: 'Escalate to the account owner if the ticket has no matching Customer record.',
+        dryRunFirst: false,
         reversibleOverride: true,
       },
-      'call-internal-api': {
-        scope: 'the billing service refund endpoint only',
+      {
+        id: 'sr-api',
+        capabilityId: 'call-internal-api',
+        resource: 'Billing service refund endpoint',
+        scope: 'the refund endpoint only',
         ceiling: '10 calls per hour',
+        risk: 'low',
+        dataSensitivity: 'low',
+        autonomyLevel: 'acts-with-confirmation',
+        requiresConfirmation: false,
+        approvalRule: '',
+        escalationRule: '',
+        dryRunFirst: false,
         reversibleOverride: true,
       },
-      'spend-money': {
-        scope: 'refund issuance on qualifying tickets only',
+      {
+        id: 'sr-spend',
+        capabilityId: 'spend-money',
+        resource: 'Refund issuance',
+        scope: 'qualifying tickets only',
         ceiling: '$50 per transaction, $200 per day',
+        risk: 'medium',
+        dataSensitivity: 'medium',
+        autonomyLevel: 'acts-with-confirmation',
         requiresConfirmation: true,
+        approvalRule: 'Support lead approves any refund above the per transaction ceiling.',
+        escalationRule: 'Escalate to billing on-call if a refund is attempted outside the linked account.',
         dryRunFirst: true,
         reversibleOverride: true,
       },
-    },
+    ],
   },
 ];
 
@@ -829,30 +1109,26 @@ export function getSample(id: string): Sample | undefined {
   return SAMPLES.find((s) => s.id === id);
 }
 
-function buildState(mission: string, selected: CapabilityId[], configs: Sample['configs']): PlannerState {
-  const selectedMap = {} as Record<CapabilityId, boolean>;
-  const configMap = {} as Record<CapabilityId, CapabilityConfig>;
-  for (const id of CAPABILITY_IDS) {
-    selectedMap[id] = selected.includes(id);
-    configMap[id] = { ...defaultConfig(), ...(configs[id] ?? {}) };
-  }
-  return { mission, selected: selectedMap, configs: configMap, scenarioId: '' };
+function cloneGrants(grants: Grant[]): Grant[] {
+  return grants.map((g) => ({ ...g }));
 }
 
 /* ------------------------------------------------------------------ *
  * Tool module contract, per src/data/types.ts
  * ------------------------------------------------------------------ */
+export interface PlannerState {
+  mission: string;
+  grants: Grant[];
+  scenarioId: string;
+}
+
 export function emptyState(): PlannerState {
-  const state = buildState('', [], {});
-  state.scenarioId = SAMPLES[0].id;
-  return state;
+  return { mission: '', grants: [], scenarioId: SAMPLES[0].id };
 }
 
 export function sampleState(id: string = SAMPLES[0].id): PlannerState {
   const sample = getSample(id) ?? SAMPLES[0];
-  const state = buildState(sample.mission, sample.selected, sample.configs);
-  state.scenarioId = sample.id;
-  return state;
+  return { mission: sample.mission, grants: cloneGrants(sample.grants), scenarioId: sample.id };
 }
 
 export function reset(): PlannerState {
@@ -867,11 +1143,10 @@ export interface ValidationIssue {
 
 export function validate(state: PlannerState): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  const anySelected = CAPABILITY_IDS.some((id) => state.selected[id]);
-  if (!anySelected) {
+  if (!state.grants.length) {
     issues.push({
-      field: 'capabilities',
-      message: 'Select at least one capability, or load a sample.',
+      field: 'grants',
+      message: 'Add at least one resource and action, or load a sample.',
       severity: 'error',
     });
     return issues;
@@ -883,6 +1158,15 @@ export function validate(state: PlannerState): ValidationIssue[] {
         'Nothing states what the agent must accomplish. Blast radius is easier to judge against a stated goal.',
       severity: 'warning',
     });
+  }
+  for (const grant of state.grants) {
+    if (!grant.resource.trim()) {
+      issues.push({
+        field: `grant-${grant.id}-resource`,
+        message: `A ${CAPABILITIES[grant.capabilityId].action.toLowerCase()} grant has no resource named. State what it applies to.`,
+        severity: 'warning',
+      });
+    }
   }
   return issues;
 }
@@ -902,6 +1186,8 @@ export function serialize(state: PlannerState, format: ExportFormat): string {
         findings: analysis.findings,
         dangerousCombinations: analysis.combos,
         auditRequirements: analysis.auditLog,
+        wildcardCount: analysis.wildcardCount,
+        riskMismatchCount: analysis.riskMismatchCount,
       },
       null,
       2,
@@ -909,19 +1195,24 @@ export function serialize(state: PlannerState, format: ExportFormat): string {
   }
 
   const matrixRows = analysis.findings.map((f) => {
-    const scope = f.wildcard ? 'WILDCARD' : f.config.scope.trim() || '(unscoped)';
-    return `| ${f.label} | ${SEVERITY_LABELS[f.blast.severity]} | ${f.blast.reversibility} | ${f.blast.detectability} | ${scope} | ${f.config.requiresConfirmation ? 'yes' : 'no'} |`;
+    const scope = f.wildcard ? 'WILDCARD' : f.grant.scope.trim() || '(unscoped)';
+    return `| ${CAPABILITIES[f.grant.capabilityId].action} | ${f.grant.resource || CAPABILITIES[f.grant.capabilityId].defaultResource} | ${SEVERITY_LABELS[f.grant.risk]} | ${SEVERITY_LABELS[f.blast.severity]} | ${f.blast.reversibility} | ${DATA_SENSITIVITY_LABELS[f.grant.dataSensitivity]} | ${AUTONOMY_LEVEL_LABELS[f.grant.autonomyLevel]} | ${scope} |`;
   });
 
   const comboLines = analysis.combos.length
-    ? analysis.combos.map((c, i) => `${i + 1}. ${c.name}. ${c.message}`).join('\n')
+    ? analysis.combos
+        .map(
+          (c, i) =>
+            `${i + 1}. ${c.name}. ${c.message} Grants involved: ${c.triggeringGrants.map((g) => g.label).join(', ')}.`,
+        )
+        .join('\n')
     : 'None of the three named compound risks matched this configuration. That states what did not match, not that the configuration is free of risk.';
 
   const auditLines = analysis.auditLog.length
     ? analysis.auditLog
         .map((a) => `### ${a.label}\n\n${a.log.map((line, i) => `${i + 1}. ${line}`).join('\n')}`)
         .join('\n\n')
-    : 'No capability selected.';
+    : 'No resource or action added yet.';
 
   return [
     '# Permission Planner report',
@@ -930,10 +1221,12 @@ export function serialize(state: PlannerState, format: ExportFormat): string {
     '',
     analysis.mission ? `Mission: ${analysis.mission}` : 'No mission stated.',
     '',
-    '## Permission matrix',
+    `Wildcard grants: ${analysis.wildcardCount}. Declared risk differs from assessed severity on ${analysis.riskMismatchCount} grant(s).`,
     '',
-    '| Capability | Severity | Reversibility | Detectability | Scope | Confirmation required |',
-    '| --- | --- | --- | --- | --- | --- |',
+    '## Permission matrix, resource by action',
+    '',
+    '| Action | Resource | Declared risk | Assessed severity | Reversibility | Data sensitivity | Autonomy | Scope |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
     ...matrixRows,
     '',
     '## What remains possible',

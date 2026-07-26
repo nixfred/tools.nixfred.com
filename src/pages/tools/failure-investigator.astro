@@ -129,7 +129,7 @@ const catalogCategoryOptions = [
     <ResultPanel
       title="Ranked hypotheses"
       id="hypotheses-panel"
-      description="Scored against the answers above. Select a hypothesis to draft the postmortem around it."
+      description="Scored against the answers above. Every entry shown carries at least one matched piece of evidence, for or against it. This tool proposes containment steps below; it never performs them. Select a hypothesis to draft the postmortem around it."
     >
       <div data-hypotheses></div>
     </ResultPanel>
@@ -139,10 +139,13 @@ const catalogCategoryOptions = [
       id="postmortem-panel"
       description="Symptom, mechanism, evidence, fix, and the regression test that would catch it next time."
     >
-      <WarningNote severity="info" title="This tool never executes anything">
-        Every containment step and every fix below is a recommendation
-        for a person to carry out. Nothing on this page runs a
-        remediation, calls a tool, or changes any system on its own.
+      <WarningNote severity="info" title="This tool proposes. It never performs.">
+        Every containment step and every fix below is a proposal for a
+        person to weigh and carry out, never an instruction to run
+        without thinking. Nothing on this page executes a remediation,
+        calls a tool, or changes any system on its own. A step marked
+        destructive says so plainly, in words, and states what it costs
+        to undo it, not only that it can be undone.
       </WarningNote>
 
       <div data-postmortem></div>
@@ -417,6 +420,36 @@ const catalogCategoryOptions = [
     color: var(--text-muted);
   }
 
+  .containment-block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .containment-badge {
+    display: inline-block;
+    align-self: flex-start;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    padding: 0.1rem 0.55rem;
+    color: var(--text-dim);
+  }
+
+  /* Destructive is stated in the word itself, never by color alone,
+     but the alert token still marks it so it does not blend in. */
+  .containment-badge[data-destructive='true'] {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .containment-reversibility {
+    color: var(--text-faint);
+  }
+
   .clean-note {
     font-size: var(--text-sm);
     color: var(--text-faint);
@@ -540,8 +573,7 @@ const catalogCategoryOptions = [
     QUESTIONS,
     SAMPLES,
     MECHANISM_CATEGORY_LABELS,
-    diagnose,
-    answeredCount,
+    visibleHypotheses,
     buildPostmortem,
     getMechanism,
     getSample,
@@ -551,6 +583,7 @@ const catalogCategoryOptions = [
     serialize,
     type InvestigationState,
     type Answers,
+    type ContainmentAction,
   } from '../../lib/tools/failure-investigator';
 
   const root = document.querySelector<HTMLElement>('[data-investigator]');
@@ -613,23 +646,42 @@ const catalogCategoryOptions = [
       hintEl.textContent = hints[category] ?? '';
     }
 
+    // Shared render for a containment proposal: always names it a
+    // proposal, always shows the destructive flag as a word (never
+    // color alone), and always shows the reversibility statement. Used
+    // by the ranked hypotheses, the postmortem, and the catalog, so
+    // the safety framing reads identically everywhere it appears.
+    function containmentHtml(c: ContainmentAction): string {
+      const badge = c.destructive
+        ? '<span class="containment-badge" data-destructive="true">Destructive. Proposal only, never executed here.</span>'
+        : '<span class="containment-badge" data-destructive="false">Not destructive</span>';
+      return `
+        <span class="containment-block">
+          <span class="containment-proposal">${esc(c.proposal)}</span>
+          ${badge}
+          <span class="containment-reversibility"><strong>Reversibility.</strong> ${esc(c.reversibility)}</span>
+        </span>`;
+    }
+
     function renderHypotheses(state: InvestigationState) {
       const target = el('[data-hypotheses]');
       if (!target) return;
 
-      if (answeredCount(state.answers) === 0) {
+      // visibleHypotheses only returns mechanisms with at least one
+      // matched cue for or against them. Per "No hypothesis is ranked
+      // without visible evidence", nothing else is ever produced here.
+      const ranked = visibleHypotheses(state.answers);
+
+      if (!ranked.length) {
         target.innerHTML =
-          '<p class="clean-note">No discriminating questions answered yet. Answer at least one above, or load a sample, to see ranked hypotheses. Nothing here is ranked without visible evidence behind it.</p>';
+          '<p class="clean-note">No discriminating questions answered yet. Answer at least one above, or load a sample, to see ranked hypotheses. Nothing here is ever ranked without visible evidence behind it.</p>';
         return;
       }
 
-      const ranked = diagnose(state.answers);
       target.innerHTML = ranked
         .map((h, i) => {
-          const forText = h.evidenceFor.length ? esc(h.evidenceFor.join(' ')) : 'No evidence gathered yet.';
-          const againstText = h.evidenceAgainst.length
-            ? esc(h.evidenceAgainst.join(' '))
-            : 'No evidence gathered yet.';
+          const forText = h.evidenceFor.length ? esc(h.evidenceFor.join(' ')) : 'None yet.';
+          const againstText = h.evidenceAgainst.length ? esc(h.evidenceAgainst.join(' ')) : 'None yet.';
           return `
         <button type="button" class="hypothesis" data-confidence="${h.confidence}"
                 data-select-mechanism="${h.mechanismId}"
@@ -646,7 +698,7 @@ const catalogCategoryOptions = [
             <span><strong>Against.</strong> ${againstText}</span>
           </span>
           <span class="hypothesis-next"><strong>Next diagnostic.</strong> ${esc(h.nextDiagnostic)}</span>
-          <span class="hypothesis-containment"><strong>Containment.</strong> ${esc(h.containmentAction)}</span>
+          <span class="hypothesis-containment"><strong>Proposed containment.</strong> ${containmentHtml(h.containment)}</span>
         </button>`;
         })
         .join('');
@@ -657,25 +709,25 @@ const catalogCategoryOptions = [
       if (!target) return;
       const postmortem = buildPostmortem(state);
       const rows: Array<[string, string, string?]> = [
-        ['Symptom', postmortem.symptom],
-        ['Mechanism', postmortem.mechanism],
-        ['Confidence', postmortem.confidence, postmortem.confidence],
+        ['Symptom', esc(postmortem.symptom)],
+        ['Mechanism', esc(postmortem.mechanism)],
+        ['Confidence', esc(postmortem.confidence), postmortem.confidence],
         [
           'Evidence for',
-          postmortem.evidenceFor.length ? postmortem.evidenceFor.join(' ') : 'None gathered yet.',
+          postmortem.evidenceFor.length ? esc(postmortem.evidenceFor.join(' ')) : 'None gathered yet.',
         ],
         [
           'Evidence against',
-          postmortem.evidenceAgainst.length ? postmortem.evidenceAgainst.join(' ') : 'None gathered yet.',
+          postmortem.evidenceAgainst.length ? esc(postmortem.evidenceAgainst.join(' ')) : 'None gathered yet.',
         ],
-        ['Next diagnostic', postmortem.nextDiagnostic],
-        ['Containment action', postmortem.containmentAction],
-        ['Durable fix', postmortem.fix],
+        ['Next diagnostic', esc(postmortem.nextDiagnostic)],
+        ['Proposed containment', containmentHtml(postmortem.containment)],
+        ['Durable fix', esc(postmortem.fix)],
       ];
       target.innerHTML = `<dl class="postmortem-grid">${rows
         .map(
           ([label, value, tag]) =>
-            `<div><dt>${esc(label)}</dt><dd${tag ? ` data-confidence-tag="${tag}"` : ''}>${esc(value)}</dd></div>`,
+            `<div><dt>${esc(label)}</dt><dd${tag ? ` data-confidence-tag="${tag}"` : ''}>${value}</dd></div>`,
         )
         .join('')}</dl>`;
     }
@@ -704,7 +756,7 @@ const catalogCategoryOptions = [
             <p><strong>Presents as.</strong> ${esc(m.presentsAs)}</p>
             <p><strong>Underlying reason.</strong> ${esc(m.underlyingReason)}</p>
             <p><strong>How to confirm.</strong> ${esc(m.howToConfirm)}</p>
-            <p><strong>Containment action.</strong> ${esc(m.containmentAction)}</p>
+            <p><strong>Proposed containment.</strong> ${containmentHtml(m.containment)}</p>
             <p><strong>Durable fix.</strong> ${esc(m.durableFix)}</p>
             <p><strong>Regression test.</strong> ${esc(m.suggestedRegressionTest)}</p>
           </div>

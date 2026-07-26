@@ -2,29 +2,32 @@
 // Evaluation Workbench.
 // PRD: tools-nixfred-prds/tools/06-EVAL-WORKBENCH.md
 //
-// The whole design brief is one sentence from the PRD: design an
-// evaluation that would actually catch the failure you are worried
-// about. So the tool starts from a failure in plain words, not from a
-// metric, and every number downstream, the grader choice, the
-// confidence interval, and the minimum detectable effect, is real math
-// or an honestly labeled estimate. Nothing here runs or simulates a
-// model, and no score is ever invented. Scores come only from the user
-// typing in a result from a run they already made.
+// A working scoring workbench. Cases are the primary object, each with
+// an input, one or more expected properties, and a critical flag. Two
+// or more candidates supply outputs for those cases. Each property is
+// checked either by hand, pass or fail or on a scale of 1 to 5, or by
+// a deterministic local check: exact match, contains, a regular
+// expression, JSON object validity, or a length bound.
+//
+// Nothing here runs or simulates a model. A deterministic check is a
+// plain comparison against text the user already pasted in, and a
+// manual score is typed in from a run the user already made. The
+// heart of the tool is the critical case rule: an aggregate score can
+// never hide a failed critical case, which the results panel makes
+// visually unmissable rather than folding into an average.
 import ToolLayout from '../../layouts/ToolLayout.astro';
 import Field from '../../components/kit/Field.astro';
 import ResultPanel from '../../components/kit/ResultPanel.astro';
-import AssumptionList from '../../components/kit/AssumptionList.astro';
 import HelpNote from '../../components/kit/HelpNote.astro';
 import WarningNote from '../../components/kit/WarningNote.astro';
 import ExportBar from '../../components/kit/ExportBar.astro';
 import EmptyState from '../../components/kit/EmptyState.astro';
 import { getTool } from '../../data/registry';
 import {
-  FAILURE_CATEGORIES,
-  FAILURE_CATEGORY_LABELS,
+  SCORE_MODES,
+  SCORE_MODE_LABELS,
   CONFIDENCE_LEVELS,
   POWER_LEVELS,
-  SCORE_MODES,
   SAMPLES,
   emptyState,
 } from '../../lib/tools/eval-workbench';
@@ -32,13 +35,9 @@ import {
 const tool = getTool('eval-workbench')!;
 const defaultState = emptyState();
 
-const categoryOptions = FAILURE_CATEGORIES.map((c) => ({ value: c, label: FAILURE_CATEGORY_LABELS[c] }));
+const scoreModeOptions = SCORE_MODES.map((m) => ({ value: m, label: SCORE_MODE_LABELS[m] }));
 const confidenceOptions = CONFIDENCE_LEVELS.map((c) => ({ value: String(c), label: `${c} percent` }));
 const powerOptions = POWER_LEVELS.map((p) => ({ value: String(p), label: `${p} percent` }));
-const scoreModeOptions = SCORE_MODES.map((m) => ({
-  value: m,
-  label: m === 'pass-fail' ? 'Pass or fail' : 'Scale of 1 to 5',
-}));
 ---
 
 <ToolLayout tool={tool}>
@@ -61,83 +60,36 @@ const scoreModeOptions = SCORE_MODES.map((m) => ({
     <p class="teaches" data-teaches role="status" aria-live="polite"></p>
 
     <ResultPanel
-      title="Name the failure"
-      id="failure-panel"
+      title="Evaluation set"
+      id="set-panel"
       headingLevel={2}
-      description="Start from the failure you are worried about, not from a metric."
+      description="Name what this set is for, and which concerns it should cover."
     >
+      <Field label="Name" name="name" type="text" placeholder="What is this evaluation set called" />
       <Field
-        label="What failure are you worried about"
-        name="failureDescription"
+        label="Description"
+        name="description"
         type="textarea"
-        rows={3}
-        placeholder="Describe the way this could go wrong, in plain words."
-        hint="One or two sentences. The rest of this plan is built around it."
+        rows={2}
+        placeholder="What failure or decision this evaluation set is for"
       />
       <Field
-        label="Category"
-        name="category"
-        type="select"
-        options={categoryOptions}
-        value={defaultState.category}
-        hint="The closest match. The grader recommendation below follows from this."
+        label="Concerns, separated by commas"
+        name="concerns"
+        type="text"
+        placeholder="Format validity, Tone, Credential safety"
+        hint="Declared up front. The coverage report below checks whether any case actually exercises each one."
       />
-      <button type="button" class="btn btn-primary" data-generate-cases>
-        Generate case plan
-      </button>
     </ResultPanel>
 
     <ResultPanel
-      title="Recommended grader"
-      id="grader-panel"
+      title="Rubric and thresholds"
+      id="rubric-panel"
       headingLevel={2}
-      description="The three grader families from Anthropic's evaluation guidance, and which one fits this failure."
-    >
-      <div data-grader-recommendation></div>
-      <div class="grader-table" data-grader-table></div>
-    </ResultPanel>
-
-    <ResultPanel
-      title="Size the eval"
-      id="stats-inputs-panel"
-      headingLevel={2}
-      description="These numbers drive the confidence interval and the minimum detectable effect below."
+      description="Both rubrics are fully supported. A deterministic check always resolves to pass or fail regardless of which rubric is in force."
     >
       <div class="stats-grid">
-        <Field
-          label="Planned sample size"
-          name="plannedN"
-          type="number"
-          min={1}
-          step={1}
-          value={defaultState.plannedN}
-          hint="How many cases you are planning to write."
-        />
-        <Field
-          label="Illustrative successes"
-          name="successes"
-          type="number"
-          min={0}
-          step={1}
-          value={defaultState.successes}
-          hint="Out of the planned sample size, for the interval preview."
-        />
-        <Field
-          label="Confidence level"
-          name="confidenceLevel"
-          type="select"
-          options={confidenceOptions}
-          value={String(defaultState.confidenceLevel)}
-          hint="For the interval and the detectable effect."
-        />
-        <Field
-          label="Statistical power"
-          name="power"
-          type="select"
-          options={powerOptions}
-          value={String(defaultState.power)}
-          hint="Chance of catching a true regression of the detectable size."
-        />
+        <Field label="Scoring rubric" name="scoreMode" type="select" options={scoreModeOptions} value={defaultState.scoreMode} />
         <Field
           label="Pass threshold"
           name="passThreshold"
@@ -146,113 +98,109 @@ const scoreModeOptions = SCORE_MODES.map((m) => ({
           max={1}
           step={0.01}
           value={defaultState.passThreshold}
-          hint="The pass rate a candidate must clear, as a fraction of 1."
+          hint="Fraction of fully scored cases a candidate must pass, on top of the critical case rule."
         />
-        <Field
-          label="Scoring rubric"
-          name="scoreMode"
-          type="select"
-          options={scoreModeOptions}
-          value={defaultState.scoreMode}
-          hint="Pass or fail, or a scale of 1 to 5."
-        />
+        <Field label="Confidence level" name="confidenceLevel" type="select" options={confidenceOptions} value={String(defaultState.confidenceLevel)} />
+        <Field label="Statistical power" name="power" type="select" options={powerOptions} value={String(defaultState.power)} />
       </div>
-
-      <AssumptionList
-        title="What this sizing assumes"
-        name="stats-assumptions"
-        editLabel="Edit above"
-        items={[
-          { label: 'Planned sample size', value: defaultState.plannedN, editable: true, source: 'default' },
-          { label: 'Illustrative successes', value: defaultState.successes, editable: true, source: 'default' },
-          { label: 'Confidence level', value: `${defaultState.confidenceLevel} percent`, editable: true, source: 'default' },
-          { label: 'Statistical power', value: `${defaultState.power} percent`, editable: true, source: 'default' },
-          { label: 'Pass threshold', value: `${Math.round(defaultState.passThreshold * 100)} percent`, editable: true, source: 'default' },
-        ]}
-      />
     </ResultPanel>
 
     <ResultPanel
-      title="Confidence interval and detectable effect"
-      id="stats-panel"
+      title="Candidates"
+      id="candidates-panel"
       headingLevel={2}
-      description="A real Wilson score interval and a real minimum detectable effect, not a hand wave."
+      description="Two or more configurations to compare. Paste each one's output per case below."
     >
-      <div data-stats-output></div>
+      <div data-candidates-list></div>
+      <button type="button" class="btn" data-candidate-add>Add candidate</button>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Cases"
+      id="cases-panel"
+      headingLevel={2}
+      description="Cases are the primary object. Each has an input, one or more expected properties, and a critical flag."
+    >
+      <div data-cases-list></div>
+      <button type="button" class="btn btn-primary" data-case-add>Add case</button>
     </ResultPanel>
 
     <div data-empty-wrapper>
       <EmptyState
-        title="No case plan yet"
-        body="Click generate case plan above once you have named a failure, or load a sample to see a complete plan end to end."
+        title="No cases yet"
+        body="Add a case above, or load the sample to see a complete scored evaluation set end to end."
         sampleLabel="Load a sample"
       />
     </div>
 
     <div class="gated" data-gated hidden>
       <ResultPanel
-        title="Case plan"
-        id="cases-panel"
+        title="Candidate results"
+        id="results-panel"
         headingLevel={2}
-        description="Cases to write, not results. Edit the plan, or score a case once you have a real run to report."
+        description="Computed only from the checks and scores entered above. A critical case failure overrides the pass rate."
       >
-        <div class="cases-toolbar">
-          <button type="button" class="btn" data-add-case>Add case</button>
-        </div>
-        <div data-cases-list></div>
+        <div data-results-output></div>
       </ResultPanel>
 
       <ResultPanel
-        title="Aggregate result"
-        id="aggregate-panel"
+        title="Coverage gaps"
+        id="coverage-panel"
         headingLevel={2}
-        description="Computed only from scores you enter. A critical case failure cannot be outvoted by an otherwise high score."
+        description="Declared concerns no case actually exercises, cases that check nothing, and whether there are enough candidates to compare."
       >
-        <div data-aggregate-output></div>
+        <div data-coverage-output></div>
       </ResultPanel>
 
       <ResultPanel
-        title="Eval plan"
-        id="plan-panel"
+        title="Disagreement"
+        id="disagreement-panel"
         headingLevel={2}
-        description="The concrete output of this workbench."
+        description="Where candidates diverge most on the same case, and where the same concern scored inconsistently for one candidate."
       >
-        <div data-plan-output></div>
-        <WarningNote severity="info" title="What this eval would and would not prove">
-          <p data-plan-proves></p>
-          <p data-plan-not-proves></p>
-        </WarningNote>
+        <div data-disagreement-output></div>
+      </ResultPanel>
+
+      <ResultPanel
+        title="Detectable regression"
+        id="mde-panel"
+        headingLevel={2}
+        description="Given the number of cases in this set, the smallest true regression this eval could catch. A secondary, honest estimate, not the product."
+      >
+        <div data-mde-output></div>
       </ResultPanel>
 
       <div class="import-row">
         <Field
-          label="Import a plan"
+          label="Import an evaluation set"
           name="importText"
           type="textarea"
           rows={3}
-          placeholder="Paste a previously exported plan here."
+          placeholder="Paste a previously exported evaluation set here."
           hint="Accepts the JSON this tool exports."
         />
         <button type="button" class="btn" data-import>Import</button>
         <span class="import-status mono" data-import-status role="status" aria-live="polite"></span>
       </div>
 
-      <ExportBar formats={['json', 'markdown']} filename="eval-workbench-plan" />
+      <ExportBar formats={['json', 'markdown']} filename="eval-workbench-set" />
 
-      <HelpNote title="Why does a bigger eval catch a smaller regression">
+      <HelpNote title="Why can a high average still be a failing eval">
         <p>
-          A confidence interval narrows with the square root of the
-          sample size, not with the sample size itself. Cutting the
-          detectable regression in half takes four times as many cases,
-          not two. That is why a 20 case eval can look reasonable and
-          still miss a real 5 percent regression: at that size, only a
-          much larger swing stands out from ordinary noise.
+          An average is a summary, and a summary is exactly what a
+          serious failure can hide inside. A candidate that gets nine
+          of ten cases right looks like a strong candidate right up
+          until the tenth case is the one where it leaks a credential
+          or approves a transaction it should have refused. Averaging
+          that case in with the rest treats a rare, severe failure the
+          same as an ordinary miss.
         </p>
         <p>
-          The minimum detectable effect above turns that relationship
-          into a plain number. It answers the question worth asking
-          before you write a single case. If the candidate actually got
-          worse by this failure, would this eval even notice.
+          Marking a case critical says plainly that it is not the same
+          as the rest. This tool checks every critical case on its own
+          terms, pass or fail, with no partial credit and no averaging.
+          If one fails, the candidate fails, and the pass rate above is
+          shown next to that result rather than in place of it.
         </p>
       </HelpNote>
     </div>
@@ -330,14 +278,8 @@ const scoreModeOptions = SCORE_MODES.map((m) => ({
 
   .stats-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: var(--space-3) var(--space-4);
-  }
-
-  .cases-toolbar {
-    display: flex;
-    justify-content: flex-end;
-    margin-bottom: var(--space-3);
   }
 
   .gated {
@@ -362,61 +304,411 @@ const scoreModeOptions = SCORE_MODES.map((m) => ({
 {/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
     class the script creates is styled with :global here. */}
 <style is:global>
-  .grader-badge {
+  .clean-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+
+  .block-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: var(--space-3) 0 var(--space-2);
+  }
+
+  .block-label:first-child {
+    margin-top: 0;
+  }
+
+  /* Candidates panel */
+  .candidate-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+  }
+
+  .candidate-row input[type='text'] {
+    flex: 1 1 auto;
+    background: var(--bg-alt);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.4rem 0.6rem;
+    font: inherit;
+  }
+
+  .candidate-remove {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--status-alert);
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.2rem 0.55rem;
+    cursor: pointer;
+  }
+
+  .candidate-remove:hover {
+    border-color: var(--status-alert);
+  }
+
+  /* Case cards */
+  .case-card {
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
+    background: var(--panel);
+  }
+
+  .case-card[data-critical='true'] {
+    border-left-color: var(--status-beta);
+  }
+
+  .case-card[data-critical='false'] {
+    border-left-color: var(--line-strong);
+  }
+
+  .case-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    margin-bottom: var(--space-2);
+  }
+
+  .case-title-input {
+    flex: 1 1 260px;
+    background: var(--bg-alt);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.4rem 0.6rem;
+    font: 700 var(--text-base) var(--font-sans);
+  }
+
+  .case-critical-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--status-beta);
+    white-space: nowrap;
+  }
+
+  .case-remove {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--status-alert);
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.2rem 0.55rem;
+    cursor: pointer;
+  }
+
+  .case-field-label {
+    display: block;
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: var(--space-3);
+  }
+
+  .case-field-label textarea {
+    display: block;
+    width: 100%;
+    margin-top: var(--space-1);
+    background: var(--bg-alt);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2);
+    font: var(--text-sm) var(--font-mono);
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
+  /* Expected properties */
+  .properties-block,
+  .candidate-outputs-block {
+    border-top: 1px solid var(--line-faint);
+    padding-top: var(--space-2);
+    margin-top: var(--space-2);
+  }
+
+  .property-row {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2);
+    margin-bottom: var(--space-2);
+    background: var(--bg-alt);
+  }
+
+  .property-fields {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+  }
+
+  .property-fields input[type='text'] {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.3rem 0.5rem;
+    font-size: var(--text-sm);
+  }
+
+  .property-description-input {
+    flex: 2 1 240px;
+  }
+
+  .property-concern-input {
+    flex: 1 1 140px;
+  }
+
+  .property-fields label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    white-space: nowrap;
+  }
+
+  .property-fields input[type='number'],
+  .property-fields select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.25rem 0.4rem;
+    font: inherit;
+    font-size: var(--text-sm);
+  }
+
+  .property-remove {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--status-alert);
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.2rem 0.5rem;
+    cursor: pointer;
+  }
+
+  .check-config {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: center;
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--line-faint);
+  }
+
+  .check-config label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+  }
+
+  .check-config input[type='text'],
+  .check-config input[type='number'] {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.25rem 0.4rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+  }
+
+  .check-hint {
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+    margin: 0;
+  }
+
+  .btn-mini {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-1) var(--space-2);
+    cursor: pointer;
+  }
+
+  .btn-mini:hover {
+    border-color: var(--signal-edge);
+  }
+
+  /* Candidate output blocks inside a case card */
+  .candidate-output-block {
+    border: 1px solid var(--line-faint);
+    border-radius: var(--radius);
+    padding: var(--space-2);
+    margin-bottom: var(--space-2);
+  }
+
+  .candidate-output-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 0 var(--space-1);
+  }
+
+  .candidate-output-block textarea {
+    display: block;
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    margin-bottom: var(--space-2);
+  }
+
+  .property-score-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-1) 0;
+    border-bottom: 1px solid var(--line-faint);
+    font-size: var(--text-sm);
+  }
+
+  .property-score-row:last-child {
+    border-bottom: 0;
+  }
+
+  .property-score-desc {
+    color: var(--text-muted);
+    flex: 1 1 auto;
+  }
+
+  .property-score-row select,
+  .property-score-row input[type='number'] {
+    background: var(--bg-alt);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.2rem 0.4rem;
+    font: inherit;
+  }
+
+  .check-status-badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    padding: 0.15rem 0.5rem;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--line);
+    color: var(--text-faint);
+    white-space: normal;
+    max-width: 26rem;
+  }
+
+  .check-status-badge[data-status='pass'] {
+    color: var(--status-live);
+    border-color: var(--status-live);
+  }
+
+  .check-status-badge[data-status='fail'] {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .check-status-badge[data-status='error'] {
+    color: var(--status-beta);
+    border-color: var(--status-beta);
+  }
+
+  /* Results panel */
+  .candidate-result-card {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
+  }
+
+  .candidate-result-card:last-child {
+    margin-bottom: 0;
+  }
+
+  .result-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 0 0 var(--space-2);
+  }
+
+  .verdict-badge {
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
     font-family: var(--font-mono);
-    font-size: var(--text-xs);
+    font-size: var(--text-sm);
+    font-weight: 700;
     letter-spacing: var(--track-label);
     text-transform: uppercase;
-    color: var(--accent);
-    border: 1px solid var(--signal-edge);
+    padding: 0.3rem 0.8rem;
+    border: 1px solid var(--line);
     border-radius: var(--radius-pill);
-    padding: 0.2rem 0.7rem;
     margin-bottom: var(--space-2);
   }
 
-  .grader-rationale,
-  .grader-tradeoff {
-    font-size: var(--text-sm);
-    color: var(--text-muted);
-    max-width: none;
-    margin: 0 0 var(--space-1);
+  .verdict-badge[data-verdict='pass'] {
+    color: var(--status-live);
+    border-color: var(--status-live);
   }
 
-  .grader-table {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: var(--space-3);
-    margin-top: var(--space-3);
+  .verdict-badge[data-verdict='fail'] {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
   }
 
-  .grader-cell {
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: var(--space-3);
+  .verdict-badge[data-verdict='incomplete'],
+  .verdict-badge[data-verdict='not-scored'] {
+    color: var(--status-beta);
+    border-color: var(--status-beta);
   }
 
-  .grader-cell[data-recommended='true'] {
-    border-color: var(--signal-edge);
-    background: var(--signal-wash);
-  }
-
-  .grader-cell-title {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    letter-spacing: var(--track-label);
-    text-transform: uppercase;
-    color: var(--text);
-    margin: 0 0 var(--space-2);
-  }
-
-  .grader-cell p {
-    font-size: var(--text-sm);
-    color: var(--text-faint);
-    margin: 0 0 var(--space-1);
-    max-width: none;
+  .verdict-badge[data-verdict='no-cases'] {
+    color: var(--text-dim);
+    border-color: var(--line);
   }
 
   .stats-row {
@@ -450,188 +742,63 @@ const scoreModeOptions = SCORE_MODES.map((m) => ({
     margin-top: var(--space-1);
   }
 
-  .stats-honesty {
-    margin-top: var(--space-3);
-    padding-top: var(--space-3);
-    border-top: 1px solid var(--line);
-    font-size: var(--text-sm);
-    color: var(--text-muted);
-    max-width: none;
-  }
-
-  .case-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-2);
-    border: 1px solid var(--line);
-    border-left-width: 3px;
-    border-radius: var(--radius);
-    padding: var(--space-3);
-    margin-bottom: var(--space-2);
-  }
-
-  .case-row[data-critical='true'] {
-    border-left-color: var(--status-beta);
-  }
-
-  .case-row[data-critical='false'] {
-    border-left-color: var(--line-strong);
-  }
-
-  .case-head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-2);
-  }
-
-  .case-bucket {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    letter-spacing: var(--track-label);
-    text-transform: uppercase;
-    color: var(--text-faint);
-  }
-
-  .case-critical-tag {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--status-beta);
-  }
-
-  .case-row input[type='text'],
-  .case-row textarea {
-    width: 100%;
-    background: var(--bg-alt);
-    color: var(--text);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: 0.4rem 0.6rem;
-    font-family: var(--font-sans);
-    font-size: var(--text-sm);
-  }
-
-  .case-controls {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-3);
-    font-size: var(--text-xs);
-    color: var(--text-faint);
-  }
-
-  .case-controls label {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-  }
-
-  .case-controls select,
-  .case-controls input[type='number'] {
-    background: var(--bg-alt);
-    color: var(--text);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: 0.2rem 0.4rem;
-    font: inherit;
-  }
-
-  .case-remove {
-    margin-left: auto;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--status-alert);
-    background: none;
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: 0.2rem 0.55rem;
-    cursor: pointer;
-  }
-
-  .case-remove:hover {
-    border-color: var(--status-alert);
-  }
-
-  .verdict-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    font-weight: 700;
-    letter-spacing: var(--track-label);
-    text-transform: uppercase;
-    padding: 0.3rem 0.8rem;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-pill);
-    margin-bottom: var(--space-3);
-  }
-
-  .verdict-badge[data-verdict='pass'] {
-    color: var(--status-live);
-    border-color: var(--status-live);
-  }
-
-  .verdict-badge[data-verdict='fail'] {
-    color: var(--status-alert);
-    border-color: var(--status-alert);
-  }
-
-  .verdict-badge[data-verdict='incomplete'],
-  .verdict-badge[data-verdict='not-scored'] {
-    color: var(--status-beta);
-    border-color: var(--status-beta);
-  }
-
-  .verdict-badge[data-verdict='no-cases'] {
-    color: var(--text-dim);
-    border-color: var(--line);
-  }
-
-  .critical-list {
+  .critical-alert {
     font-size: var(--text-sm);
     color: var(--status-alert);
-    margin: var(--space-2) 0;
+    margin: var(--space-2) 0 0;
   }
 
   .coverage-gaps {
     font-size: var(--text-sm);
     color: var(--text-muted);
-    margin: var(--space-2) 0 0;
+    margin: 0;
     padding-left: 1.1rem;
   }
 
-  .plan-line {
+  .divergence-row {
+    margin-bottom: var(--space-2);
+  }
+
+  .divergence-case {
+    font-size: var(--text-sm);
+    font-weight: 700;
+    color: var(--text);
+    margin: 0;
+  }
+
+  .divergence-detail {
     font-size: var(--text-sm);
     color: var(--text-muted);
     margin: 0 0 var(--space-2);
-    max-width: none;
-  }
-
-  .plan-line strong {
-    color: var(--text);
   }
 </style>
 
 <script>
   import {
-    recommendGrader,
-    GRADER_PROFILES,
-    GRADER_TYPES,
-    illustrativeWilson,
-    illustrativeMde,
-    generateCasePlan,
-    addCase,
-    removeCase,
-    updateCase,
-    setResult,
-    computeAggregate,
-    describePlan,
-    normalizeResult,
+    CHECK_TYPES,
+    CHECK_TYPE_LABELS,
+    runCheck,
+    outputKey,
+    scoreKey,
+    newCase,
+    newProperty,
+    newCandidate,
+    withCaseAdded,
+    withCaseUpdated,
+    withCaseRemoved,
+    withPropertyAdded,
+    withPropertyUpdated,
+    withPropertyRemoved,
+    withCandidateAdded,
+    withCandidateUpdated,
+    withCandidateRemoved,
+    withOutputSet,
+    withManualScoreSet,
+    computeAllAggregates,
+    computeCoverageGaps,
+    computeCaseDivergence,
+    computeRubricInconsistencies,
+    evalSetMde,
     emptyState,
     sampleState,
     reset,
@@ -639,15 +806,14 @@ const scoreModeOptions = SCORE_MODES.map((m) => ({
     importState,
     getSample,
     SAMPLES,
-    CASE_BUCKETS,
-    CASE_BUCKET_LABELS,
     type EvalPlanState,
-    type FailureCategory,
+    type EvalCase,
+    type ExpectedProperty,
+    type Candidate,
     type ScoreMode,
     type ConfidenceLevel,
     type PowerLevel,
-    type CaseBucket,
-    type GraderType,
+    type CheckType,
   } from '../../lib/tools/eval-workbench';
 
   const root = document.querySelector<HTMLElement>('[data-workbench]');
@@ -658,35 +824,33 @@ const scoreModeOptions = SCORE_MODES.map((m) => ({
 
     let state: EvalPlanState = emptyState();
 
-    const ASSUMPTION_FIELDS: Array<{ name: string; format: (s: EvalPlanState) => string }> = [
-      { name: 'plannedN', format: (s) => String(s.plannedN) },
-      { name: 'successes', format: (s) => String(s.successes) },
-      { name: 'confidenceLevel', format: (s) => `${s.confidenceLevel} percent` },
-      { name: 'power', format: (s) => `${s.power} percent` },
-      { name: 'passThreshold', format: (s) => `${Math.round(s.passThreshold * 100)} percent` },
-    ];
+    const VERDICT_TEXT: Record<string, string> = {
+      pass: 'Pass',
+      fail: 'Fail',
+      incomplete: 'Incomplete, not all cases scored',
+      'not-scored': 'Not scored yet',
+      'no-cases': 'No cases yet',
+    };
 
     /* ---------------------------------------------------------------
-     * Scalar field sync. These fields are the source of truth for
-     * everything except the case list and the results, which live in
-     * `state` directly and are re-rendered from it.
+     * Scalar field sync
      * ------------------------------------------------------------- */
 
     function readScalarsFromDom() {
-      state.failureDescription =
-        (root.querySelector<HTMLTextAreaElement>('[name="failureDescription"]')?.value) ?? '';
-      state.category =
-        (root.querySelector<HTMLSelectElement>('[name="category"]')?.value as FailureCategory) ?? state.category;
+      state.name = root.querySelector<HTMLInputElement>('[name="name"]')?.value ?? '';
+      state.description = root.querySelector<HTMLTextAreaElement>('[name="description"]')?.value ?? '';
+      const concernsRaw = root.querySelector<HTMLInputElement>('[name="concerns"]')?.value ?? '';
+      state.concerns = concernsRaw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
       state.scoreMode =
         (root.querySelector<HTMLSelectElement>('[name="scoreMode"]')?.value as ScoreMode) ?? state.scoreMode;
-      state.plannedN = Number(root.querySelector<HTMLInputElement>('[name="plannedN"]')?.value) || 0;
-      state.successes = Number(root.querySelector<HTMLInputElement>('[name="successes"]')?.value) || 0;
+      state.passThreshold = Number(root.querySelector<HTMLInputElement>('[name="passThreshold"]')?.value) || 0;
       state.confidenceLevel = Number(
         root.querySelector<HTMLSelectElement>('[name="confidenceLevel"]')?.value,
       ) as ConfidenceLevel;
       state.power = Number(root.querySelector<HTMLSelectElement>('[name="power"]')?.value) as PowerLevel;
-      state.passThreshold =
-        Number(root.querySelector<HTMLInputElement>('[name="passThreshold"]')?.value) || 0;
     }
 
     function writeScalarsToDom() {
@@ -696,235 +860,283 @@ const scoreModeOptions = SCORE_MODES.map((m) => ({
         );
         if (field) field.value = value;
       };
-      setVal('failureDescription', state.failureDescription);
-      setVal('category', state.category);
+      setVal('name', state.name);
+      setVal('description', state.description);
+      setVal('concerns', state.concerns.join(', '));
       setVal('scoreMode', state.scoreMode);
-      setVal('plannedN', String(state.plannedN));
-      setVal('successes', String(state.successes));
+      setVal('passThreshold', String(state.passThreshold));
       setVal('confidenceLevel', String(state.confidenceLevel));
       setVal('power', String(state.power));
-      setVal('passThreshold', String(state.passThreshold));
     }
 
     /* ---------------------------------------------------------------
-     * Render functions. Each reads from `state` and writes to one DOM
-     * region. Nothing here mutates state.
+     * Rendering
      * ------------------------------------------------------------- */
 
-    function renderGrader() {
-      const rec = recommendGrader(state.category);
-      const summary = el('[data-grader-recommendation]');
-      if (summary) {
-        summary.innerHTML = `
-          <p class="grader-badge">Recommended, ${esc(GRADER_PROFILES[rec.grader].label)}</p>
-          <p class="grader-rationale">${esc(rec.rationale)}</p>
-          <p class="grader-tradeoff">${esc(rec.tradeoff)}</p>
-        `;
-      }
-      const table = el('[data-grader-table]');
-      if (table) {
-        table.innerHTML = GRADER_TYPES.map((g: GraderType) => {
-          const profile = GRADER_PROFILES[g];
-          const recommended = g === rec.grader;
+    function checkConfigHtml(evalCase: EvalCase, property: ExpectedProperty): string {
+      const c = property.check;
+      const attrs = `data-case-id="${esc(evalCase.id)}" data-property-id="${esc(property.id)}"`;
+      switch (property.checkType) {
+        case 'manual':
+          return '<p class="check-hint">Scored by hand for each candidate below.</p>';
+        case 'exact-match':
+        case 'contains':
           return `
-            <div class="grader-cell" data-recommended="${recommended}">
-              <p class="grader-cell-title">${esc(profile.label)}${recommended ? ', recommended' : ''}</p>
-              <p>${esc(profile.summary)}</p>
-              <p>${esc(profile.costNote)}</p>
-              <p>${esc(profile.limitNote)}</p>
-            </div>
+            <label>Value <input type="text" data-check-value ${attrs} value="${esc(c.value)}" /></label>
+            <label><input type="checkbox" data-check-casesensitive ${attrs} ${c.caseSensitive ? 'checked' : ''} /> Case sensitive</label>
+            <label><input type="checkbox" data-check-negate ${attrs} ${c.negate ? 'checked' : ''} /> ${property.checkType === 'exact-match' ? 'Must not equal' : 'Must not contain'}</label>
           `;
-        }).join('');
-      }
-    }
-
-    function renderStats() {
-      const wilson = illustrativeWilson(state);
-      const mde = illustrativeMde(state);
-      const target = el('[data-stats-output]');
-      if (!target) return;
-      target.innerHTML = `
-        <div class="stats-row">
-          <span class="stats-label">Observed rate</span>
-          <span class="stats-value">${(wilson.phat * 100).toFixed(1)} percent, ${wilson.successes} of ${wilson.n}</span>
-        </div>
-        <div class="stats-row">
-          <span class="stats-label">${wilson.confidenceLevel} percent confidence interval</span>
-          <span class="stats-value">${(wilson.lower * 100).toFixed(1)} to ${(wilson.upper * 100).toFixed(1)} percent
-            <span class="stats-method">${esc(wilson.method)}</span>
-          </span>
-        </div>
-        <div class="stats-row">
-          <span class="stats-label">Minimum detectable effect</span>
-          <span class="stats-value">${(mde.delta * 100).toFixed(1)} percentage points
-            <span class="stats-method">${esc(mde.method)}</span>
-          </span>
-        </div>
-        <p class="stats-honesty">
-          At n equals ${state.plannedN}, this eval cannot reliably tell a true regression smaller than
-          ${(mde.delta * 100).toFixed(1)} percentage points apart from ordinary sampling noise, at
-          ${state.confidenceLevel} percent confidence and ${state.power} percent power. A smaller
-          regression can pass through unnoticed.
-        </p>
-      `;
-    }
-
-    function renderAssumptionValues() {
-      const rows = root.querySelectorAll<HTMLElement>('[data-kit-assumptions] .assumption-row');
-      rows.forEach((row, index) => {
-        const spec = ASSUMPTION_FIELDS[index];
-        if (!spec) return;
-        const valueEl = row.querySelector<HTMLElement>('[data-assumption-value]');
-        if (valueEl) valueEl.textContent = spec.format(state);
-      });
-    }
-
-    function scoreControlHtml(evalCase: { id: string }, mode: ScoreMode, current: unknown) {
-      if (mode === 'pass-fail') {
-        const value =
-          current && typeof current === 'object' && 'passFail' in (current as Record<string, unknown>)
-            ? String((current as { passFail?: string }).passFail ?? '')
-            : '';
-        return `
-          <select data-result-passfail data-case-id="${esc(evalCase.id)}">
-            <option value="" ${value === '' ? 'selected' : ''}>Not scored</option>
-            <option value="pass" ${value === 'pass' ? 'selected' : ''}>Pass</option>
-            <option value="fail" ${value === 'fail' ? 'selected' : ''}>Fail</option>
-          </select>
-        `;
-      }
-      const scaleValue =
-        current && typeof current === 'object' && typeof (current as { scale?: number }).scale === 'number'
-          ? String((current as { scale?: number }).scale)
-          : '';
-      return `
-        <input type="number" min="1" max="5" step="1" placeholder="1 to 5"
-          data-result-scale data-case-id="${esc(evalCase.id)}" value="${esc(scaleValue)}" />
-      `;
-    }
-
-    function renderCases() {
-      const list = el('[data-cases-list]');
-      if (!list) return;
-      if (!state.cases.length) {
-        list.innerHTML = '<p class="clean-note">No cases yet. Generate a case plan or add one by hand.</p>';
-        return;
-      }
-      list.innerHTML = state.cases
-        .map((c) => {
-          const result = state.results[c.id];
+        case 'regex':
           return `
-        <div class="case-row" data-case-id="${esc(c.id)}" data-critical="${c.critical}">
-          <div class="case-head">
-            <span class="case-bucket">${esc(CASE_BUCKET_LABELS[c.bucket])}</span>
-            ${c.critical ? '<span class="case-critical-tag">Critical</span>' : ''}
-          </div>
-          <input type="text" data-case-title data-case-id="${esc(c.id)}" value="${esc(c.title)}" aria-label="Case title" />
-          <textarea rows="2" data-case-property data-case-id="${esc(c.id)}" aria-label="Expected property">${esc(c.expectedProperty)}</textarea>
-          <div class="case-controls">
-            <label>
-              Bucket
-              <select data-case-bucket data-case-id="${esc(c.id)}">
-                ${CASE_BUCKETS.map(
-                  (b: CaseBucket) =>
-                    `<option value="${b}" ${b === c.bucket ? 'selected' : ''}>${esc(CASE_BUCKET_LABELS[b])}</option>`,
-                ).join('')}
-              </select>
+            <label>Pattern <input type="text" data-check-value ${attrs} value="${esc(c.value)}" /></label>
+            <label>Flags <input type="text" data-check-flags ${attrs} value="${esc(c.flags)}" /></label>
+            <label><input type="checkbox" data-check-negate ${attrs} ${c.negate ? 'checked' : ''} /> Must not match</label>
+          `;
+        case 'json-schema':
+          return `<label>Required keys, separated by commas <input type="text" data-check-requiredkeys ${attrs} value="${esc(c.requiredKeys.join(', '))}" /></label>`;
+        case 'length-bounds':
+          return `
+            <label>Minimum length <input type="number" min="0" data-check-minlength ${attrs} value="${c.minLength ?? ''}" /></label>
+            <label>Maximum length <input type="number" min="0" data-check-maxlength ${attrs} value="${c.maxLength ?? ''}" /></label>
+          `;
+        default:
+          return '';
+      }
+    }
+
+    function propertyRowHtml(evalCase: EvalCase, property: ExpectedProperty): string {
+      const attrs = `data-case-id="${esc(evalCase.id)}" data-property-id="${esc(property.id)}"`;
+      return `
+        <div class="property-row" data-property-row ${attrs}>
+          <div class="property-fields">
+            <input type="text" class="property-description-input" data-property-description ${attrs}
+              value="${esc(property.description)}" placeholder="What must be true" aria-label="Expected property description" />
+            <input type="text" class="property-concern-input" data-property-concern ${attrs}
+              value="${esc(property.concern)}" placeholder="Concern" aria-label="Concern tag" />
+            <label>Weight
+              <input type="number" min="1" max="5" step="1" data-property-weight ${attrs} value="${property.weight}" />
             </label>
-            <label>
-              <input type="checkbox" data-case-critical data-case-id="${esc(c.id)}" ${c.critical ? 'checked' : ''} />
+            <select data-property-checktype ${attrs}>
+              ${CHECK_TYPES.map(
+                (t: CheckType) =>
+                  `<option value="${t}" ${t === property.checkType ? 'selected' : ''}>${esc(CHECK_TYPE_LABELS[t])}</option>`,
+              ).join('')}
+            </select>
+            <button type="button" class="property-remove" data-property-remove ${attrs}>Remove</button>
+          </div>
+          <div class="check-config" data-check-config>
+            ${checkConfigHtml(evalCase, property)}
+          </div>
+        </div>
+      `;
+    }
+
+    function propertyScoreRowHtml(evalCase: EvalCase, candidate: Candidate, property: ExpectedProperty): string {
+      const desc = property.description || '(no description yet)';
+      const attrs = `data-case-id="${esc(evalCase.id)}" data-candidate-id="${esc(candidate.id)}" data-property-id="${esc(property.id)}"`;
+
+      if (property.checkType === 'manual') {
+        const result = state.manualScores[scoreKey(candidate.id, evalCase.id, property.id)];
+        const control =
+          state.scoreMode === 'pass-fail'
+            ? `<select data-manual-passfail ${attrs}>
+                <option value="" ${!result?.passFail ? 'selected' : ''}>Not scored</option>
+                <option value="pass" ${result?.passFail === 'pass' ? 'selected' : ''}>Pass</option>
+                <option value="fail" ${result?.passFail === 'fail' ? 'selected' : ''}>Fail</option>
+              </select>`
+            : `<input type="number" min="1" max="5" step="1" placeholder="1 to 5" data-manual-scale ${attrs}
+                value="${result?.scale ?? ''}" />`;
+        return `<div class="property-score-row"><span class="property-score-desc">${esc(desc)}</span>${control}</div>`;
+      }
+
+      const outputText = state.outputs[outputKey(candidate.id, evalCase.id)] ?? '';
+      const result = runCheck(property, outputText);
+      return `
+        <div class="property-score-row">
+          <span class="property-score-desc">${esc(desc)}</span>
+          <span class="check-status-badge" data-check-status ${attrs} data-status="${result.status}">
+            ${esc(CHECK_TYPE_LABELS[property.checkType])}, ${esc(result.status)}. ${esc(result.detail)}
+          </span>
+        </div>
+      `;
+    }
+
+    function candidateOutputBlockHtml(evalCase: EvalCase, candidate: Candidate): string {
+      const outputText = state.outputs[outputKey(candidate.id, evalCase.id)] ?? '';
+      return `
+        <div class="candidate-output-block">
+          <p class="candidate-output-label" data-candidate-output-label data-candidate-id="${esc(candidate.id)}">${esc(candidate.label)}</p>
+          <textarea rows="3" data-output data-case-id="${esc(evalCase.id)}" data-candidate-id="${esc(candidate.id)}"
+            placeholder="Paste this candidate's output for this case">${esc(outputText)}</textarea>
+          <div class="property-scores">
+            ${evalCase.expectedProperties.map((p) => propertyScoreRowHtml(evalCase, candidate, p)).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    function caseCardHtml(evalCase: EvalCase): string {
+      return `
+        <div class="case-card" data-case-card data-case-id="${esc(evalCase.id)}" data-critical="${evalCase.critical}">
+          <div class="case-head">
+            <input type="text" class="case-title-input" data-case-title data-case-id="${esc(evalCase.id)}"
+              value="${esc(evalCase.title)}" aria-label="Case title" />
+            <label class="case-critical-toggle">
+              <input type="checkbox" data-case-critical data-case-id="${esc(evalCase.id)}" ${evalCase.critical ? 'checked' : ''} />
               Critical
             </label>
-            <label>
-              Weight
-              <input type="number" min="1" max="5" step="1" data-case-weight data-case-id="${esc(c.id)}" value="${c.weight}" />
-            </label>
-            <label>
-              Score
-              ${scoreControlHtml(c, state.scoreMode, result)}
-            </label>
-            <button type="button" class="case-remove" data-case-remove data-case-id="${esc(c.id)}">Remove</button>
+            <button type="button" class="case-remove" data-case-remove data-case-id="${esc(evalCase.id)}">Remove case</button>
+          </div>
+          <label class="case-field-label">Input
+            <textarea rows="2" data-case-input data-case-id="${esc(evalCase.id)}">${esc(evalCase.input)}</textarea>
+          </label>
+
+          <div class="properties-block">
+            <p class="block-label">Expected properties</p>
+            ${evalCase.expectedProperties.map((p) => propertyRowHtml(evalCase, p)).join('')}
+            <button type="button" class="btn-mini" data-property-add data-case-id="${esc(evalCase.id)}">Add expected property</button>
+          </div>
+
+          <div class="candidate-outputs-block">
+            <p class="block-label">Candidate outputs and scores</p>
+            ${state.candidates.map((c) => candidateOutputBlockHtml(evalCase, c)).join('')}
           </div>
         </div>
       `;
-        })
+    }
+
+    function renderCandidates() {
+      const target = el('[data-candidates-list]');
+      if (!target) return;
+      target.innerHTML = state.candidates
+        .map(
+          (c) => `
+        <div class="candidate-row" data-candidate-id="${esc(c.id)}">
+          <input type="text" data-candidate-label data-candidate-id="${esc(c.id)}" value="${esc(c.label)}" aria-label="Candidate label" />
+          <button type="button" class="candidate-remove" data-candidate-remove data-candidate-id="${esc(c.id)}">Remove</button>
+        </div>
+      `,
+        )
         .join('');
     }
 
-    function renderAggregate() {
-      const aggregate = computeAggregate(state);
-      const target = el('[data-aggregate-output]');
+    function renderCases() {
+      const target = el('[data-cases-list]');
       if (!target) return;
-      const VERDICT_TEXT: Record<string, string> = {
-        pass: 'Pass',
-        fail: 'Fail',
-        incomplete: 'Incomplete, not all cases scored',
-        'not-scored': 'Not scored yet',
-        'no-cases': 'No cases yet',
-      };
+      target.innerHTML = state.cases.length
+        ? state.cases.map((c) => caseCardHtml(c)).join('')
+        : '<p class="clean-note">No cases yet.</p>';
+    }
+
+    function refreshCheckBadges() {
+      root.querySelectorAll<HTMLElement>('[data-check-status]').forEach((badge) => {
+        const caseId = badge.getAttribute('data-case-id');
+        const candidateId = badge.getAttribute('data-candidate-id');
+        const propertyId = badge.getAttribute('data-property-id');
+        const evalCase = state.cases.find((c) => c.id === caseId);
+        const property = evalCase?.expectedProperties.find((p) => p.id === propertyId);
+        if (!evalCase || !property || !candidateId) return;
+        const outputText = state.outputs[outputKey(candidateId, evalCase.id)] ?? '';
+        const result = runCheck(property, outputText);
+        badge.setAttribute('data-status', result.status);
+        badge.textContent = `${CHECK_TYPE_LABELS[property.checkType]}, ${result.status}. ${result.detail}`;
+      });
+    }
+
+    function renderResults() {
+      const target = el('[data-results-output]');
+      if (!target) return;
+      const aggregates = computeAllAggregates(state);
+      target.innerHTML = aggregates
+        .map(
+          (a) => `
+        <div class="candidate-result-card">
+          <p class="verdict-badge" data-verdict="${a.verdict}" aria-live="polite">${esc(VERDICT_TEXT[a.verdict] ?? a.verdict)}</p>
+          <p class="result-label">${esc(a.candidateLabel)}</p>
+          <div class="stats-row"><span class="stats-label">Scored</span><span class="stats-value">${a.fullyScoredCases} of ${a.totalCases} cases</span></div>
+          <div class="stats-row"><span class="stats-label">Raw pass rate</span><span class="stats-value">${(a.rawPassRate * 100).toFixed(1)} percent</span></div>
+          <div class="stats-row"><span class="stats-label">Weighted mean</span><span class="stats-value">${(a.weightedMean * 100).toFixed(1)} percent</span></div>
+          ${
+            a.wilson
+              ? `<div class="stats-row"><span class="stats-label">${a.wilson.confidenceLevel} percent confidence interval</span><span class="stats-value">${(a.wilson.lower * 100).toFixed(1)} to ${(a.wilson.upper * 100).toFixed(1)} percent</span></div>`
+              : ''
+          }
+          ${
+            a.hasCriticalFailure
+              ? `<p class="critical-alert">Critical case failure: ${a.criticalFailures.map((c) => esc(c.title)).join(', ')}. This overrides the pass rate above.</p>`
+              : '<p class="clean-note">No critical case failures.</p>'
+          }
+        </div>
+      `,
+        )
+        .join('');
+    }
+
+    function renderCoverage() {
+      const target = el('[data-coverage-output]');
+      if (!target) return;
+      const gaps = computeCoverageGaps(state);
+      target.innerHTML = gaps.length
+        ? `<ul class="coverage-gaps">${gaps.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>`
+        : '<p class="clean-note">No coverage gaps found.</p>';
+    }
+
+    function renderDisagreement() {
+      const target = el('[data-disagreement-output]');
+      if (!target) return;
+      const divergence = computeCaseDivergence(state);
+      const inconsistencies = computeRubricInconsistencies(state);
+
+      const divergenceHtml = divergence.length
+        ? divergence
+            .slice(0, 5)
+            .map(
+              (d) => `
+          <div class="divergence-row">
+            <p class="divergence-case">${esc(d.caseTitle)}</p>
+            <p class="divergence-detail">Spread ${(d.spread * 100).toFixed(1)} percentage points. ${d.scores.map((s) => `${esc(s.candidateLabel)} ${(s.score * 100).toFixed(0)} percent`).join(', ')}.</p>
+          </div>`,
+            )
+            .join('')
+        : '<p class="clean-note">No case is fully scored by two or more candidates yet.</p>';
+
+      const inconsistencyHtml = inconsistencies.length
+        ? inconsistencies
+            .map(
+              (i) =>
+                `<p class="divergence-detail">${esc(i.candidateLabel)}, concern "${esc(i.concern)}": ${i.passCount} pass, ${i.failCount} fail across cases.</p>`,
+            )
+            .join('')
+        : '<p class="clean-note">No rubric inconsistency found.</p>';
+
       target.innerHTML = `
-        <p class="verdict-badge" data-verdict="${aggregate.verdict}" aria-live="polite">
-          ${esc(VERDICT_TEXT[aggregate.verdict] ?? aggregate.verdict)}
-        </p>
-        <div class="stats-row">
-          <span class="stats-label">Scored</span>
-          <span class="stats-value">${aggregate.scoredCount} of ${aggregate.totalCount} cases</span>
-        </div>
-        <div class="stats-row">
-          <span class="stats-label">Raw pass rate</span>
-          <span class="stats-value">${(aggregate.rawPassRate * 100).toFixed(1)} percent</span>
-        </div>
-        <div class="stats-row">
-          <span class="stats-label">Weighted score</span>
-          <span class="stats-value">${(aggregate.weightedScore * 100).toFixed(1)} percent</span>
-        </div>
-        ${
-          aggregate.wilson
-            ? `<div class="stats-row">
-                <span class="stats-label">${aggregate.wilson.confidenceLevel} percent confidence interval on scored cases</span>
-                <span class="stats-value">${(aggregate.wilson.lower * 100).toFixed(1)} to ${(aggregate.wilson.upper * 100).toFixed(1)} percent</span>
-              </div>`
-            : ''
-        }
-        ${
-          aggregate.hasCriticalFailure
-            ? `<p class="critical-list">Critical case failure, ${aggregate.criticalFailures.map((c) => esc(c.title)).join(', ')}. This fails the eval regardless of the score above.</p>`
-            : ''
-        }
-        ${
-          aggregate.aggregationDisagreement
-            ? '<p class="critical-list">The weighted score and the raw pass rate land on opposite sides of the pass threshold. The weighting scheme is changing the verdict, not just the number.</p>'
-            : ''
-        }
-        ${
-          aggregate.coverageGaps.length
-            ? `<ul class="coverage-gaps">${aggregate.coverageGaps.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>`
-            : ''
-        }
+        <p class="block-label">Biggest divergence between candidates</p>
+        ${divergenceHtml}
+        <p class="block-label">Rubric inconsistency by concern</p>
+        ${inconsistencyHtml}
       `;
     }
 
-    function renderPlan() {
-      const plan = describePlan(state);
-      const target = el('[data-plan-output]');
-      if (target) {
-        target.innerHTML = `
-          <p class="plan-line"><strong>Category.</strong> ${esc(plan.categoryLabel)}</p>
-          <p class="plan-line"><strong>Cases in this plan.</strong> ${plan.cases.length}, ${CASE_BUCKETS.map(
-            (b: CaseBucket) => `${plan.bucketCounts[b]} ${esc(CASE_BUCKET_LABELS[b]).toLowerCase()}`,
-          ).join(', ')}.</p>
-          <p class="plan-line"><strong>Pass criterion.</strong> ${esc(plan.passCriterion)}</p>
-          ${
-            plan.coverageGaps.length
-              ? `<ul class="coverage-gaps">${plan.coverageGaps.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>`
-              : ''
-          }
-        `;
-      }
-      const proves = el('[data-plan-proves]');
-      if (proves) proves.textContent = plan.provesStatement;
-      const notProves = el('[data-plan-not-proves]');
-      if (notProves) notProves.textContent = plan.doesNotProveStatement;
+    function renderMde() {
+      const target = el('[data-mde-output]');
+      if (!target) return;
+      const aggregates = computeAllAggregates(state);
+      const scored = aggregates.filter((a) => a.fullyScoredCases > 0);
+      target.innerHTML = scored.length
+        ? scored
+            .map((a) => {
+              const mde = evalSetMde(state, a.rawPassRate);
+              return `<div class="stats-row"><span class="stats-label">${esc(a.candidateLabel)}</span><span class="stats-value">${(mde.delta * 100).toFixed(1)} percentage points<span class="stats-method">${esc(mde.method)}</span></span></div>`;
+            })
+            .join('')
+        : '<p class="clean-note">Score at least one candidate to see the detectable regression.</p>';
+    }
+
+    function renderAnalysis() {
+      renderResults();
+      renderCoverage();
+      renderDisagreement();
+      renderMde();
     }
 
     function toggleGate() {
@@ -935,17 +1147,10 @@ const scoreModeOptions = SCORE_MODES.map((m) => ({
       if (gated) (gated as HTMLElement).hidden = !hasCases;
     }
 
-    function renderDerived() {
-      renderGrader();
-      renderStats();
-      renderAssumptionValues();
-      renderAggregate();
-      renderPlan();
-    }
-
     function renderAll() {
-      renderDerived();
+      renderCandidates();
       renderCases();
+      renderAnalysis();
       toggleGate();
     }
 
@@ -953,97 +1158,174 @@ const scoreModeOptions = SCORE_MODES.map((m) => ({
      * Events
      * ------------------------------------------------------------- */
 
+    const SCALAR_NAMES = ['name', 'description', 'concerns', 'passThreshold', 'confidenceLevel', 'power'];
+
     root.addEventListener('input', (event) => {
       const target = event.target as HTMLElement;
       if (!target) return;
-
-      const scalarNames = [
-        'failureDescription',
-        'category',
-        'scoreMode',
-        'plannedN',
-        'successes',
-        'confidenceLevel',
-        'power',
-        'passThreshold',
-      ];
       const name = target.getAttribute('name');
-      if (name && scalarNames.includes(name)) {
+
+      if (name && SCALAR_NAMES.includes(name)) {
         readScalarsFromDom();
-        if (name === 'scoreMode') {
-          // Switching rubric changes what a score even means, so stale
-          // scores under the old rubric are cleared rather than
-          // silently reinterpreted.
-          state.results = {};
-          renderAll();
-        } else {
-          renderDerived();
-        }
+        renderAnalysis();
         return;
       }
 
       const caseId = target.getAttribute('data-case-id');
-      if (!caseId) return;
+      const propertyId = target.getAttribute('data-property-id');
+      const candidateId = target.getAttribute('data-candidate-id');
 
-      if (target.hasAttribute('data-case-title')) {
-        state.cases = updateCase(state.cases, caseId, { title: (target as HTMLInputElement).value });
-      } else if (target.hasAttribute('data-case-property')) {
-        state.cases = updateCase(state.cases, caseId, {
-          expectedProperty: (target as HTMLTextAreaElement).value,
-        });
-      } else if (target.hasAttribute('data-case-weight')) {
+      if (target.hasAttribute('data-case-title') && caseId) {
+        state = withCaseUpdated(state, caseId, { title: (target as HTMLInputElement).value });
+      } else if (target.hasAttribute('data-case-input') && caseId) {
+        state = withCaseUpdated(state, caseId, { input: (target as HTMLTextAreaElement).value });
+      } else if (target.hasAttribute('data-property-description') && caseId && propertyId) {
+        state = withPropertyUpdated(state, caseId, propertyId, { description: (target as HTMLInputElement).value });
+      } else if (target.hasAttribute('data-property-concern') && caseId && propertyId) {
+        state = withPropertyUpdated(state, caseId, propertyId, { concern: (target as HTMLInputElement).value });
+        renderAnalysis();
+      } else if (target.hasAttribute('data-property-weight') && caseId && propertyId) {
         const weight = Number((target as HTMLInputElement).value) || 1;
-        state.cases = updateCase(state.cases, caseId, { weight });
-        renderDerived();
-      } else if (target.hasAttribute('data-result-scale')) {
+        state = withPropertyUpdated(state, caseId, propertyId, { weight });
+        renderAnalysis();
+      } else if (target.hasAttribute('data-check-value') && caseId && propertyId) {
+        state = withPropertyUpdated(state, caseId, propertyId, { check: { value: (target as HTMLInputElement).value } as never });
+        refreshCheckBadges();
+        renderAnalysis();
+      } else if (target.hasAttribute('data-check-flags') && caseId && propertyId) {
+        state = withPropertyUpdated(state, caseId, propertyId, { check: { flags: (target as HTMLInputElement).value } as never });
+        refreshCheckBadges();
+        renderAnalysis();
+      } else if (target.hasAttribute('data-check-minlength') && caseId && propertyId) {
+        const raw = (target as HTMLInputElement).value;
+        state = withPropertyUpdated(state, caseId, propertyId, { check: { minLength: raw === '' ? null : Number(raw) } as never });
+        refreshCheckBadges();
+        renderAnalysis();
+      } else if (target.hasAttribute('data-check-maxlength') && caseId && propertyId) {
+        const raw = (target as HTMLInputElement).value;
+        state = withPropertyUpdated(state, caseId, propertyId, { check: { maxLength: raw === '' ? null : Number(raw) } as never });
+        refreshCheckBadges();
+        renderAnalysis();
+      } else if (target.hasAttribute('data-check-requiredkeys') && caseId && propertyId) {
+        const keys = (target as HTMLInputElement).value
+          .split(',')
+          .map((k) => k.trim())
+          .filter(Boolean);
+        state = withPropertyUpdated(state, caseId, propertyId, { check: { requiredKeys: keys } as never });
+        refreshCheckBadges();
+        renderAnalysis();
+      } else if (target.hasAttribute('data-output') && caseId && candidateId) {
+        state = withOutputSet(state, candidateId, caseId, (target as HTMLTextAreaElement).value);
+        refreshCheckBadges();
+        renderAnalysis();
+      } else if (target.hasAttribute('data-manual-scale') && caseId && candidateId && propertyId) {
         const raw = (target as HTMLInputElement).value;
         const scale = raw === '' ? undefined : Number(raw);
-        state.results = setResult(state.results, caseId, scale === undefined ? undefined : { scale });
-        renderDerived();
+        state = withManualScoreSet(state, candidateId, caseId, propertyId, scale === undefined ? undefined : { scale });
+        renderAnalysis();
+      } else if (target.hasAttribute('data-candidate-label') && candidateId) {
+        state = withCandidateUpdated(state, candidateId, { label: (target as HTMLInputElement).value });
+        root.querySelectorAll<HTMLElement>(`[data-candidate-output-label][data-candidate-id="${candidateId}"]`).forEach((labelEl) => {
+          labelEl.textContent = (target as HTMLInputElement).value;
+        });
+        renderAnalysis();
       }
     });
 
     root.addEventListener('change', (event) => {
       const target = event.target as HTMLElement;
       if (!target) return;
-      const caseId = target.getAttribute('data-case-id');
-      if (!caseId) return;
+      const name = target.getAttribute('name');
 
-      if (target.hasAttribute('data-case-bucket')) {
-        const bucket = (target as HTMLSelectElement).value as CaseBucket;
-        state.cases = updateCase(state.cases, caseId, { bucket });
-        renderDerived();
-      } else if (target.hasAttribute('data-case-critical')) {
-        const critical = (target as HTMLInputElement).checked;
-        state.cases = updateCase(state.cases, caseId, { critical });
-        renderDerived();
-      } else if (target.hasAttribute('data-result-passfail')) {
+      if (name === 'scoreMode') {
+        readScalarsFromDom();
+        // A different rubric changes what a manual score even means, so
+        // stale scores under the old rubric are cleared rather than
+        // silently reinterpreted.
+        state.manualScores = {};
+        renderAll();
+        return;
+      }
+      if (name && SCALAR_NAMES.includes(name)) {
+        readScalarsFromDom();
+        renderAnalysis();
+        return;
+      }
+
+      const caseId = target.getAttribute('data-case-id');
+      const propertyId = target.getAttribute('data-property-id');
+      const candidateId = target.getAttribute('data-candidate-id');
+
+      if (target.hasAttribute('data-case-critical') && caseId) {
+        state = withCaseUpdated(state, caseId, { critical: (target as HTMLInputElement).checked });
+        renderAnalysis();
+      } else if (target.hasAttribute('data-property-checktype') && caseId && propertyId) {
+        state = withPropertyUpdated(state, caseId, propertyId, { checkType: (target as HTMLSelectElement).value as never });
+        renderCases();
+        renderAnalysis();
+      } else if (target.hasAttribute('data-check-casesensitive') && caseId && propertyId) {
+        state = withPropertyUpdated(state, caseId, propertyId, {
+          check: { caseSensitive: (target as HTMLInputElement).checked } as never,
+        });
+        refreshCheckBadges();
+        renderAnalysis();
+      } else if (target.hasAttribute('data-check-negate') && caseId && propertyId) {
+        state = withPropertyUpdated(state, caseId, propertyId, { check: { negate: (target as HTMLInputElement).checked } as never });
+        refreshCheckBadges();
+        renderAnalysis();
+      } else if (target.hasAttribute('data-manual-passfail') && caseId && candidateId && propertyId) {
         const value = (target as HTMLSelectElement).value as '' | 'pass' | 'fail';
-        state.results = setResult(state.results, caseId, value === '' ? undefined : { passFail: value });
-        renderDerived();
+        state = withManualScoreSet(state, candidateId, caseId, propertyId, value === '' ? undefined : { passFail: value });
+        renderAnalysis();
       }
     });
 
     root.addEventListener('click', (event) => {
-      const target = (event.target as HTMLElement)?.closest<HTMLElement>('[data-case-remove]');
-      if (!target) return;
-      const caseId = target.getAttribute('data-case-id');
-      if (!caseId) return;
-      state.cases = removeCase(state.cases, caseId);
-      state.results = setResult(state.results, caseId, undefined);
-      renderAll();
-    });
+      const button = (event.target as HTMLElement)?.closest<HTMLElement>('button');
+      if (!button) return;
 
-    el('[data-generate-cases]')?.addEventListener('click', () => {
-      readScalarsFromDom();
-      state.cases = generateCasePlan(state.category, state.plannedN);
-      state.results = {};
-      renderAll();
-    });
-
-    el('[data-add-case]')?.addEventListener('click', () => {
-      state.cases = addCase(state.cases, 'core');
-      renderAll();
+      if (button.hasAttribute('data-case-add')) {
+        state = withCaseAdded(state);
+        renderCases();
+        renderAnalysis();
+        toggleGate();
+      } else if (button.hasAttribute('data-case-remove')) {
+        const caseId = button.getAttribute('data-case-id');
+        if (caseId) {
+          state = withCaseRemoved(state, caseId);
+          renderCases();
+          renderAnalysis();
+          toggleGate();
+        }
+      } else if (button.hasAttribute('data-property-add')) {
+        const caseId = button.getAttribute('data-case-id');
+        if (caseId) {
+          state = withPropertyAdded(state, caseId);
+          renderCases();
+          renderAnalysis();
+        }
+      } else if (button.hasAttribute('data-property-remove')) {
+        const caseId = button.getAttribute('data-case-id');
+        const propertyId = button.getAttribute('data-property-id');
+        if (caseId && propertyId) {
+          state = withPropertyRemoved(state, caseId, propertyId);
+          renderCases();
+          renderAnalysis();
+        }
+      } else if (button.hasAttribute('data-candidate-add')) {
+        state = withCandidateAdded(state);
+        renderCandidates();
+        renderCases();
+        renderAnalysis();
+      } else if (button.hasAttribute('data-candidate-remove')) {
+        const candidateId = button.getAttribute('data-candidate-id');
+        if (candidateId) {
+          state = withCandidateRemoved(state, candidateId);
+          renderCandidates();
+          renderCases();
+          renderAnalysis();
+        }
+      }
     });
 
     el('[data-load-sample]')?.addEventListener('click', () => {
@@ -1056,8 +1338,7 @@ const scoreModeOptions = SCORE_MODES.map((m) => ({
     });
 
     // EmptyState dispatches this same event when its own sample
-    // affordance is used, so both entry points share one handler. It
-    // carries no id, so it always loads the first sample.
+    // affordance is used, so both entry points share one handler.
     root.addEventListener('workbench:load-sample', () => {
       state = sampleState(SAMPLES[0].id);
       writeScalarsToDom();
@@ -1084,21 +1365,9 @@ const scoreModeOptions = SCORE_MODES.map((m) => ({
       }
       state = result.state;
       writeScalarsToDom();
-      if (status) status.textContent = 'Plan imported.';
+      if (status) status.textContent = 'Evaluation set imported.';
       renderAll();
     });
-
-    // AssumptionList reports an edit intent. This tool has no modal, so
-    // the honest response is to send focus to the real control that
-    // owns the value, which lives in the sizing panel above.
-    root.addEventListener('kit:assumption-edit', ((event: CustomEvent) => {
-      const index = event.detail?.index ?? -1;
-      const spec = ASSUMPTION_FIELDS[index];
-      if (!spec) return;
-      const field = root.querySelector<HTMLElement>(`[name="${spec.name}"]`);
-      field?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      (field as HTMLElement | null)?.focus();
-    }) as EventListener);
 
     // ExportBar asks, the tool answers. See ExportBar.astro.
     root.addEventListener('workbench:export', ((event: CustomEvent) => {

@@ -20,6 +20,7 @@ import {
   STAGE_KINDS,
   STAGE_KIND_LABELS,
   MAX_RETRY_ATTEMPTS,
+  MAX_UTILIZATION,
   SAMPLE_BUDGET_MS,
   COMPOSITION_METHOD,
   INDEPENDENCE_CAVEAT,
@@ -32,6 +33,8 @@ const assumptionItems = [
   { label: 'Series stages combine by', value: 'Summing means and variances, then a refit', editable: false, source: 'method' },
   { label: 'Parallel stages combine by', value: 'The distribution of the maximum, solved directly', editable: false, source: 'method' },
   { label: 'Retry attempts allowed per stage', value: `1 to ${MAX_RETRY_ATTEMPTS}`, editable: false, source: 'method' },
+  { label: 'Concurrency model', value: 'Queueing multiplier, 1 / (1 minus utilization)', editable: false, source: 'method' },
+  { label: 'Maximum utilization allowed per stage', value: `${Math.round(MAX_UTILIZATION * 100)} percent`, editable: false, source: 'method' },
   { label: 'Default user facing budget', value: `${SAMPLE_BUDGET_MS} ms`, editable: true, source: 'your input' },
   { label: 'Independence between stages', value: 'Assumed. See the warning below.', editable: false, source: 'method' },
 ];
@@ -97,6 +100,18 @@ const assumptionItems = [
         description="The naive sum adds every stage's own p99 together, the common mistake this tool exists to correct. The composed total is the honest figure."
       >
         <div class="cmp-table mono" data-totals></div>
+        <p class="formula-line" data-formula="baseline-composition"></p>
+        <p class="formula-line" data-formula="proposed-composition"></p>
+      </ResultPanel>
+
+      <ResultPanel
+        id="comparison-panel"
+        title="Baseline versus proposed"
+        headingLevel={2}
+        description="The delta at p50 and at p99, and which stage produced the most of it."
+      >
+        <div class="cmp-table mono" data-comparison-deltas></div>
+        <p class="formula-line" data-formula="comparison"></p>
       </ResultPanel>
 
       <ResultPanel
@@ -124,6 +139,8 @@ const assumptionItems = [
         description="The stage contributing the most to the total, and what happens to the total if its latency were cut in half. Amdahl reasoning: a stage sharing a parallel group with a similarly slow neighbor cannot be helped past that neighbor."
       >
         <div class="cmp-table mono" data-dominant></div>
+        <p class="formula-line" data-formula="baseline-halved"></p>
+        <p class="formula-line" data-formula="proposed-halved"></p>
       </ResultPanel>
 
       <ResultPanel
@@ -133,6 +150,20 @@ const assumptionItems = [
         description="Whether each pipeline fits the stated user facing budget, at p50 and at p99, for the full reply and, when it applies, for the first token."
       >
         <div class="cmp-table mono" data-budget></div>
+      </ResultPanel>
+
+      <ResultPanel
+        id="formulas-panel"
+        title="Every formula, inspectable"
+        headingLevel={2}
+        description="PRD acceptance criterion: formulas are inspectable. Every stage and every group that fed into the totals above, with its own arithmetic."
+      >
+        <HelpNote title="Show the arithmetic for the baseline pipeline" open={true}>
+          <div data-formula-list="baseline"></div>
+        </HelpNote>
+        <HelpNote title="Show the arithmetic for the proposed pipeline" open={true}>
+          <div data-formula-list="proposed"></div>
+        </HelpNote>
       </ResultPanel>
 
       <ExportBar formats={['json', 'markdown']} filename="latency-budgeter-report" />
@@ -492,6 +523,42 @@ const assumptionItems = [
     color: var(--text-faint);
     font-variant-numeric: tabular-nums;
   }
+
+  .formula-line {
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    color: var(--text-muted);
+    max-width: none;
+    margin: var(--space-3) 0 0;
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--line-faint);
+  }
+
+  .formula-line:empty {
+    display: none;
+  }
+
+  .formula-item {
+    margin-bottom: var(--space-3);
+  }
+
+  .formula-item-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    display: block;
+    margin-bottom: var(--space-1);
+  }
+
+  .formula-item-text {
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    color: var(--text-muted);
+    max-width: none;
+    margin: 0;
+  }
 </style>
 
 <script>
@@ -499,10 +566,12 @@ const assumptionItems = [
     STAGE_KINDS,
     STAGE_KIND_LABELS,
     MAX_RETRY_ATTEMPTS,
+    MAX_UTILIZATION,
     createStage,
     emptyState,
     sampleState,
     analyzePipeline,
+    comparePipelines,
     serialize,
     SAMPLE_TEACHES,
     type Stage,
@@ -510,6 +579,7 @@ const assumptionItems = [
     type StageRelation,
     type LatencyState,
     type PipelineResult,
+    type ComparisonResult,
   } from '../../lib/tools/latency-budgeter';
 
   const root = document.querySelector<HTMLElement>('[data-tool]');
@@ -575,6 +645,9 @@ const assumptionItems = [
             <div class="row-field">Retry failure percent
               <input type="number" min="0" max="95" step="1" data-field="retryFailurePercent" value="${Math.round(stage.retryFailureRate * 100)}" />
             </div>
+            <div class="row-field">Utilization percent
+              <input type="number" min="0" max="${Math.round(MAX_UTILIZATION * 100)}" step="1" data-field="utilizationPercent" value="${Math.round(stage.utilization * 100)}" />
+            </div>
             <label class="row-check">
               <input type="checkbox" data-field="streaming" ${stage.streaming ? 'checked' : ''} />
               Streams
@@ -624,6 +697,9 @@ const assumptionItems = [
           break;
         case 'retryFailurePercent':
           stage.retryFailureRate = Math.min(Math.max(Number(target.value) || 0, 0), 99) / 100;
+          break;
+        case 'utilizationPercent':
+          stage.utilization = Math.min(Math.max(Number(target.value) || 0, 0), MAX_UTILIZATION * 100) / 100;
           break;
         case 'streaming':
           stage.streaming = (target as HTMLInputElement).checked;
@@ -718,6 +794,14 @@ const assumptionItems = [
         },
       ];
       target.innerHTML = comparisonTable(rows);
+
+      setFormulaLine('baseline-composition', `Baseline: ${baseline.compositionFormula}`);
+      setFormulaLine('proposed-composition', proposed ? `Proposed: ${proposed.compositionFormula}` : '');
+    }
+
+    function setFormulaLine(name: string, text: string) {
+      const target = el(`[data-formula="${name}"]`);
+      if (target) target.textContent = text;
     }
 
     function renderStreaming(baseline: PipelineResult, proposed: PipelineResult | null) {
@@ -782,6 +866,9 @@ const assumptionItems = [
         },
       ];
       target.innerHTML = comparisonTable(rows);
+
+      setFormulaLine('baseline-halved', `Baseline: ${baseline.halved.formula}`);
+      setFormulaLine('proposed-halved', proposed ? `Proposed: ${proposed.halved.formula}` : '');
     }
 
     function renderBudget(baseline: PipelineResult, proposed: PipelineResult | null) {
@@ -795,6 +882,31 @@ const assumptionItems = [
         { label: 'First token fits budget at p99', b: verdict(baseline.budget.fitsTtftP99), p: proposed ? verdict(proposed.budget.fitsTtftP99) : null },
       ];
       target.innerHTML = comparisonTable(rows, true);
+    }
+
+    // PRD acceptance criterion: "User can compare baseline and proposed
+    // designs." analyzePipeline already gives both totals; this reads
+    // the explicit delta and the named lead stage back out.
+    function renderComparison() {
+      const target = el('[data-comparison-deltas]');
+      if (!target) return;
+      if (!state.baseline.stages.length || !state.proposed.stages.length) {
+        target.innerHTML = '<p class="builder-empty-note">Load both a baseline and a proposed pipeline to see a delta.</p>';
+        setFormulaLine('comparison', '');
+        return;
+      }
+      const comparison: ComparisonResult = comparePipelines(state.baseline, state.proposed, state.budgetMs);
+      const deltaCell = (ms: number) => {
+        const tone = ms <= 0 ? 'yes' : 'no';
+        const sign = ms > 0 ? '+' : '';
+        return `<span data-tone="${tone}">${sign}${fmt(ms)} ms</span>`;
+      };
+      const rows = [
+        { label: 'Delta at p50 (proposed minus baseline)', b: deltaCell(comparison.deltaTotalP50), p: null },
+        { label: 'Delta at p99 (proposed minus baseline)', b: deltaCell(comparison.deltaTotalP99), p: null },
+      ];
+      target.innerHTML = comparisonTable(rows, true).replace('<span>Baseline</span>', '<span>Delta</span>');
+      setFormulaLine('comparison', comparison.formula);
     }
 
     function comparisonTable(rows: Array<{ label: string; b: string; p: string | null }>, rawValues = false): string {
@@ -825,12 +937,13 @@ const assumptionItems = [
                 ? `Critical member of a ${group.memberIndices.length} stage parallel group`
                 : `Off critical path, parallel group, slack ${fmt(slack)} ms`
               : 'In series';
+          const concurrencyNote = sc.concurrencyTaxP99 > 0 ? `, concurrency tax +${fmt(sc.concurrencyTaxP99)} ms at p99` : '';
           const retryNote = sc.retryTaxP99 > 0 ? `, retry tax +${fmt(sc.retryTaxP99)} ms at p99` : '';
           return `
             <div class="cp-row" data-critical="${sc.onCriticalPath}">
               <span>
                 <span class="cp-name">${esc(sc.stage.label)}</span>
-                <span class="cp-kind">${esc(groupNote)}${retryNote}</span>
+                <span class="cp-kind">${esc(groupNote)}${concurrencyNote}${retryNote}</span>
               </span>
               <span class="cp-numbers">p50 ${fmt(sc.effectiveP50)} ms, p99 ${fmt(sc.effectiveP99)} ms</span>
               <span class="badge" data-tone="${sc.onCriticalPath ? 'critical' : ''}">${sc.onCriticalPath ? 'Critical path' : 'Parallel'}</span>
@@ -850,6 +963,54 @@ const assumptionItems = [
       target.innerHTML = html;
     }
 
+    // PRD acceptance criterion: "Formulas are inspectable." Every stage
+    // and every multi member group that fed into the totals above, with
+    // its own real arithmetic, not just the headline numbers.
+    function renderPipelineFormulas(pipeline: { stages: Stage[] }, result: PipelineResult): string {
+      if (!result.stages.length) return '<p class="builder-empty-note">No stages.</p>';
+      const stageItems = result.stages
+        .map(
+          (sc) => `
+        <div class="formula-item">
+          <span class="formula-item-label">${esc(sc.stage.label)}</span>
+          <p class="formula-item-text">${esc(sc.formula)}</p>
+        </div>`,
+        )
+        .join('');
+      const groupItems = result.groups
+        .filter((g) => g.memberIndices.length > 1)
+        .map(
+          (g) => `
+        <div class="formula-item">
+          <span class="formula-item-label">Parallel group ${g.index + 1}</span>
+          <p class="formula-item-text">${esc(g.formula)}</p>
+        </div>`,
+        )
+        .join('');
+      const totalItem = `
+        <div class="formula-item">
+          <span class="formula-item-label">Composed total</span>
+          <p class="formula-item-text">${esc(result.compositionFormula)}</p>
+        </div>`;
+      const halvedItem = `
+        <div class="formula-item">
+          <span class="formula-item-label">Halving the dominant stage</span>
+          <p class="formula-item-text">${esc(result.halved.formula)}</p>
+        </div>`;
+      return stageItems + groupItems + totalItem + halvedItem;
+    }
+
+    function renderFormulas(baseline: PipelineResult, proposed: PipelineResult | null) {
+      const baselineTarget = el('[data-formula-list="baseline"]');
+      if (baselineTarget) baselineTarget.innerHTML = renderPipelineFormulas(state.baseline, baseline);
+      const proposedTarget = el('[data-formula-list="proposed"]');
+      if (proposedTarget) {
+        proposedTarget.innerHTML = proposed
+          ? renderPipelineFormulas(state.proposed, proposed)
+          : '<p class="builder-empty-note">Load or build a proposed pipeline to see its formulas.</p>';
+      }
+    }
+
     function renderResults() {
       const emptyWrap = el<HTMLElement>('[data-empty-wrap]');
       const resultsWrap = el<HTMLElement>('[data-results-wrap]');
@@ -862,10 +1023,12 @@ const assumptionItems = [
       const proposed = state.proposed.stages.length ? analyzePipeline(state.proposed, state.budgetMs) : null;
 
       renderTotals(baseline, proposed);
+      renderComparison();
       renderStreaming(baseline, proposed);
       renderCriticalPath(baseline, proposed);
       renderDominant(baseline, proposed);
       renderBudget(baseline, proposed);
+      renderFormulas(baseline, proposed);
 
       root.querySelectorAll<HTMLElement>('[data-kit-result]').forEach((panel) => {
         panel.dataset.resultStatus = 'ready';

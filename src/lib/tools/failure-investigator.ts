@@ -245,6 +245,34 @@ export interface EvidenceCue {
   evidence: string;
 }
 
+/**
+ * A containment step, always phrased as a proposal for a person to
+ * weigh, never as a command this tool carries out. See the PRD
+ * boundary "Destructive remediation is never auto executed": this
+ * tool has no execution path at all, but the text itself must not
+ * read like one either, so every proposal starts with "Consider" and
+ * every entry states plainly whether it destroys or overwrites state
+ * and, when it does, exactly what that costs and how to undo it.
+ */
+export interface ContainmentAction {
+  /** Proposal phrasing. Never an instruction to execute without thought. */
+  proposal: string;
+  /** True when carrying this out would discard or overwrite state that
+   * is not trivially recoverable, a cache flush, an index rollback, a
+   * revoked credential. */
+  destructive: boolean;
+  /** Always populated, even when destructive is false, so the field is
+   * never silently absent. States what is lost and how to undo it. */
+  reversibility: string;
+}
+
+/** Standard reversibility statement for containment steps that add,
+ * restrict, or delay rather than discard anything. Reused verbatim
+ * across every non destructive mechanism since the underlying fact is
+ * the same in every case: nothing existing is destroyed. */
+const NOT_DESTRUCTIVE =
+  'Not destructive. This step only limits, delays, or adds information going forward. Nothing existing is deleted or overwritten, so there is nothing to undo.';
+
 export interface Mechanism {
   id: string;
   name: string;
@@ -255,9 +283,9 @@ export interface Mechanism {
   underlyingReason: string;
   /** A concrete check that would confirm or rule this out. */
   howToConfirm: string;
-  /** A safe, non destructive, immediate mitigation. Never executed by
-   * this tool, only ever printed as a recommendation. */
-  containmentAction: string;
+  /** An immediate mitigation, proposed rather than instructed, never
+   * executed by this tool. */
+  containment: ContainmentAction;
   /** The durable fix, once the mechanism is confirmed. */
   durableFix: string;
   /** A regression test that would catch a recurrence. */
@@ -276,8 +304,12 @@ export const MECHANISMS: Mechanism[] = [
       'The pipeline has a fixed context budget. Once the input plus the running conversation exceeds it, something has to be dropped, usually the oldest turns or the earliest part of a long document, and the drop happens silently.',
     howToConfirm:
       'Log the exact token count sent to the model for the failing turn and compare it against the context limit. Then check whether the missing fact sits in the part of the input that would have been trimmed first.',
-    containmentAction:
-      'Shorten the input or conversation for the next attempt by summarizing or removing older turns, and restate the load bearing fact right before the question so it survives regardless of what else gets trimmed.',
+    containment: {
+      proposal:
+        'Consider shortening the input or conversation for the next attempt by summarizing or removing older turns, and restating the load bearing fact right before the question so it survives regardless of what else gets trimmed.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Track a real token budget for every request, summarize or drop content on purpose instead of by accident, and keep the instructions and facts the answer depends on inside the part of the window that always survives.',
     suggestedRegressionTest:
@@ -305,8 +337,12 @@ export const MECHANISMS: Mechanism[] = [
       'Long context handling has a well documented positional bias. Attention over a long input is strongest near the beginning and the end and weakest in the middle, so a true and present fact can still be missed if it lands in the weak zone.',
     howToConfirm:
       'Move the suspect fact to the start or the end of the same input and rerun with nothing else changed. If the answer improves, position was the cause, not the presence of the fact.',
-    containmentAction:
-      'Reorder the current input so the fact the answer depends on sits near the start or the end rather than buried in the middle, until the pipeline itself is fixed.',
+    containment: {
+      proposal:
+        'Consider reordering the current input so the fact the answer depends on sits near the start or the end rather than buried in the middle, until the pipeline itself is fixed.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Rank and place the most decision relevant passages near the start or end of the context, or restate the key facts again right before the question rather than relying on one mention buried mid document.',
     suggestedRegressionTest:
@@ -330,8 +366,12 @@ export const MECHANISMS: Mechanism[] = [
       'The retriever never returned the passage that contains the fact. The embedding for the query did not land near the right passage, the passage was split across a chunk boundary, or the ranked list simply did not include it.',
     howToConfirm:
       'Log the exact passages the retriever returned for this query and check whether the fact appears in any of them. If it does not, the retriever failed before the model ever had a chance.',
-    containmentAction:
-      'Rerun the same question with a manually supplied version of the correct passage to confirm the model would have answered correctly with better retrieval, and flag the query for a widened search in the meantime.',
+    containment: {
+      proposal:
+        'Consider rerunning the same question with a manually supplied version of the correct passage, to confirm the model would have answered correctly with better retrieval, and flagging the query for a widened search in the meantime.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Improve chunking so a fact is not split across a boundary, rewrite or expand the query before embedding it, and raise the number of candidates considered before the final rank.',
     suggestedRegressionTest:
@@ -354,8 +394,13 @@ export const MECHANISMS: Mechanism[] = [
       'A retrieval index is a copy of the source taken at some point in time. If the source changes and nothing rebuilds or invalidates the index, retrieval keeps returning the old copy as if it were current.',
     howToConfirm:
       'Compare the timestamp or version on the retrieved passage against the current version of the source document. A mismatch confirms the index is behind the source.',
-    containmentAction:
-      'Pin a manual correction or a short lived override for this specific fact while the index catches up, and tell affected users the answer may be stale until it rebuilds.',
+    containment: {
+      proposal:
+        'Consider rolling the index back to the last known good snapshot for this fact while a fresh rebuild is confirmed, or pinning a manual override for this one fact if a full rollback is too disruptive. This is a destructive step, marked below, because rolling back an index is not the same as pinning one fact.',
+      destructive: true,
+      reversibility:
+        'Reversible in the sense that no source data is deleted, only which index snapshot answers queries. It is not free: rolling back also rolls back any real, correct updates the index had already picked up since that snapshot, so anything genuinely new in that window goes stale again until the index is rebuilt forward.',
+    },
     durableFix:
       'Rebuild or invalidate the index automatically whenever the source changes, and show the index build time somewhere so a stale answer is diagnosable at a glance.',
     suggestedRegressionTest:
@@ -378,8 +423,12 @@ export const MECHANISMS: Mechanism[] = [
       'Nothing in the prompt structure marks that third party content as data rather than instructions, so an imperative sentence embedded in it is read with the same authority as a real instruction.',
     howToConfirm:
       'Reread the third party content for imperative language, then rerun the same task with that content sanitized or stripped of imperative phrasing. If the behavior disappears, injection is confirmed.',
-    containmentAction:
-      'Stop passing that specific source through to the model until it is sanitized, and review anything the system already acted on that came from the same source.',
+    containment: {
+      proposal:
+        'Consider pausing that specific source from reaching the model until it is sanitized, and reviewing anything the system already acted on that came from it.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Wrap untrusted content in a clearly delimited block the system prompt names explicitly as data, strip or neutralize imperative phrasing before it reaches the model, and give operator instructions higher standing than anything found inside fetched content.',
     suggestedRegressionTest:
@@ -401,8 +450,12 @@ export const MECHANISMS: Mechanism[] = [
       'The prompt asks for two things that cannot both be true at once, brief and thorough, only this and also that, and the model resolves the contradiction on its own, differently each time.',
     howToConfirm:
       'Read the exact system and task text for a pair of directives that cannot both hold, then test each directive alone to see whether it is satisfiable by itself.',
-    containmentAction:
-      'Pick one of the two conflicting directives by hand for the next request and drop the other, until the prompt itself is corrected.',
+    containment: {
+      proposal:
+        'Consider picking one of the two conflicting directives by hand for the next request, and setting the other aside, until the prompt itself is corrected.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Resolve the contradiction explicitly in the prompt, state a single priority when two goals trade off, and remove or scope the directive that cannot always be honored.',
     suggestedRegressionTest:
@@ -423,8 +476,12 @@ export const MECHANISMS: Mechanism[] = [
       'Nothing in the pipeline actually enforces the format. The model is asked nicely to produce it as free text, and free text generation can drift away from a strict shape the longer or more complicated the answer gets.',
     howToConfirm:
       'Compare a passing and a failing example side by side for length and complexity, and check whether the call uses any schema or grammar constrained decoding at all.',
-    containmentAction:
-      'Validate every output against the schema before using it, and reject or retry the ones that fail instead of passing broken output further down the pipeline.',
+    containment: {
+      proposal:
+        'Consider validating every output against the schema before using it, and rejecting or retrying the ones that fail rather than passing broken output further down the pipeline.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Use schema constrained or grammar constrained decoding where the provider supports it, and add a validate and retry step for the paths that do not.',
     suggestedRegressionTest:
@@ -446,8 +503,12 @@ export const MECHANISMS: Mechanism[] = [
       'Nothing in the available context grounds that specific detail, so the model fills the gap with the most statistically plausible sounding content rather than saying it does not know.',
     howToConfirm:
       'Search every piece of material the model actually had access to for the specific claim. If it is not there, and there is no retrieval step at all, the detail was invented rather than retrieved wrong.',
-    containmentAction:
-      'Flag the specific claim as unverified for the reader right now, and avoid repeating it as fact until it is checked against a real source.',
+    containment: {
+      proposal:
+        'Consider flagging the specific claim as unverified for the reader right now, and holding off on repeating it as fact until it is checked against a real source.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Require the model to ground specific claims in supplied material and say so when it cannot, add retrieval where none exists, and lower the temperature on tasks where a specific wrong detail is costly.',
     suggestedRegressionTest:
@@ -470,8 +531,12 @@ export const MECHANISMS: Mechanism[] = [
       'A safety instruction in the system prompt is written broadly enough to pattern match on surface keywords rather than the actual risk, so it fires on legitimate requests that merely resemble a risky one.',
     howToConfirm:
       'Read the exact safety language in the system prompt, then rerun a minimally reworded version of the same request that avoids the trigger phrase. If it succeeds, the trigger was the surface wording, not the actual risk.',
-    containmentAction:
-      'Rephrase the specific request to avoid the trigger phrase as an immediate workaround, and note the false refusal for whoever owns the safety language.',
+    containment: {
+      proposal:
+        'Consider rephrasing the specific request to avoid the trigger phrase as an immediate workaround, and noting the false refusal for whoever owns the safety language.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Narrow the safety instruction to the condition that actually represents risk, add explicit exceptions for the legitimate cases it currently blocks, and test it against a set of benign requests that resemble risky ones.',
     suggestedRegressionTest:
@@ -492,8 +557,12 @@ export const MECHANISMS: Mechanism[] = [
       'Text is broken into tokens that do not line up one to one with characters or words. A counting or character level task assumes a mapping the tokenizer does not actually provide, and multi byte encodings can be mishandled by whatever converts text at the edges of the pipeline.',
     howToConfirm:
       'Check whether the input contains non ASCII text or unusual whitespace, and check whether the task requires exact character level counting or editing rather than a task about meaning.',
-    containmentAction:
-      'Move the character level part of the task to ordinary code rather than asking the model to do it, as an immediate workaround for this request.',
+    containment: {
+      proposal:
+        'Consider moving the character level part of the task to ordinary code rather than asking the model to do it, as an immediate workaround for this request.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Preprocess and normalize text encoding before it enters the pipeline, and hand off exact counting or character level editing to deterministic code instead of asking a language model to do it.',
     suggestedRegressionTest:
@@ -514,8 +583,12 @@ export const MECHANISMS: Mechanism[] = [
       'A nonzero sampling temperature or top p setting means the model draws from a distribution rather than always taking the single most likely continuation, so a low probability bad continuation gets drawn occasionally.',
     howToConfirm:
       'Run the identical input many times and tabulate the failure rate, then rerun the same set at temperature 0. If the failures disappear at temperature 0, sampling is confirmed as the cause.',
-    containmentAction:
-      'Lower the temperature for this task right now, or add a simple retry on a failed output, until a permanent decision is made about how much variance the task can tolerate.',
+    containment: {
+      proposal:
+        'Consider lowering the temperature for this task, or adding a simple retry on a failed output, until a permanent decision is made about how much variance the task can tolerate.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Set temperature deliberately per task instead of leaving a default, add automated validation and retry for tasks where any variance is unacceptable, and treat some amount of variance as expected when full determinism was never actually required.',
     suggestedRegressionTest:
@@ -537,8 +610,13 @@ export const MECHANISMS: Mechanism[] = [
       'A caching layer, a semantic cache, a prompt cache, a CDN, returns a previously stored response keyed on something that does not actually capture what changed between the two requests.',
     howToConfirm:
       'Bypass the cache directly and rerun the request, and compare the cache key actually used against what really differs between the case that should have changed and the one that did not.',
-    containmentAction:
-      'Flush or bypass the cache for this specific key right now while the key design is reviewed.',
+    containment: {
+      proposal:
+        'Consider flushing or bypassing the cache for this specific key while the key design is reviewed. This is a destructive step, marked below, though a low risk one.',
+      destructive: true,
+      reversibility:
+        'Reversible. A flushed cache repopulates itself from the next request; nothing about the underlying source is deleted, only the temporary copy of it. The cost is a slower response for whichever requests land while it refills, not a permanent loss.',
+    },
     durableFix:
       'Version the cache key on the prompt version and the model version, invalidate on deploy, and exclude anything from the key that should always produce a fresh response.',
     suggestedRegressionTest:
@@ -560,8 +638,12 @@ export const MECHANISMS: Mechanism[] = [
       'The orchestration code around the model catches the failure, a timeout, an exception, an empty result, but never surfaces it back into the context, so the model has no signal that anything went wrong and continues as if it worked.',
     howToConfirm:
       'Check the tool or function call logs for that exact turn for a non success status, a timeout, or an empty result, independent of what the model said happened.',
-    containmentAction:
-      'Tell the affected user directly that the action may not have completed and ask them to verify it, rather than trusting the narration.',
+    containment: {
+      proposal:
+        'Consider telling the affected user directly that the action may not have completed and asking them to verify it, rather than trusting the narration.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Propagate every tool failure into the context explicitly as a failure the model must react to, and never let orchestration code hide an error from the model that is supposed to reason about what happened.',
     suggestedRegressionTest:
@@ -583,8 +665,12 @@ export const MECHANISMS: Mechanism[] = [
       'Degenerate sampling can fall into a repetitive attractor, and an agent loop with no real termination condition will keep reissuing the same step it already tried, especially once the first attempt already failed once.',
     howToConfirm:
       'Check the raw transcript for literal repeated phrases or repeated identical tool calls, and check whether the agent loop has an explicit stop condition or a step limit at all.',
-    containmentAction:
-      'Cut the response or the loop off at a hard step limit right now rather than letting it run further, and surface the partial result instead of the repeated one.',
+    containment: {
+      proposal:
+        'Consider cutting the response or the loop off at a hard step limit rather than letting it run further, and surfacing the partial result instead of the repeated one.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Add a repetition detector that halts generation, and give every agent loop an explicit termination condition and a hard maximum number of steps rather than relying on the model to decide when to stop.',
     suggestedRegressionTest:
@@ -606,8 +692,12 @@ export const MECHANISMS: Mechanism[] = [
       'Stages that could run independently are chained one after another instead, or a single slow upstream dependency, an embedding service, a tool API, sits on the critical path with nothing timed out or cached around it.',
     howToConfirm:
       'Add per stage timing to the request and look at where the wall clock actually goes, rather than guessing which stage is slow.',
-    containmentAction:
-      'Add a timeout with a faster fallback path for the slow dependency right now, so one slow stage cannot hold up the whole response.',
+    containment: {
+      proposal:
+        'Consider adding a timeout with a faster fallback path for the slow dependency, so one slow stage cannot hold up the whole response.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Parallelize the stages that do not actually depend on each other, cache or pre warm the slow dependency, and set a timeout with a defined fallback for anything on the critical path.',
     suggestedRegressionTest:
@@ -629,8 +719,12 @@ export const MECHANISMS: Mechanism[] = [
       'Nothing caps how much the model produces or how many times a failed attempt gets retried, so completions run longer than the task needs and a retry storm resends the same expensive context repeatedly.',
     howToConfirm:
       'Compare input tokens against output tokens in the usage log for a sample of the expensive requests, and check the retry count for the same requests.',
-    containmentAction:
-      'Cap the maximum output length for this task right now as an immediate ceiling on cost while the real cause is confirmed.',
+    containment: {
+      proposal:
+        'Consider capping the maximum output length for this task as an immediate ceiling on cost while the real cause is confirmed.',
+      destructive: false,
+      reversibility: NOT_DESTRUCTIVE,
+    },
     durableFix:
       'Set an explicit maximum token or stop condition sized to the task, cap the number of retries, and avoid resending the full context on every retry attempt.',
     suggestedRegressionTest:
@@ -639,6 +733,35 @@ export const MECHANISMS: Mechanism[] = [
       { questionId: 'outputShape', answer: 'slow', weight: 3, evidence: 'The complaint is about cost or slowness rather than wrong content, matching an output or retry volume problem.' },
       { questionId: 'recentChange', answer: 'promptChanged', weight: 2, evidence: 'The prompt changed recently, a common way a task starts asking for more output than before.' },
       { questionId: 'recentChange', answer: 'nothing', weight: 1, evidence: 'Nothing else changed, which points at a runaway parameter, an uncapped max tokens or retry count, rather than a code change.' },
+    ],
+  },
+  {
+    id: 'excess-agency',
+    name: 'Excess agency',
+    category: 'permission',
+    presentsAs:
+      'The system carries out an action within its technical reach that the task never called for, a write where only a read was needed, a broader scope than the request justified, with no injected instruction or trick involved at all.',
+    underlyingReason:
+      'The agent was granted more authority than the task requires, by design, usually because scoping permissions precisely is more work than granting a broad role once. Nothing forces the model to stay inside the narrower need, so it uses whatever the grant allows whenever acting on it seems locally helpful.',
+    howToConfirm:
+      'Compare the permission grant the agent actually holds against the narrowest set of actions the task could have needed, and check whether the specific action taken falls outside that narrower set even though it was within the broader grant.',
+    containment: {
+      proposal:
+        'Consider revoking or suspending the broader permission grant for this agent while a narrower one is defined. This is a destructive step, marked below, because the agent will be unable to act at all in the meantime.',
+      destructive: true,
+      reversibility:
+        'Reversible. The grant can be restored once a narrower scope is defined, but the agent cannot perform its normal job while suspended, so this is a real operational tradeoff, not a free action.',
+    },
+    durableFix:
+      'Scope every agent to the narrowest permission set its task actually needs, require a separate elevated grant for anything wider, and log every action against what the task requested so an overreach is visible before it compounds.',
+    suggestedRegressionTest:
+      'Add a test that grants the agent its production permission set, gives it a narrow task, and asserts every action it takes falls within the subset that task actually required, not merely within the full grant.',
+    signals: [
+      { questionId: 'outputShape', answer: 'offTask', weight: 2, evidence: 'The system did something nobody asked it to do, matching an action outside the narrower scope the task actually needed.' },
+      { questionId: 'untrustedContent', answer: 'no', weight: 2, evidence: 'No third party content is involved, which rules out injection and points at the agent\'s own standing authority instead.' },
+      { questionId: 'untrustedContent', answer: 'yes', weight: -2, evidence: 'Third party content is involved, which is better explained as an injected instruction than as the agent\'s own excess authority.' },
+      { questionId: 'toolInvolved', answer: 'yes', weight: 2, evidence: 'A tool or action capability is part of this pipeline, a precondition for excess agency to have anything to reach for.' },
+      { questionId: 'reproducible', answer: 'always', weight: 1, evidence: 'Reproduces every time the same task is given, matching a standing grant rather than an injected one time trick.' },
     ],
   },
 ];
@@ -678,12 +801,12 @@ export interface Hypothesis {
   /** A concrete next check, always the mechanism's howToConfirm text,
    * so it is guaranteed present even when no evidence has fired yet. */
   nextDiagnostic: string;
-  containmentAction: string;
+  containment: ContainmentAction;
 }
 
 /**
  * Scores every mechanism in the catalog against whatever answers are
- * present and returns them ranked, highest score first.
+ * present and returns them ALL, ranked highest score first.
  *
  * HONESTY BY CONSTRUCTION: this never throws, and it never omits a
  * mechanism. An empty or self contradicting answer set still returns
@@ -692,6 +815,11 @@ export interface Hypothesis {
  * Confidence is capped at "low" until at least three questions carry
  * an answer, because a ranking built on one or two answers is not
  * something to call moderate or high, whatever the arithmetic says.
+ *
+ * This is the complete, unfiltered engine output, used internally and
+ * by tests that need to see every mechanism regardless of evidence.
+ * The UI and buildPostmortem do not render this directly, see
+ * visibleHypotheses below.
  */
 export function diagnose(answers: Answers): Hypothesis[] {
   const answered = answeredCount(answers);
@@ -729,12 +857,32 @@ export function diagnose(answers: Answers): Hypothesis[] {
       evidenceFor,
       evidenceAgainst,
       nextDiagnostic: mechanism.howToConfirm,
-      containmentAction: mechanism.containmentAction,
+      containment: mechanism.containment,
     };
   });
 
   hypotheses.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
   return hypotheses;
+}
+
+/**
+ * The ranked hypotheses actually shown to a user, per PRD acceptance
+ * criterion "No hypothesis is ranked without visible evidence."
+ *
+ * diagnose() above returns every mechanism unconditionally, including
+ * ones with zero matched evidence (nothing answered yet touches them).
+ * That is correct for the engine, which must never silently drop a
+ * mechanism, but it is wrong for a RANKING presented to a person: a
+ * mechanism with an empty evidenceFor and an empty evidenceAgainst has
+ * not actually been ranked against anything, it is just sitting at the
+ * bottom by default. This function is the one honesty boundary: a
+ * hypothesis appears here if and only if at least one cue, for or
+ * against, actually fired for it. Every question in QUESTIONS carries
+ * at least one cue somewhere in the catalog, so answering any single
+ * question guarantees this list is non empty.
+ */
+export function visibleHypotheses(answers: Answers): Hypothesis[] {
+  return diagnose(answers).filter((h) => h.evidenceFor.length > 0 || h.evidenceAgainst.length > 0);
 }
 
 /* ------------------------------------------------------------------ *
@@ -754,27 +902,37 @@ export interface Postmortem {
   evidenceFor: string[];
   evidenceAgainst: string[];
   nextDiagnostic: string;
-  containmentAction: string;
+  containment: ContainmentAction;
   fix: string;
   regressionTest: string;
   incidentNotes: string;
 }
 
+/**
+ * Builds the postmortem from whichever hypothesis is actually visible
+ * and selected. Preferring visibleHypotheses over the raw diagnose()
+ * output means the postmortem can never settle on a mechanism with no
+ * evidence behind it as long as anything has been answered at all; the
+ * only time it falls back to the raw, possibly zero evidence ranking is
+ * when nothing has been answered yet, which is the one state honestly
+ * described as "not yet determined" below rather than papered over.
+ */
 export function buildPostmortem(state: InvestigationState): Postmortem {
-  const hypotheses = diagnose(state.answers);
-  const chosenId = state.selectedMechanismId || hypotheses[0]?.mechanismId || '';
-  const hypothesis = hypotheses.find((h) => h.mechanismId === chosenId) ?? hypotheses[0];
+  const visible = visibleHypotheses(state.answers);
+  const pool = visible.length ? visible : diagnose(state.answers);
+  const chosenId = state.selectedMechanismId || pool[0]?.mechanismId || '';
+  const hypothesis = pool.find((h) => h.mechanismId === chosenId) ?? pool[0];
   const mechanism = getMechanism(hypothesis.mechanismId);
 
   return {
     symptomCategory: state.symptomCategory,
     symptom: state.description.trim() || '(no description entered)',
-    mechanism: hypothesis.name,
+    mechanism: visible.length ? hypothesis.name : `${hypothesis.name} (not yet determined, no evidence gathered)`,
     confidence: hypothesis.confidence,
     evidenceFor: hypothesis.evidenceFor,
     evidenceAgainst: hypothesis.evidenceAgainst,
     nextDiagnostic: hypothesis.nextDiagnostic,
-    containmentAction: hypothesis.containmentAction,
+    containment: hypothesis.containment,
     fix: mechanism?.durableFix ?? '',
     regressionTest: state.regressionTest.trim() || mechanism?.suggestedRegressionTest || '',
     incidentNotes: state.incidentNotes.trim(),
@@ -784,7 +942,7 @@ export function buildPostmortem(state: InvestigationState): Postmortem {
 /* ------------------------------------------------------------------ *
  * Samples
  *
- * Ten scenarios. Each one is written so the discriminating answers
+ * Eleven scenarios. Each one is written so the discriminating answers
  * genuinely point at one mechanism ahead of the rest, verified by
  * tests/tool-failure-investigator.mjs rather than asserted here.
  * Several samples are deliberately built to look alike on the surface,
@@ -981,6 +1139,24 @@ export const SAMPLES: Sample[] = [
       temperatureZero: 'stillFails',
     },
   },
+  {
+    id: 'agent-writes-outside-scope',
+    name: 'Read only report turns into a config write',
+    teaches:
+      'Excess agency. No injected content anywhere, the agent simply held a broader grant than the task needed and used it.',
+    symptomCategory: 'permission',
+    description:
+      'Asked the deployment agent to read the current production config for a report. It also rewrote a feature flag while it was in there, since its service account has write access to the whole config store.',
+    example:
+      'Agent action log: READ config production full.yaml, then WRITE config production feature flags.yaml, value changed from false to true. The task only asked for a read.',
+    answers: {
+      outputShape: 'offTask',
+      untrustedContent: 'no',
+      toolInvolved: 'yes',
+      reproducible: 'always',
+      recentChange: 'nothing',
+    },
+  },
 ];
 
 export function getSample(id: string): Sample | undefined {
@@ -1075,15 +1251,24 @@ export function validate(state: InvestigationState): ValidationIssue[] {
 export type ExportFormat = 'json' | 'markdown';
 
 export function serialize(state: InvestigationState, format: ExportFormat): string {
-  const hypotheses = diagnose(state.answers);
+  // visibleHypotheses, not diagnose, so the exported ranking matches
+  // what the screen shows: only mechanisms with at least one matched
+  // cue for or against them, per "No hypothesis is ranked without
+  // visible evidence."
+  const hypotheses = visibleHypotheses(state.answers);
   const postmortem = buildPostmortem(state);
+
+  const renderContainment = (c: ContainmentAction) =>
+    c.destructive
+      ? `${c.proposal} DESTRUCTIVE, proposal only, never executed by this tool. Reversibility: ${c.reversibility}`
+      : `${c.proposal} Not destructive. Reversibility: ${c.reversibility}`;
 
   if (format === 'json') {
     return JSON.stringify(
       {
         generatedBy: 'Nixfred AI Systems Workbench, Failure Investigator',
         note:
-          'Local heuristic scoring against the answers provided. This is a ranked set of hypotheses, not a proven root cause. Nothing here was transmitted anywhere to produce this report.',
+          'Local heuristic scoring against the answers provided. This is a ranked set of hypotheses, not a proven root cause. Nothing here was transmitted anywhere to produce this report. Every containment step is a proposal for a person to carry out; this tool never executes one.',
         symptomCategory: state.symptomCategory,
         description: state.description,
         example: state.example,
@@ -1102,13 +1287,15 @@ export function serialize(state: InvestigationState, format: ExportFormat): stri
       `   Evidence for: ${h.evidenceFor.length ? h.evidenceFor.join(' ') : 'none gathered yet.'}`,
       `   Evidence against: ${h.evidenceAgainst.length ? h.evidenceAgainst.join(' ') : 'none gathered yet.'}`,
       `   Next diagnostic: ${h.nextDiagnostic}`,
-      `   Containment action: ${h.containmentAction}`,
+      `   Containment proposal: ${renderContainment(h.containment)}`,
     ].join('\n');
 
   return [
     '# Failure Investigator postmortem',
     '',
     'Local heuristic scoring against the answers provided. This is a ranked set of hypotheses, not a proven root cause.',
+    '',
+    'This tool proposes containment steps and fixes. It never performs them. Every action described below is for a person to carry out and to reverse, if needed, using the reversibility statement attached to it.',
     '',
     `Incident category: ${state.symptomCategory ? SYMPTOM_CATEGORY_LABELS[state.symptomCategory] : 'not set'}`,
     '',
@@ -1122,11 +1309,18 @@ export function serialize(state: InvestigationState, format: ExportFormat): stri
     '',
     '## Ranked hypotheses',
     '',
+    hypotheses.length
+      ? ''
+      : 'No discriminating questions answered yet. Nothing is ranked without visible evidence behind it.',
     ...hypotheses.map((h, i) => renderHypothesis(h, i)),
     '',
     '## Selected mechanism',
     '',
     postmortem.mechanism,
+    '',
+    '## Containment proposal',
+    '',
+    renderContainment(postmortem.containment),
     '',
     '## Durable fix',
     '',

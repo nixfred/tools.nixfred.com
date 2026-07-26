@@ -5,8 +5,15 @@
 // HONESTY, stated once here because it governs every string this page
 // writes: nothing on this page ever calls a grant safe. A finding
 // states what a capability allows and what remains possible after the
-// grant is narrowed. Least privilege is a direction, not a state the
-// tool can certify.
+// grant is narrowed. Least privilege is a direction, not a state.
+//
+// SHAPE: the PRD workflow is "add resources and actions; assign risk,
+// reversibility, data sensitivity, and autonomy level; define approval
+// and escalation rules." Each grant below is one row of that resource
+// by action matrix, so the input area is a builder: pick an action,
+// name a resource, add the row, then fill in its assigned properties.
+// Grant cards are created and destroyed by JavaScript, never rebuilt on
+// every keystroke, so typing in one field never disturbs another.
 import ToolLayout from '../../layouts/ToolLayout.astro';
 import ResultPanel from '../../components/kit/ResultPanel.astro';
 import HelpNote from '../../components/kit/HelpNote.astro';
@@ -47,60 +54,33 @@ const tool = getTool('permission-planner')!;
       placeholder="State the task in one or two sentences. Blast radius is easier to judge against a stated goal than against a blank one."
     />
 
-    <fieldset class="capabilities" data-capabilities>
-      <legend class="label">Capabilities the agent would need</legend>
-      {
-        CAPABILITY_IDS.map((id) => {
-          const trait = CAPABILITIES[id];
-          return (
-            <div class="capability" data-capability={id}>
-              <div class="capability-head">
-                <label class="capability-select">
-                  <input type="checkbox" data-cap-selected data-cap-id={id} />
-                  <span class="capability-label">{trait.label}</span>
-                </label>
-                <span class="capability-summary">{trait.summary}</span>
-              </div>
+    <section class="add-row" aria-labelledby="add-row-heading">
+      <h2 id="add-row-heading" class="label">Add a resource and action</h2>
+      <div class="add-row-fields">
+        <div class="field-inline">
+          <label class="label" for="add-action">Action</label>
+          <select id="add-action" data-add-action>
+            {
+              CAPABILITY_IDS.map((id) => (
+                <option value={id}>
+                  {CAPABILITIES[id].action} (default: {CAPABILITIES[id].defaultResource})
+                </option>
+              ))
+            }
+          </select>
+        </div>
+        <Field
+          label="Resource"
+          name="add-resource"
+          hint="What this grant is about, in a few words. Calendar events, Email inbox, Production database."
+          placeholder="e.g. Email inbox"
+          id="add-resource"
+        />
+        <button type="button" class="btn btn-primary" data-add-grant>Add</button>
+      </div>
+    </section>
 
-              <div class="capability-config" data-cap-config={id} hidden>
-                <div class="config-grid">
-                  <Field
-                    label="Scope"
-                    name={`${id}-scope`}
-                    hint={`Name the exact ${trait.targetNoun} this task needs. Empty or "*" reads as wildcard access.`}
-                    placeholder="e.g. src/reports/** only"
-                  />
-                  <Field
-                    label="Rate or amount ceiling"
-                    name={`${id}-ceiling`}
-                    hint="Leave empty only if this capability truly has no meaningful volume limit."
-                    placeholder="e.g. 20 per hour, or $50 per transaction"
-                  />
-                </div>
-                <div class="config-toggles">
-                  <label class="toggle">
-                    <input type="checkbox" data-cap-confirm data-cap-id={id} />
-                    Requires confirmation before it fires
-                  </label>
-                  {trait.supportsDryRun && (
-                    <label class="toggle">
-                      <input type="checkbox" data-cap-dryrun data-cap-id={id} />
-                      Requires a dry run first
-                    </label>
-                  )}
-                  {trait.canBeMadeReversible && (
-                    <label class="toggle">
-                      <input type="checkbox" data-cap-reversible data-cap-id={id} />
-                      Made reversible: {trait.reversibleApproach}
-                    </label>
-                  )}
-                </div>
-              </div>
-            </div>
-          );
-        })
-      }
-    </fieldset>
+    <div class="grants-list" data-grants-list></div>
 
     <div data-results>
       <WarningNote severity="info" title="Design guidance, not certification">
@@ -110,13 +90,14 @@ const tool = getTool('permission-planner')!;
         finished state.
       </WarningNote>
 
+      <div class="summary-strip mono" data-summary role="status" aria-live="polite"></div>
+
       <ResultPanel
-        title="Permission matrix"
+        title="Permission matrix, resource by action"
         id="matrix-panel"
-        description="Every selected capability, sorted worst blast radius first. A human should be able to implement this table directly."
+        description="Every added grant, sorted worst declared risk first. A human should be able to implement this table directly."
         headingLevel={2}
       >
-        <div class="counts mono" data-counts role="status" aria-live="polite"></div>
         <div class="table-scroll" data-matrix></div>
       </ResultPanel>
 
@@ -132,7 +113,7 @@ const tool = getTool('permission-planner')!;
       <ResultPanel
         title="Dangerous combinations"
         id="combos-panel"
-        description="Compound risks, named explicitly, because the combination is the real finding, not the individual capability."
+        description="Compound risks, named explicitly with the specific grants responsible, because the combination is the real finding, not the individual grant."
         headingLevel={2}
       >
         <div data-combos></div>
@@ -152,8 +133,8 @@ const tool = getTool('permission-planner')!;
 
     <div data-empty>
       <EmptyState
-        title="No capabilities selected yet"
-        body="Select at least one capability above, or load a sample to see a full permission matrix, the dangerous combinations it produces, and what a narrower grant would look like."
+        title="No resources or actions added yet"
+        body="Add at least one resource and action above, or load a sample to see a full permission matrix, the dangerous combinations it produces, and what a narrower grant would look like."
         sampleLabel="Load the email and calendar assistant sample"
       />
     </div>
@@ -161,18 +142,19 @@ const tool = getTool('permission-planner')!;
     <HelpNote title="Why does nothing here get marked safe">
       <p>
         A permission grant is a bet, not a guarantee. Scoping a
-        capability to an allow list, a ceiling, a confirmation step,
-        and a reversibility mechanism narrows how often the worst case
+        resource to an allow list, a ceiling, a confirmation step, and
+        a reversibility mechanism narrows how often the worst case
         happens and how bad it is when it does. None of that removes
         the worst case from the space of possible outcomes, it only
         makes it less likely and easier to contain.
       </p>
       <p>
-        That is why every finding on this page states two things
-        separately: the narrowest grant that still lets the agent do
-        its job, and what remains possible even after that grant is
-        applied. Reading only the first half is how a reviewer ends up
-        calling a scoped grant safe when it is only smaller.
+        That is why a destructive or externally visible action can
+        still be labeled low risk here. The tool does not overrule the
+        person filling in the form, since they may know something the
+        tool does not. It also does not stay quiet about it. It states
+        plainly that the label is disputed and why, and leaves the
+        decision on record either way.
       </p>
     </HelpNote>
   </div>
@@ -255,61 +237,124 @@ const tool = getTool('permission-planner')!;
     color: var(--text-muted);
   }
 
-  .capabilities {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: var(--space-3);
-    border: 0;
-    padding: 0;
-    margin: 0;
-  }
-
-  .capabilities > .label {
-    grid-column: 1 / -1;
-  }
-
-  .capability {
+  .add-row {
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     padding: var(--space-3);
     background: var(--panel);
   }
 
-  .capability-head {
+  .add-row-fields {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-3);
+    margin-top: var(--space-2);
+  }
+
+  .field-inline {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .grants-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .table-scroll {
+    overflow-x: auto;
+  }
+
+  .summary-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+</style>
+
+{/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
+    class the script creates is styled with :global here. This covers
+    both the dynamically built grant cards and the result panels. */}
+<style is:global>
+  .grant-card {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    background: var(--panel);
+  }
+
+  .grant-card-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+    padding-bottom: var(--space-3);
+    border-bottom: 1px solid var(--line-faint);
+  }
+
+  .grant-action-tag {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 0 0 var(--space-1);
+  }
+
+  .grant-field {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+    margin-bottom: var(--space-3);
   }
 
-  .capability-select {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    cursor: pointer;
+  .grant-field-label {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
   }
 
-  .capability-label {
-    font-weight: 600;
-  }
-
-  .capability-summary {
+  .grant-field-hint {
     font-size: var(--text-sm);
     color: var(--text-faint);
-    padding-left: 1.6rem;
+    margin: 0;
   }
 
-  .capability-config {
-    margin-top: var(--space-3);
-    padding-top: var(--space-3);
-    border-top: 1px solid var(--line-faint);
+  .grant-control {
+    width: 100%;
+    font-family: var(--font-mono);
+    color: var(--text);
+    background: var(--bg-alt);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.55rem 0.7rem;
+    line-height: 1.5;
   }
 
-  .config-grid {
+  .grant-control:focus {
+    border-color: var(--accent);
+    background: var(--bg);
+  }
+
+  .grant-grid {
     display: grid;
-    gap: var(--space-2);
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-3);
   }
 
-  .config-toggles {
+  .grant-toggles {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
@@ -325,25 +370,22 @@ const tool = getTool('permission-planner')!;
     cursor: pointer;
   }
 
-  .counts {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-3);
-    font-size: var(--text-xs);
+  .remove-grant {
+    font: 600 var(--text-xs) var(--font-sans);
     letter-spacing: var(--track-label);
     text-transform: uppercase;
-    color: var(--text-faint);
-    margin-bottom: var(--space-3);
+    color: var(--status-alert);
+    background: transparent;
+    border: 1px solid var(--status-alert);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
   }
 
-  .table-scroll {
-    overflow-x: auto;
+  .remove-grant:hover {
+    background: var(--panel-raised);
   }
-</style>
 
-{/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
-    class the script creates is styled with :global here. */}
-<style is:global>
   .matrix-table {
     width: 100%;
     border-collapse: collapse;
@@ -386,16 +428,21 @@ const tool = getTool('permission-planner')!;
     border-color: var(--status-beta);
   }
 
-  .severity-tag[data-severity='high'] {
+  .severity-tag[data-severity='high'],
+  .severity-tag[data-severity='critical'] {
     color: var(--status-alert);
     border-color: var(--status-alert);
   }
 
   .severity-tag[data-severity='critical'] {
-    color: var(--status-alert);
-    border-color: var(--status-alert);
     border-width: 2px;
     font-weight: 700;
+  }
+
+  .risk-differs {
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-decoration-color: var(--status-beta);
   }
 
   .wildcard-tag {
@@ -547,15 +594,20 @@ const tool = getTool('permission-planner')!;
     CAPABILITIES,
     CAPABILITY_IDS,
     SAMPLES,
-    SEVERITY_LABELS,
     SEVERITY_ORDER,
+    SEVERITY_LABELS,
+    DATA_SENSITIVITIES,
+    DATA_SENSITIVITY_LABELS,
+    AUTONOMY_LEVELS,
+    AUTONOMY_LEVEL_LABELS,
     analyze,
     sampleState,
     emptyState,
     getSample,
     serialize,
+    defaultGrant,
     type CapabilityId,
-    type CapabilityConfig,
+    type Grant,
     type PlannerState,
     type PlannerAnalysis,
   } from '../../lib/tools/permission-planner';
@@ -563,99 +615,185 @@ const tool = getTool('permission-planner')!;
   const root = document.querySelector<HTMLElement>('[data-planner]');
   if (root) {
     const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+    const grantsList = el<HTMLElement>('[data-grants-list]');
 
     const esc = (s: string) =>
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-    const readConfig = (id: CapabilityId): CapabilityConfig => {
-      const scope = el<HTMLInputElement>(`[name="${id}-scope"]`)?.value ?? '';
-      const ceiling = el<HTMLInputElement>(`[name="${id}-ceiling"]`)?.value ?? '';
-      const requiresConfirmation =
-        el<HTMLInputElement>(`[data-cap-confirm][data-cap-id="${id}"]`)?.checked ?? false;
-      const dryRunFirst =
-        el<HTMLInputElement>(`[data-cap-dryrun][data-cap-id="${id}"]`)?.checked ?? false;
-      const reversibleOverride =
-        el<HTMLInputElement>(`[data-cap-reversible][data-cap-id="${id}"]`)?.checked ?? false;
-      return { scope, ceiling, requiresConfirmation, dryRunFirst, reversibleOverride };
-    };
+    let nextGrantId = 0;
+    const newGrantId = () => `grant-${nextGrantId++}`;
 
-    const readState = (): PlannerState => {
+    /* ---------------------------------------------------------------
+     * Grant card construction. Runs only on structural changes: add,
+     * remove, load sample, reset. Never on a keystroke, so typing in
+     * one field never rebuilds the DOM out from under the user.
+     * ------------------------------------------------------------- */
+    function selectOptions<T extends string>(values: T[], labels: Record<T, string>, selected: T) {
+      return values
+        .map((v) => `<option value="${esc(v)}" ${v === selected ? 'selected' : ''}>${esc(labels[v])}</option>`)
+        .join('');
+    }
+
+    function grantCardHTML(grant: Grant): string {
+      const trait = CAPABILITIES[grant.capabilityId];
+      const g = grant.id;
+      return `
+      <div class="grant-card" data-grant-card data-grant-id="${esc(g)}" data-capability-id="${esc(grant.capabilityId)}">
+        <div class="grant-card-head">
+          <div>
+            <p class="grant-action-tag">${esc(trait.action)}</p>
+            <div class="grant-field" style="margin-bottom:0">
+              <label class="grant-field-label" for="resource-${esc(g)}">Resource</label>
+              <input class="grant-control" id="resource-${esc(g)}" data-field="resource" type="text" value="${esc(grant.resource)}" placeholder="${esc(trait.defaultResource)}" />
+            </div>
+          </div>
+          <button type="button" class="remove-grant" data-remove-grant>Remove</button>
+        </div>
+
+        <div class="grant-grid">
+          <div class="grant-field">
+            <label class="grant-field-label" for="scope-${esc(g)}">Scope</label>
+            <input class="grant-control" id="scope-${esc(g)}" data-field="scope" type="text" value="${esc(grant.scope)}" placeholder="e.g. read-only, this resource only" />
+            <p class="grant-field-hint">Name the exact ${esc(trait.targetNoun)} this task needs. Empty or "*" reads as wildcard access.</p>
+          </div>
+          <div class="grant-field">
+            <label class="grant-field-label" for="ceiling-${esc(g)}">Rate or amount ceiling</label>
+            <input class="grant-control" id="ceiling-${esc(g)}" data-field="ceiling" type="text" value="${esc(grant.ceiling)}" placeholder="e.g. 20 per day, or $50 per transaction" />
+          </div>
+          <div class="grant-field">
+            <label class="grant-field-label" for="risk-${esc(g)}">Declared risk</label>
+            <select class="grant-control" id="risk-${esc(g)}" data-field="risk">
+              ${selectOptions(SEVERITY_ORDER, SEVERITY_LABELS, grant.risk)}
+            </select>
+          </div>
+          <div class="grant-field">
+            <label class="grant-field-label" for="sensitivity-${esc(g)}">Data sensitivity</label>
+            <select class="grant-control" id="sensitivity-${esc(g)}" data-field="dataSensitivity">
+              ${selectOptions(DATA_SENSITIVITIES, DATA_SENSITIVITY_LABELS, grant.dataSensitivity)}
+            </select>
+          </div>
+          <div class="grant-field">
+            <label class="grant-field-label" for="autonomy-${esc(g)}">Autonomy level</label>
+            <select class="grant-control" id="autonomy-${esc(g)}" data-field="autonomyLevel">
+              ${selectOptions(AUTONOMY_LEVELS, AUTONOMY_LEVEL_LABELS, grant.autonomyLevel)}
+            </select>
+          </div>
+          <div class="grant-field">
+            <label class="grant-field-label" for="approval-${esc(g)}">Approval rule</label>
+            <input class="grant-control" id="approval-${esc(g)}" data-field="approvalRule" type="text" value="${esc(grant.approvalRule)}" placeholder="Who or what approves this" />
+          </div>
+          <div class="grant-field">
+            <label class="grant-field-label" for="escalation-${esc(g)}">Escalation rule</label>
+            <input class="grant-control" id="escalation-${esc(g)}" data-field="escalationRule" type="text" value="${esc(grant.escalationRule)}" placeholder="What happens if this fires outside the pattern" />
+          </div>
+        </div>
+
+        <div class="grant-toggles">
+          <label class="toggle">
+            <input type="checkbox" data-field="requiresConfirmation" ${grant.requiresConfirmation ? 'checked' : ''} />
+            Requires confirmation before it fires
+          </label>
+          ${
+            trait.supportsDryRun
+              ? `<label class="toggle"><input type="checkbox" data-field="dryRunFirst" ${grant.dryRunFirst ? 'checked' : ''} /> Requires a dry run first</label>`
+              : ''
+          }
+          ${
+            trait.canBeMadeReversible
+              ? `<label class="toggle"><input type="checkbox" data-field="reversibleOverride" ${grant.reversibleOverride ? 'checked' : ''} /> Made reversible: ${esc(trait.reversibleApproach)}</label>`
+              : ''
+          }
+        </div>
+      </div>`;
+    }
+
+    function addGrantCard(grant: Grant) {
+      if (!grantsList) return;
+      grantsList.insertAdjacentHTML('beforeend', grantCardHTML(grant));
+    }
+
+    function rebuildGrantCards(grants: Grant[]) {
+      if (!grantsList) return;
+      grantsList.innerHTML = grants.map((g) => grantCardHTML(g)).join('');
+    }
+
+    /* ---------------------------------------------------------------
+     * State reading. Every value comes from the live DOM, never from a
+     * cached copy, so the results always match what is on screen.
+     * ------------------------------------------------------------- */
+    function readGrant(card: HTMLElement): Grant {
+      const field = <T extends HTMLInputElement | HTMLSelectElement>(name: string) =>
+        card.querySelector<T>(`[data-field="${name}"]`);
+      return {
+        id: card.dataset.grantId ?? '',
+        capabilityId: (card.dataset.capabilityId ?? 'read-files') as CapabilityId,
+        resource: field<HTMLInputElement>('resource')?.value ?? '',
+        scope: field<HTMLInputElement>('scope')?.value ?? '',
+        ceiling: field<HTMLInputElement>('ceiling')?.value ?? '',
+        risk: (field<HTMLSelectElement>('risk')?.value as Grant['risk']) ?? 'medium',
+        dataSensitivity: (field<HTMLSelectElement>('dataSensitivity')?.value as Grant['dataSensitivity']) ?? 'none',
+        autonomyLevel: (field<HTMLSelectElement>('autonomyLevel')?.value as Grant['autonomyLevel']) ?? 'acts-with-confirmation',
+        requiresConfirmation: field<HTMLInputElement>('requiresConfirmation')?.checked ?? false,
+        approvalRule: field<HTMLInputElement>('approvalRule')?.value ?? '',
+        escalationRule: field<HTMLInputElement>('escalationRule')?.value ?? '',
+        dryRunFirst: field<HTMLInputElement>('dryRunFirst')?.checked ?? false,
+        reversibleOverride: field<HTMLInputElement>('reversibleOverride')?.checked ?? false,
+      };
+    }
+
+    function readState(): PlannerState {
       const mission = el<HTMLTextAreaElement>('[name="mission"]')?.value ?? '';
-      const selected = {} as Record<CapabilityId, boolean>;
-      const configs = {} as Record<CapabilityId, CapabilityConfig>;
-      for (const id of CAPABILITY_IDS) {
-        selected[id] =
-          el<HTMLInputElement>(`[data-cap-selected][data-cap-id="${id}"]`)?.checked ?? false;
-        configs[id] = readConfig(id);
-      }
+      const cards = grantsList ? Array.from(grantsList.querySelectorAll<HTMLElement>('[data-grant-card]')) : [];
       return {
         mission,
-        selected,
-        configs,
+        grants: cards.map(readGrant),
         scenarioId: el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id,
       };
-    };
+    }
 
-    const writeState = (state: PlannerState) => {
-      const mission = el<HTMLTextAreaElement>('[name="mission"]');
-      if (mission) mission.value = state.mission;
-      for (const id of CAPABILITY_IDS) {
-        const config = state.configs[id];
-        const selectedBox = el<HTMLInputElement>(`[data-cap-selected][data-cap-id="${id}"]`);
-        if (selectedBox) selectedBox.checked = state.selected[id];
-
-        const scope = el<HTMLInputElement>(`[name="${id}-scope"]`);
-        if (scope) scope.value = config.scope;
-        const ceiling = el<HTMLInputElement>(`[name="${id}-ceiling"]`);
-        if (ceiling) ceiling.value = config.ceiling;
-        const confirmBox = el<HTMLInputElement>(`[data-cap-confirm][data-cap-id="${id}"]`);
-        if (confirmBox) confirmBox.checked = config.requiresConfirmation;
-        const dryRunBox = el<HTMLInputElement>(`[data-cap-dryrun][data-cap-id="${id}"]`);
-        if (dryRunBox) dryRunBox.checked = config.dryRunFirst;
-        const reversibleBox = el<HTMLInputElement>(`[data-cap-reversible][data-cap-id="${id}"]`);
-        if (reversibleBox) reversibleBox.checked = config.reversibleOverride;
-
-        const configBlock = el<HTMLElement>(`[data-cap-config="${id}"]`);
-        if (configBlock) configBlock.hidden = !state.selected[id];
-      }
-    };
+    /* ---------------------------------------------------------------
+     * Result rendering. Reads state fresh and rewrites only the result
+     * panels, never the grant cards themselves.
+     * ------------------------------------------------------------- */
+    function renderSummary(analysis: PlannerAnalysis) {
+      const target = el('[data-summary]');
+      if (!target) return;
+      const parts = SEVERITY_ORDER.map((s) => `<span>${esc(SEVERITY_LABELS[s])}: ${analysis.riskCounts[s]}</span>`);
+      parts.push(`<span>Wildcard grants: ${analysis.wildcardCount}</span>`);
+      parts.push(`<span>Declared differs from assessed: ${analysis.riskMismatchCount}</span>`);
+      target.innerHTML = parts.join('');
+    }
 
     function renderMatrix(analysis: PlannerAnalysis) {
-      const counts = el('[data-counts]');
       const target = el('[data-matrix]');
-      if (!counts || !target) return;
-
-      const bySeverity: Record<string, number> = { low: 0, medium: 0, high: 0, critical: 0 };
-      for (const f of analysis.findings) bySeverity[f.blast.severity] += 1;
-      counts.innerHTML = SEVERITY_ORDER.map(
-        (s) => `<span>${esc(SEVERITY_LABELS[s])}: ${bySeverity[s] ?? 0}</span>`,
-      ).join('');
-
+      if (!target) return;
       const rank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
-      const sorted = [...analysis.findings].sort(
-        (a, b) => rank[a.blast.severity] - rank[b.blast.severity],
-      );
+      const sorted = [...analysis.findings].sort((a, b) => rank[a.grant.risk] - rank[b.grant.risk]);
 
       const rows = sorted
-        .map(
-          (f) => `
+        .map((f) => {
+          const trait = CAPABILITIES[f.grant.capabilityId];
+          const differs = f.grant.risk !== f.blast.severity;
+          return `
         <tr>
-          <td>${esc(f.label)}</td>
-          <td><span class="severity-tag" data-severity="${f.blast.severity}">${esc(SEVERITY_LABELS[f.blast.severity])}</span></td>
+          <td>${esc(trait.action)}</td>
+          <td>${esc(f.grant.resource || trait.defaultResource)}</td>
+          <td><span class="severity-tag" data-severity="${f.grant.risk}">${esc(SEVERITY_LABELS[f.grant.risk])}</span></td>
+          <td class="${differs ? 'risk-differs' : ''}">${esc(SEVERITY_LABELS[f.blast.severity])}</td>
           <td>${esc(f.blast.reversibility)}</td>
-          <td>${esc(f.blast.detectability)}</td>
-          <td>${f.wildcard ? '<span class="wildcard-tag">wildcard</span>' : esc(f.config.scope.trim() || '(unscoped)')}</td>
-          <td>${f.config.requiresConfirmation ? 'yes' : 'no'}</td>
-        </tr>`,
-        )
+          <td>${esc(DATA_SENSITIVITY_LABELS[f.grant.dataSensitivity])}</td>
+          <td>${esc(AUTONOMY_LEVEL_LABELS[f.grant.autonomyLevel])}</td>
+          <td>${f.wildcard ? '<span class="wildcard-tag">wildcard</span>' : esc(f.grant.scope.trim() || '(unscoped)')}</td>
+        </tr>`;
+        })
         .join('');
 
       target.innerHTML = `
         <table class="matrix-table">
           <thead>
             <tr>
-              <th>Capability</th><th>Severity</th><th>Reversibility</th>
-              <th>Detectability</th><th>Scope</th><th>Confirmation</th>
+              <th>Action</th><th>Resource</th><th>Risk</th><th>Assessed</th>
+              <th>Reversibility</th><th>Data sensitivity</th><th>Autonomy</th><th>Scope</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -666,32 +804,28 @@ const tool = getTool('permission-planner')!;
       const target = el('[data-findings]');
       if (!target) return;
       if (!analysis.findings.length) {
-        target.innerHTML = '<p class="clean-note">No capability selected.</p>';
+        target.innerHTML = '<p class="clean-note">No resource or action added.</p>';
         return;
       }
 
       target.innerHTML = analysis.findings
         .map((f) => {
           const warnings = f.warnings
-            .map(
-              (w) => `<span class="warning-line" data-severity="${w.severity}">${esc(w.message)}</span>`,
-            )
+            .map((w) => `<span class="warning-line" data-severity="${w.severity}">${esc(w.message)}</span>`)
             .join('');
           const recs = f.recommendations.length
             ? `<ul class="rec-list">${f.recommendations
-                .map(
-                  (r) => `<li>${esc(r.action)}<span class="rec-reason">${esc(r.reason)}</span></li>`,
-                )
+                .map((r) => `<li>${esc(r.action)}<span class="rec-reason">${esc(r.reason)}</span></li>`)
                 .join('')}</ul>`
             : '<p class="clean-note">No further narrowing rule fired for this grant.</p>';
 
           return `
-        <div class="finding-card" data-severity="${f.blast.severity}">
+        <div class="finding-card" data-severity="${f.grant.risk}">
           <div class="finding-head">
             <span class="finding-title">${esc(f.label)}</span>
-            <span class="severity-tag" data-severity="${f.blast.severity}">${esc(SEVERITY_LABELS[f.blast.severity])}</span>
+            <span class="severity-tag" data-severity="${f.grant.risk}">${esc(SEVERITY_LABELS[f.grant.risk])} declared</span>
           </div>
-          <p class="finding-facts">Reversibility: ${esc(f.blast.reversibility)}. Detectability: ${esc(f.blast.detectability)}.</p>
+          <p class="finding-facts">Assessed severity: ${esc(SEVERITY_LABELS[f.blast.severity])}. Reversibility: ${esc(f.blast.reversibility)}. Detectability: ${esc(f.blast.detectability)}.</p>
           <p class="finding-outcome">${esc(f.blast.worstOutcome)}</p>
           <p class="finding-containment">${esc(f.blast.containment)}</p>
           ${warnings}
@@ -715,7 +849,7 @@ const tool = getTool('permission-planner')!;
           (c) => `
         <div class="combo-card">
           <p class="combo-name">${esc(c.name)}</p>
-          <p class="combo-involves">${c.involves.map((id) => esc(CAPABILITIES[id].label)).join(' + ')}</p>
+          <p class="combo-involves">${c.triggeringGrants.map((g) => esc(g.label)).join(' + ')}</p>
           <p>${esc(c.message)}</p>
         </div>`,
         )
@@ -726,7 +860,7 @@ const tool = getTool('permission-planner')!;
       const target = el('[data-audit]');
       if (!target) return;
       if (!analysis.auditLog.length) {
-        target.innerHTML = '<p class="clean-note">No capability selected.</p>';
+        target.innerHTML = '<p class="clean-note">No resource or action added.</p>';
         return;
       }
       target.innerHTML = analysis.auditLog
@@ -740,17 +874,18 @@ const tool = getTool('permission-planner')!;
         .join('');
     }
 
-    function renderAll() {
+    function updateResults() {
       const state = readState();
       const analysis = analyze(state);
 
       const results = el<HTMLElement>('[data-results]');
       const empty = el<HTMLElement>('[data-empty]');
-      const hasSelection = analysis.findings.length > 0;
-      if (results) results.hidden = !hasSelection;
-      if (empty) empty.hidden = hasSelection;
+      const hasGrants = analysis.findings.length > 0;
+      if (results) results.hidden = !hasGrants;
+      if (empty) empty.hidden = hasGrants;
 
-      if (hasSelection) {
+      if (hasGrants) {
+        renderSummary(analysis);
         renderMatrix(analysis);
         renderFindings(analysis);
         renderCombos(analysis);
@@ -758,32 +893,51 @@ const tool = getTool('permission-planner')!;
       }
     }
 
-    // Toggle a capability's config block the instant it is selected,
-    // so the fields a recommendation refers to are visible immediately.
-    root.addEventListener('change', (event) => {
-      const box = (event.target as HTMLElement)?.closest<HTMLInputElement>('[data-cap-selected]');
-      if (box) {
-        const id = box.dataset.capId as CapabilityId;
-        const configBlock = el<HTMLElement>(`[data-cap-config="${id}"]`);
-        if (configBlock) configBlock.hidden = !box.checked;
+    /* ---------------------------------------------------------------
+     * Wiring
+     * ------------------------------------------------------------- */
+    // Typing or toggling any grant field never rebuilds a card, it only
+    // re-renders the results below.
+    root.addEventListener('input', updateResults);
+    root.addEventListener('change', updateResults);
+
+    root.addEventListener('click', (event) => {
+      const removeBtn = (event.target as HTMLElement)?.closest<HTMLElement>('[data-remove-grant]');
+      if (removeBtn) {
+        removeBtn.closest('[data-grant-card]')?.remove();
+        updateResults();
       }
-      renderAll();
     });
-    root.addEventListener('input', renderAll);
+
+    el('[data-add-grant]')?.addEventListener('click', () => {
+      const action = el<HTMLSelectElement>('[data-add-action]')?.value as CapabilityId | undefined;
+      const resourceField = el<HTMLInputElement>('#add-resource');
+      if (!action) return;
+      const resource = resourceField?.value.trim() ?? '';
+      addGrantCard(defaultGrant(newGrantId(), action, resource));
+      if (resourceField) resourceField.value = '';
+      updateResults();
+    });
 
     el('[data-load-sample]')?.addEventListener('click', () => {
       const id = el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id;
-      writeState(sampleState(id));
+      const state = sampleState(id);
+      const mission = el<HTMLTextAreaElement>('[name="mission"]');
+      if (mission) mission.value = state.mission;
+      rebuildGrantCards(state.grants);
       const teaches = el('[data-teaches]');
       if (teaches) teaches.textContent = getSample(id)?.teaches ?? '';
-      renderAll();
+      updateResults();
     });
 
     el('[data-reset]')?.addEventListener('click', () => {
-      writeState(emptyState());
+      const state = emptyState();
+      const mission = el<HTMLTextAreaElement>('[name="mission"]');
+      if (mission) mission.value = state.mission;
+      rebuildGrantCards(state.grants);
       const teaches = el('[data-teaches]');
       if (teaches) teaches.textContent = '';
-      renderAll();
+      updateResults();
     });
 
     // EmptyState's sample button dispatches this. Loads the required
@@ -791,10 +945,13 @@ const tool = getTool('permission-planner')!;
     root.addEventListener('workbench:load-sample', () => {
       const select = el<HTMLSelectElement>('[data-sample-select]');
       if (select) select.value = 'email-calendar-assistant';
-      writeState(sampleState('email-calendar-assistant'));
+      const state = sampleState('email-calendar-assistant');
+      const mission = el<HTMLTextAreaElement>('[name="mission"]');
+      if (mission) mission.value = state.mission;
+      rebuildGrantCards(state.grants);
       const teaches = el('[data-teaches]');
       if (teaches) teaches.textContent = getSample('email-calendar-assistant')?.teaches ?? '';
-      renderAll();
+      updateResults();
     });
 
     // ExportBar asks; the tool answers. See src/components/kit/ExportBar.astro.
@@ -805,10 +962,6 @@ const tool = getTool('permission-planner')!;
       resolve(serialize(readState(), fmt));
     }) as EventListener);
 
-    // Seed every unselected capability with a clean default config so
-    // reading state before a single interaction never crashes on an
-    // undefined field.
-    writeState(emptyState());
-    renderAll();
+    updateResults();
   }
 </script>
