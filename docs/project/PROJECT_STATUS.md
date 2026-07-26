@@ -8,9 +8,10 @@
 
 ## Current phase
 
-Foundation scope COMPLETE in code and pushed to GitHub. NOT deployed.
-The site does not serve at tools.nixfred.com yet, and the reason is a
-missing credential, not missing work. See "Blocked" below.
+Foundation scope COMPLETE and LIVE at https://tools.nixfred.com.
+Verified 2026-07-26: HTTP 200, valid TLS, correct title and canonical,
+zero unsubstituted placeholders, all four routes serving. Push to main
+deploys automatically through GitHub Actions, confirmed end to end.
 
 ## Scope of this execution
 
@@ -25,9 +26,9 @@ an oversight. See docs/decisions/0003-build-control-adherence.md.
 
 ## URLs
 
-1. Repo: https://github.com/nixfred/tools.nixfred.com (public, live)
-2. Production: https://tools.nixfred.com (NOT serving, blocked)
-3. Pages project: not created yet, blocked on the same credential
+1. Production: https://tools.nixfred.com (LIVE)
+2. Pages subdomain: https://tools-nixfred-com.pages.dev (LIVE)
+3. Repo: https://github.com/nixfred/tools.nixfred.com (public)
 
 ## Completed
 
@@ -46,22 +47,18 @@ an oversight. See docs/decisions/0003-build-control-adherence.md.
 7. 2026-07-26: Five gates green. Links, safety, house style, registry
    contract, WCAG contrast.
 8. 2026-07-26: GitHub Actions deploy workflow written and validated.
+9. 2026-07-26: Pages project, first deploy, custom domain, TLS, and
+   proxied CNAME. Site live and verified.
+10. 2026-07-26: Push to deploy confirmed working end to end.
 
 ## Blocked
 
-1. THE ONE BLOCKER. No credential on the build machine holds Cloudflare
-   Pages permission. The environment token verifies as active but
-   returns API error 10000 on the Pages endpoint, and the wrangler
-   OAuth credential expired 2026-07-18 and cannot refresh from a non
-   interactive shell.
-   Needed: an API token with Account, Cloudflare Pages, Edit plus Zone,
-   DNS, Edit on nixfred.com.
-   Unblocks, in this order: Pages project creation, first deploy,
-   custom domain attach, the proxied CNAME, and the GitHub Actions
-   deploy secret.
-2. Until that token exists, the GitHub Actions workflow will run on
-   every push, pass the build and both gates, and fail at the final
-   deploy step. That failure is expected and is not a code defect.
+Nothing. The Cloudflare Pages credential blocker was resolved
+2026-07-26 when Fred issued a Pages-scoped token. Completed since:
+Pages project created, first deploy, custom domain attached with an
+active Google-issued certificate, proxied CNAME on the nixfred.com
+zone, and the CLOUDFLARE_API_TOKEN Actions secret set. A dispatched
+workflow run passed build, both gates, and deploy.
 
 ## Open items
 
@@ -103,7 +100,8 @@ actionable tools.
 
 ## Fred decisions needed
 
-1. The Cloudflare Pages token. Everything else is done.
-2. Approval to fix the factory seed, which requires the SystemFileGuard
-   override window.
-3. Keep or delete the unused ShareSheet component.
+1. Approval to fix the factory seed, which requires the SystemFileGuard
+   override window. This is the highest value open item, because every
+   new factory site inherits those defects until it is done.
+2. Keep or delete the unused ShareSheet component.
+3. Whether to generate the og:image card before any link is shared.

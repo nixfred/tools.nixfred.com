@@ -169,3 +169,44 @@ is clean and the seed is still infected. That is an open item, not a
 closed one.
 
 ---
+
+## Chapter 5: Live
+### 2026-07-26
+
+The blocker turned out to be exactly what the diagnosis said it was,
+which is a satisfying way for a night of work to end. Fred issued an API
+token with Account, Cloudflare Pages, Edit and Zone, DNS, Edit. It
+verified against the Pages endpoint on the first call, where every
+previous credential had returned 10000.
+
+After that the remaining steps took under two minutes: Pages project,
+first deploy of 19 files, custom domain attached, certificate issued,
+proxied CNAME on the nixfred.com zone.
+
+The site answers at https://tools.nixfred.com with a valid certificate,
+the correct title and canonical, and zero unsubstituted placeholders in
+the served HTML. All four routes return 200.
+
+One false alarm, worth writing down because it looked like a failure.
+The first verification attempts against the custom domain returned
+nothing at all while pages.dev served fine. The instinct is to assume
+the deploy broke. It had not. Cloudflare reported the domain active and
+the certificate active, and public resolvers at 1.1.1.1 and 8.8.8.8 both
+answered correctly. It was the local Tailscale resolver on this machine
+holding a stale negative answer. The site was live the whole time. When
+a domain fails locally but the authoritative side reports healthy,
+suspect the resolver in front of you before the infrastructure behind
+it.
+
+Then the part that mattered most to Fred's ruling: a dispatched workflow
+run built the site, passed the link gate, passed the static safety gate,
+and deployed. Push to main now ships the site. The instruction he gave
+at the start of the run is now literally true of the repository.
+
+What shipped is a foundation, deliberately. Fourteen instruments are
+specified and none are usable, and the landing page says so plainly
+rather than dressing an empty catalog up as a product. AVAILABLE NOW
+reads 0. That number is the honest one, and it will move one PRD at a
+time.
+
+---
