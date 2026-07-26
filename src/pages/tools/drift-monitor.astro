@@ -1,17 +1,26 @@
 ---
 // Drift Monitor.
 //
-// tools-nixfred-prds/tools/12-DRIFT-MONITOR.md, framed for this build
-// as: tell a real behavior change apart from ordinary sampling noise
-// before you go chasing it. See src/lib/tools/drift-monitor.ts for the
-// scope note on how this differs from the PRD's literal acceptance
-// criteria.
+// tools-nixfred-prds/tools/12-DRIFT-MONITOR.md. Primary function is the
+// structured snapshot differ the PRD actually specifies: two system
+// snapshots in, a sorted list of findings out, each one citing the
+// field path it changed, permission widenings called out ahead of
+// everything else, intentional changes separated from unexplained
+// drift, missing evaluation coverage listed, and an ordered rollback
+// checklist. See src/lib/tools/drift-monitor.ts, section 13 onward,
+// and its revision history note for why this page looks different
+// from the first version shipped.
 //
-// All arithmetic lives in that file. This file is the shell: it
-// renders the form once from an empty state, renders a results
-// skeleton whose numbers are filled in by client script, and wires the
-// kit's event contract (workbench:load-sample, workbench:export).
-// Nothing here computes a p value.
+// The two proportion significance engine (that first version, sections
+// 1 through 12 of the lib file) is preserved unmodified and demoted to
+// a secondary panel here: it tests one of the seven snapshot inputs,
+// evaluation results, rather than standing in for the whole tool.
+//
+// All arithmetic and diffing lives in the lib file. This file is the
+// shell: it renders the form once from an empty template, renders a
+// results skeleton whose numbers are filled in by client script, and
+// wires the kit's event contract (workbench:load-sample,
+// workbench:export). Nothing here computes a diff or a p value.
 import ToolLayout from '../../layouts/ToolLayout.astro';
 import { getTool } from '../../data/registry';
 import {
@@ -24,17 +33,14 @@ import {
   EmptyState,
 } from '../../components/kit';
 import {
-  emptyState,
-  sampleState,
-  analyzeDrift,
+  emptySnapshot,
+  serializeSnapshot,
   ASSUMPTIONS_TEXT,
   VERDICT_LABELS,
-  SAMPLES,
+  COMPARISON_SAMPLES,
 } from '../../lib/tools/drift-monitor';
 
 const tool = getTool('drift-monitor')!;
-
-const initial = emptyState();
 
 const ALPHA_OPTIONS = [
   { value: '0.1', label: '0.10 (90 percent confidence)' },
@@ -49,55 +55,63 @@ const EVAL_SET_OPTIONS = [
   { value: 'no', label: 'No, it is the same eval set' },
   { value: 'yes', label: 'Yes, it changed' },
 ];
-const SAMPLE_OPTIONS = SAMPLES.map((s) => ({ value: s.id, label: s.name }));
+const SAMPLE_OPTIONS = COMPARISON_SAMPLES.map((s) => ({ value: s.id, label: s.name }));
 
-// Numeric assumption rows. Order is load bearing: the client script
-// updates row N by index, so this array and the script's writer must
-// stay in the same order. Modeled on the cost planner page identical
-// pattern for its own derived assumption rows.
-function runParameterItems(state: ReturnType<typeof emptyState>) {
+const initialBaselineText = serializeSnapshot(emptySnapshot('Baseline'));
+const initialCurrentText = serializeSnapshot(emptySnapshot('Current'));
+
+// Numeric assumption rows behind the significance panel. Order is load
+// bearing: the client script updates row N by index, so this array
+// and the script's writer must stay in the same order.
+const RUN_PARAMETER_DEFAULTS = {
+  alpha: 0.05,
+  metricsMonitored: 1,
+  targetPower: 0.8,
+  minMeaningfulEffect: 0.05,
+};
+function runParameterItems(p: typeof RUN_PARAMETER_DEFAULTS) {
   return [
-    { label: 'Significance level (alpha)', value: `${state.alpha}`, editable: false, source: 'the significance level field above' },
-    { label: 'Confidence level used per rate', value: `${((1 - state.alpha) * 100).toFixed(0)} percent`, editable: false, source: '1 minus alpha' },
-    { label: 'Metrics monitored together', value: `${state.metricsMonitored}`, editable: false, source: 'the metrics monitored field above' },
-    { label: 'Bonferroni corrected alpha', value: `${(state.alpha / state.metricsMonitored).toFixed(4)}`, editable: false, source: 'alpha divided by metrics monitored' },
-    { label: 'Target power for detectable effect', value: `${(state.targetPower * 100).toFixed(0)} percent`, editable: false, source: 'the target power field above' },
-    { label: 'Smallest change said to matter', value: `${(state.minMeaningfulEffect * 100).toFixed(2)} points`, editable: false, source: 'the meaningful effect field above' },
+    { label: 'Significance level (alpha)', value: `${p.alpha}`, editable: false, source: 'the significance level field below' },
+    { label: 'Confidence level used per rate', value: `${((1 - p.alpha) * 100).toFixed(0)} percent`, editable: false, source: '1 minus alpha' },
+    { label: 'Metrics monitored together', value: `${p.metricsMonitored}`, editable: false, source: 'the metrics monitored field below' },
+    { label: 'Bonferroni corrected alpha', value: `${(p.alpha / p.metricsMonitored).toFixed(4)}`, editable: false, source: 'alpha divided by metrics monitored' },
+    { label: 'Target power for detectable effect', value: `${(p.targetPower * 100).toFixed(0)} percent`, editable: false, source: 'the target power field below' },
+    { label: 'Smallest change said to matter', value: `${(p.minMeaningfulEffect * 100).toFixed(2)} points`, editable: false, source: 'the meaningful effect field below' },
   ];
 }
 ---
 
 <ToolLayout tool={tool}>
   <div class="monitor" data-monitor>
-    <WarningNote severity="info" title="This is a statistics instrument, not a live feed">
+    <WarningNote severity="info" title="Two snapshots in, a structured diff out">
       <p>
-        Enter aggregate counts from two snapshots, a baseline and a current measurement,
-        for one metric at a time. Every number below is computed locally from exactly
-        those four counts and the settings you choose. This tool does not connect to any
-        evaluation system, does not import a snapshot file, and does not monitor anything
-        continuously.
+        Paste or edit two system snapshots as JSON below, a baseline and a current one,
+        each covering prompts, tools, permissions, knowledge sources, model settings,
+        evaluation results, and any other metrics you track. Everything below is computed
+        locally from exactly those two snapshots. This tool does not connect to any live
+        system and does not monitor anything continuously; it compares two imports.
       </p>
     </WarningNote>
 
     <div id="monitor-empty-state">
       <EmptyState
-        title="Enter a baseline and a current count, or start from an example"
-        body="Fill in the sample size and success count for a baseline measurement and a current one below, or load one of four worked examples, each tuned to land on a different verdict."
-        sampleLabel="Load an example comparison"
+        title="Paste two snapshots, or start from a worked example"
+        body="Edit the baseline and current snapshot JSON below by hand, or load one of two worked examples: one where a permission widened quietly, one where every change is explained."
+        sampleLabel="Load a worked example"
       />
     </div>
 
     <div id="monitor-app" data-monitor-app hidden>
       <section class="controls" aria-labelledby="scenario-heading">
-        <h2 id="scenario-heading" class="eyebrow">Example scenario</h2>
+        <h2 id="scenario-heading" class="eyebrow">Worked example</h2>
         <div class="controls-grid">
           <Field
             label="Example"
             name="sample"
             type="select"
             options={SAMPLE_OPTIONS}
-            value={SAMPLES[0].id}
-            hint="Each example is tuned to land on a different verdict; see the note under the verdict once loaded."
+            value={COMPARISON_SAMPLES[0].id}
+            hint="Each example is a complete, schema valid snapshot pair, not a fragment."
           />
         </div>
         <div class="controls-actions">
@@ -107,267 +121,279 @@ function runParameterItems(state: ReturnType<typeof emptyState>) {
         <p class="teaches" data-teaches role="status" aria-live="polite"></p>
       </section>
 
-      <section class="metric-name" aria-labelledby="metric-name-heading">
-        <h2 id="metric-name-heading" class="eyebrow">What is being measured</h2>
-        <Field
-          label="Metric name"
-          name="metric-name"
-          type="text"
-          value={initial.metricName}
-          placeholder="For example: eval pass rate, tool call success rate"
-          hint="Free text. Shown in the exported report; does not affect the arithmetic."
-        />
-      </section>
-
       <div class="snapshots">
         <section class="snapshot" aria-labelledby="baseline-heading">
-          <h2 id="baseline-heading" class="eyebrow">Baseline</h2>
-          <div class="field-grid">
-            <Field
-              label="Sample size"
-              name="baseline-n"
-              type="number"
-              value={initial.baseline.n || undefined}
-              min={1}
-              step="1"
-              hint="How many cases the baseline measurement covered."
-            />
-            <Field
-              label="Successes"
-              name="baseline-successes"
-              type="number"
-              value={initial.baseline.successes || undefined}
-              min={0}
-              step="1"
-              hint="How many of them passed."
-            />
-          </div>
+          <h2 id="baseline-heading" class="eyebrow">Baseline snapshot (JSON)</h2>
+          <Field
+            label="Baseline"
+            name="baseline-json"
+            type="textarea"
+            value={initialBaselineText}
+            rows={20}
+            hint="Schema version, prompts, tools, permissions, knowledge sources, model settings, evaluation, metrics, changelog, evaluationCoverage."
+          />
         </section>
 
         <section class="snapshot" aria-labelledby="current-heading">
-          <h2 id="current-heading" class="eyebrow">Current</h2>
-          <div class="field-grid">
-            <Field
-              label="Sample size"
-              name="current-n"
-              type="number"
-              value={initial.current.n || undefined}
-              min={1}
-              step="1"
-              hint="How many cases the current measurement covered."
-            />
-            <Field
-              label="Successes"
-              name="current-successes"
-              type="number"
-              value={initial.current.successes || undefined}
-              min={0}
-              step="1"
-              hint="How many of them passed."
-            />
-          </div>
+          <h2 id="current-heading" class="eyebrow">Current snapshot (JSON)</h2>
+          <Field
+            label="Current"
+            name="current-json"
+            type="textarea"
+            value={initialCurrentText}
+            rows={20}
+            hint="Its changelog entries are what mark a field path as an intentional change rather than unexplained drift."
+          />
         </section>
       </div>
 
-      <section class="settings" aria-labelledby="settings-heading">
-        <h2 id="settings-heading" class="eyebrow">Comparison settings</h2>
-        <div class="field-grid">
-          <Field
-            label="Significance level"
-            name="alpha"
-            type="select"
-            options={ALPHA_OPTIONS}
-            value={String(initial.alpha)}
-            hint="The chance of a false alarm this test accepts, before any multiple comparisons correction."
-          />
-          <Field
-            label="Metrics monitored together"
-            name="metrics-monitored"
-            type="number"
-            value={initial.metricsMonitored}
-            min={1}
-            step="1"
-            hint="How many metrics are being watched in the same sweep. Drives the Bonferroni correction below."
-          />
-          <Field
-            label="Target power"
-            name="target-power"
-            type="select"
-            options={POWER_OPTIONS}
-            value={String(initial.targetPower)}
-            hint="The detection rate the minimum detectable effect below is calculated for."
-          />
-          <Field
-            label="Smallest change that matters"
-            name="min-meaningful-effect"
-            type="number"
-            value={initial.minMeaningfulEffect * 100}
-            min={0.01}
-            step="0.5"
-            hint="In percentage points. A verdict of insufficient data means this comparison could not reliably detect a change this size."
-          />
-          <Field
-            label="Did the evaluation set change?"
-            name="eval-set-changed"
-            type="select"
-            options={EVAL_SET_OPTIONS}
-            value={initial.evalSetChanged}
-            hint="If the test cases themselves are different, no statistic below can separate that from a real behavior change."
-          />
+      <div id="monitor-results" data-monitor-results hidden>
+        <div id="headline-callout" hidden>
+          <WarningNote severity="alert" title="Permission expansion, review this first">
+            <div data-headline-findings></div>
+          </WarningNote>
         </div>
-      </section>
 
-      <ResultPanel
-        id="verdict-panel"
-        title="Verdict"
-        status="idle"
-        description="The plain language answer, and the one number it is actually based on."
-      >
-        <p class="verdict-label" data-field="verdict-label" data-verdict="noise"></p>
-        <p class="verdict-reason" data-field="verdict-reason"></p>
-      </ResultPanel>
+        <ResultPanel
+          id="findings-panel"
+          title="Findings"
+          status="idle"
+          description="Every difference between the two snapshots, permission widenings first, then sorted by risk. Each one cites the exact field path it changed."
+        >
+          <div data-findings></div>
+        </ResultPanel>
 
-      <ResultPanel
-        id="interval-panel"
-        title="Confidence interval on the difference"
-        status="idle"
-        description="Current rate minus baseline rate. Whether this crosses zero is the actual answer to whether this is real."
-      >
-        <p class="diff-line mono" data-field="diff-line"></p>
-        <div class="interval-bar" data-interval-bar>
-          <div class="interval-track">
-            <div class="interval-fill" data-interval-fill></div>
-            <div class="interval-zero" data-interval-zero></div>
-          </div>
-          <div class="interval-scale">
-            <span data-field="scale-min"></span>
-            <span class="interval-scale-zero">0</span>
-            <span data-field="scale-max"></span>
-          </div>
-        </div>
-        <p class="interval-note" data-field="interval-note"></p>
-      </ResultPanel>
+        <ResultPanel
+          id="coverage-panel"
+          title="Missing evaluation coverage"
+          status="idle"
+          description="Changed surfaces the current snapshot's evaluationCoverage list does not declare as tested."
+          headingLevel={2}
+        >
+          <ul class="coverage-list" data-coverage></ul>
+        </ResultPanel>
 
-      <ResultPanel
-        id="rates-panel"
-        title="Rates and Wilson intervals"
-        status="idle"
-        description="Wilson score intervals, not the normal approximation, so these stay inside 0 to 100 percent even at extreme rates."
-        headingLevel={2}
-      >
-        <div class="result-table" role="table" aria-label="Rates and intervals">
-          <div class="result-row result-head" role="row">
-            <span role="columnheader">Snapshot</span>
-            <span role="columnheader">Rate</span>
-            <span role="columnheader">Wilson interval</span>
-          </div>
-          <div class="result-row" role="row">
-            <span role="rowheader">Baseline</span>
-            <span role="cell" class="mono" data-field="baseline-rate">0.00 percent</span>
-            <span role="cell" class="mono" data-field="baseline-interval">0.00 to 0.00 percent</span>
-          </div>
-          <div class="result-row" role="row">
-            <span role="rowheader">Current</span>
-            <span role="cell" class="mono" data-field="current-rate">0.00 percent</span>
-            <span role="cell" class="mono" data-field="current-interval">0.00 to 0.00 percent</span>
-          </div>
-        </div>
-      </ResultPanel>
+        <ResultPanel
+          id="rollback-panel"
+          title="Rollback checklist"
+          status="idle"
+          description="Ordered to contain new access first, then correct configuration, then restore context. Capability reductions are listed last, since reverting those would mean granting access back."
+          headingLevel={2}
+        >
+          <ol class="rollback-list" data-rollback></ol>
+        </ResultPanel>
 
-      <ResultPanel
-        id="tests-panel"
-        title="Significance tests"
-        status="idle"
-        description="Both a large sample test and a small sample exact test, because small samples are the common case in eval work."
-        headingLevel={2}
-      >
-        <div class="result-table" role="table" aria-label="Significance tests">
-          <div class="result-row result-head" role="row">
-            <span role="columnheader">Test</span>
-            <span role="columnheader">Statistic</span>
-            <span role="columnheader">p value</span>
-          </div>
-          <div class="result-row" role="row">
-            <span role="rowheader" data-field="z-row-label">Two proportion z test</span>
-            <span role="cell" class="mono" data-field="z-statistic">z = 0.000</span>
-            <span role="cell" class="mono" data-field="z-p">0.0000</span>
-          </div>
-          <div class="result-row" role="row">
-            <span role="rowheader" data-field="fisher-row-label">Fisher exact test</span>
-            <span role="cell" class="mono" data-field="fisher-statistic">exact</span>
-            <span role="cell" class="mono" data-field="fisher-p">0.0000</span>
-          </div>
-        </div>
-        <p class="which-test" data-field="which-test-reason"></p>
-        <p class="bonferroni-line mono" data-field="bonferroni-line"></p>
-      </ResultPanel>
+        <section class="significance-section" aria-labelledby="significance-heading">
+          <h2 id="significance-heading" class="eyebrow">
+            Evaluation results, the one input with a significance test behind it
+          </h2>
+          <p class="significance-lede">
+            Everything above is a structural diff. This panel is the exception: it takes the
+            <code>evaluation</code> field of each snapshot, a plain pass count, and runs the same
+            rigorous two proportion significance engine regardless of what else changed.
+          </p>
 
-      <ResultPanel
-        id="power-panel"
-        title="Statistical power"
-        status="idle"
-        description="What this comparison could have detected, independent of what it actually found."
-        headingLevel={2}
-      >
-        <p class="mde-line mono" data-field="mde-line"></p>
-        <p class="mde-note">
-          This is the minimum detectable effect: the smallest true difference these exact
-          sample sizes could catch at the target power above. It does not depend on what
-          was actually observed. This tool deliberately does not report "observed power",
-          the chance of detecting the effect that was actually seen, because that number is
-          a fixed rescaling of the p value already shown above and is considered poor
-          practice for exactly that reason.
-        </p>
-      </ResultPanel>
+          <div class="field-grid">
+            <Field
+              label="Significance level"
+              name="alpha"
+              type="select"
+              options={ALPHA_OPTIONS}
+              value={String(RUN_PARAMETER_DEFAULTS.alpha)}
+              hint="The chance of a false alarm this test accepts, before any multiple comparisons correction."
+            />
+            <Field
+              label="Metrics monitored together"
+              name="metrics-monitored"
+              type="number"
+              value={RUN_PARAMETER_DEFAULTS.metricsMonitored}
+              min={1}
+              step="1"
+              hint="How many metrics are being watched in the same sweep. Drives the Bonferroni correction below."
+            />
+            <Field
+              label="Target power"
+              name="target-power"
+              type="select"
+              options={POWER_OPTIONS}
+              value={String(RUN_PARAMETER_DEFAULTS.targetPower)}
+              hint="The detection rate the minimum detectable effect below is calculated for."
+            />
+            <Field
+              label="Smallest change that matters"
+              name="min-meaningful-effect"
+              type="number"
+              value={RUN_PARAMETER_DEFAULTS.minMeaningfulEffect * 100}
+              min={0.01}
+              step="0.5"
+              hint="In percentage points. A verdict of insufficient data means this comparison could not reliably detect a change this size."
+            />
+            <Field
+              label="Did the evaluation set change?"
+              name="eval-set-changed"
+              type="select"
+              options={EVAL_SET_OPTIONS}
+              value="no"
+              hint="If the test cases themselves are different, no statistic below can separate that from a real behavior change."
+            />
+          </div>
 
-      <div id="monitor-warnings">
-        <WarningNote severity="warning" title="Worth checking before you trust this verdict">
-          <ul data-field="warnings-list"></ul>
-        </WarningNote>
+          <ResultPanel
+            id="verdict-panel"
+            title="Evaluation verdict"
+            status="idle"
+            description="The plain language answer, and the one number it is actually based on."
+            headingLevel={3}
+          >
+            <p class="verdict-label" data-field="verdict-label" data-verdict="noise"></p>
+            <p class="verdict-reason" data-field="verdict-reason"></p>
+          </ResultPanel>
+
+          <ResultPanel
+            id="interval-panel"
+            title="Confidence interval on the difference"
+            status="idle"
+            description="Current rate minus baseline rate. Whether this crosses zero is the actual answer to whether this is real."
+            headingLevel={3}
+          >
+            <p class="diff-line mono" data-field="diff-line"></p>
+            <div class="interval-bar" data-interval-bar>
+              <div class="interval-track">
+                <div class="interval-fill" data-interval-fill></div>
+                <div class="interval-zero" data-interval-zero></div>
+              </div>
+              <div class="interval-scale">
+                <span data-field="scale-min"></span>
+                <span class="interval-scale-zero">0</span>
+                <span data-field="scale-max"></span>
+              </div>
+            </div>
+            <p class="interval-note" data-field="interval-note"></p>
+          </ResultPanel>
+
+          <ResultPanel
+            id="rates-panel"
+            title="Rates and Wilson intervals"
+            status="idle"
+            description="Wilson score intervals, not the normal approximation, so these stay inside 0 to 100 percent even at extreme rates."
+            headingLevel={3}
+          >
+            <div class="result-table" role="table" aria-label="Rates and intervals">
+              <div class="result-row result-head" role="row">
+                <span role="columnheader">Snapshot</span>
+                <span role="columnheader">Rate</span>
+                <span role="columnheader">Wilson interval</span>
+              </div>
+              <div class="result-row" role="row">
+                <span role="rowheader">Baseline</span>
+                <span role="cell" class="mono" data-field="baseline-rate">0.00 percent</span>
+                <span role="cell" class="mono" data-field="baseline-interval">0.00 to 0.00 percent</span>
+              </div>
+              <div class="result-row" role="row">
+                <span role="rowheader">Current</span>
+                <span role="cell" class="mono" data-field="current-rate">0.00 percent</span>
+                <span role="cell" class="mono" data-field="current-interval">0.00 to 0.00 percent</span>
+              </div>
+            </div>
+          </ResultPanel>
+
+          <ResultPanel
+            id="tests-panel"
+            title="Significance tests"
+            status="idle"
+            description="Both a large sample test and a small sample exact test, because small samples are the common case in eval work."
+            headingLevel={3}
+          >
+            <div class="result-table" role="table" aria-label="Significance tests">
+              <div class="result-row result-head" role="row">
+                <span role="columnheader">Test</span>
+                <span role="columnheader">Statistic</span>
+                <span role="columnheader">p value</span>
+              </div>
+              <div class="result-row" role="row">
+                <span role="rowheader" data-field="z-row-label">Two proportion z test</span>
+                <span role="cell" class="mono" data-field="z-statistic">z = 0.000</span>
+                <span role="cell" class="mono" data-field="z-p">0.0000</span>
+              </div>
+              <div class="result-row" role="row">
+                <span role="rowheader" data-field="fisher-row-label">Fisher exact test</span>
+                <span role="cell" class="mono" data-field="fisher-statistic">exact</span>
+                <span role="cell" class="mono" data-field="fisher-p">0.0000</span>
+              </div>
+            </div>
+            <p class="which-test" data-field="which-test-reason"></p>
+            <p class="bonferroni-line mono" data-field="bonferroni-line"></p>
+          </ResultPanel>
+
+          <ResultPanel
+            id="power-panel"
+            title="Statistical power"
+            status="idle"
+            description="What this comparison could have detected, independent of what it actually found."
+            headingLevel={3}
+          >
+            <p class="mde-line mono" data-field="mde-line"></p>
+            <p class="mde-note">
+              This is the minimum detectable effect: the smallest true difference these exact
+              sample sizes could catch at the target power above. It does not depend on what
+              was actually observed. This tool deliberately does not report "observed power",
+              the chance of detecting the effect that was actually seen, because that number is
+              a fixed rescaling of the p value already shown above and is considered poor
+              practice for exactly that reason.
+            </p>
+          </ResultPanel>
+
+          <div id="monitor-warnings">
+            <WarningNote severity="warning" title="Worth checking before you trust this verdict">
+              <ul data-field="warnings-list"></ul>
+            </WarningNote>
+          </div>
+
+          <AssumptionList
+            name="run-parameters"
+            title="Run parameters"
+            items={runParameterItems(RUN_PARAMETER_DEFAULTS)}
+          />
+
+          <WarningNote severity="info" title="What the significance panel assumes">
+            <ul class="assumptions-list">
+              {ASSUMPTIONS_TEXT.map((a) => <li>{a}</li>)}
+            </ul>
+          </WarningNote>
+        </section>
       </div>
 
-      <AssumptionList
-        name="run-parameters"
-        title="Run parameters"
-        items={runParameterItems(initial)}
-      />
-
-      <WarningNote severity="info" title="What this comparison assumes">
-        <ul class="assumptions-list">
-          {ASSUMPTIONS_TEXT.map((a) => <li>{a}</li>)}
-        </ul>
-      </WarningNote>
-
-      <HelpNote title="How the math above works">
+      <HelpNote title="How this tool reads a snapshot pair">
         <p>
-          Each rate gets a Wilson score interval instead of the textbook normal
-          approximation, because the normal approximation can claim a confidence
-          interval outside 0 to 100 percent and collapses to zero width at 0 or 100
-          percent, exactly where pass rates often sit. The interval on the difference is
-          built from those same two Wilson intervals by Newcombe's hybrid method rather
-          than a fresh normal approximation on the difference itself, for the same
-          reason.
+          Every difference between the two snapshots becomes a finding: a category (prompt,
+          tool, permission, knowledge source, model setting, or metric), a direction (added,
+          removed, modified, or for permissions specifically, widened or narrowed), a risk
+          level, and the exact field path that changed. A permission widening, a grant that
+          got strictly bigger than the baseline, always sorts first, regardless of what other
+          risk levels are in play elsewhere in the comparison. Narrowing a permission is the
+          opposite event and is treated as good news, not a risk.
         </p>
         <p>
-          The two proportion z test is the standard large sample test. The Fisher exact
-          test computes the exact probability from the hypergeometric distribution
-          instead of relying on that approximation, which matters when a sample is small
-          or a rate is extreme. The tests panel above says which one this comparison
-          should trust, using the standard rule of thumb that every expected cell in the
-          comparison table should be at least 5 for the normal approximation to hold.
+          A change reads as intentional only when the current snapshot's own
+          <code>changelog</code> cites that exact field path with a reason. Anything changed
+          and not cited there is unexplained drift, which is the category that most needs a
+          human to look at it. Checking the box on a finding below edits that changelog for
+          you.
         </p>
         <p>
-          Monitoring more than one metric at once is corrected with the Bonferroni
-          method: testing m metrics at once and asking for the interval to exclude zero
-          at the ordinary 95 percent level means one metric in twenty will clear that bar
-          by chance alone, even with no real change anywhere. This tool corrects for that
-          by widening the interval to 1 minus alpha divided by the number of metrics,
-          rather than leaving it to a footnote.
+          Wilson score intervals for each rate, not the normal approximation, because normal
+          breaks at extreme rates. The interval on the difference is built from those same two
+          Wilson intervals by Newcombe's hybrid method. A two proportion z test and an exact
+          Fisher test both run; the tool says which one to trust, using the standard rule that
+          every expected cell in the comparison table should be at least 5 for the normal
+          approximation to hold. Monitoring more than one metric at once widens the interval
+          the verdict reads, by the Bonferroni correction, rather than leaving it to a
+          footnote.
         </p>
       </HelpNote>
 
       <div class="actions">
-        <ExportBar formats={['json', 'markdown']} filename="drift-monitor-report" />
+        <ExportBar formats={['json', 'markdown']} filename="drift-monitor-comparison-report" />
       </div>
     </div>
   </div>
@@ -444,14 +470,9 @@ function runParameterItems(state: ReturnType<typeof emptyState>) {
     color: var(--bg);
   }
 
-  .metric-name {
-    border-bottom: 1px solid var(--line);
-    padding-bottom: var(--space-4);
-  }
-
   .snapshots {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
     gap: var(--space-4);
   }
 
@@ -462,22 +483,54 @@ function runParameterItems(state: ReturnType<typeof emptyState>) {
     background: var(--panel);
   }
 
-  .settings {
-    border-top: 1px solid var(--line);
-    padding-top: var(--space-4);
-  }
-
   .field-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
     gap: var(--space-2) var(--space-4);
   }
 
-  #verdict-panel,
-  #interval-panel,
-  #rates-panel,
-  #tests-panel,
-  #power-panel {
+  #monitor-results > :global(*) {
+    margin-bottom: var(--space-4);
+  }
+
+  .significance-section {
+    border-top: 1px solid var(--line);
+    padding-top: var(--space-4);
+    margin-top: var(--space-2);
+  }
+
+  .significance-lede {
+    max-width: var(--measure);
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: 0 0 var(--space-4);
+  }
+
+  .significance-lede code {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+  }
+
+  .significance-section .field-grid {
+    margin-bottom: var(--space-4);
+  }
+
+  .coverage-list,
+  .rollback-list {
+    margin: 0;
+    padding-left: 1.2rem;
+    max-width: var(--measure);
+  }
+
+  .coverage-list li,
+  .rollback-list li {
+    margin-bottom: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .coverage-list li:last-child,
+  .rollback-list li:last-child {
     margin-bottom: 0;
   }
 
@@ -643,11 +696,11 @@ function runParameterItems(state: ReturnType<typeof emptyState>) {
 </style>
 
 {/* Runtime injected markup is NOT reached by Astro scoped CSS (the
-    Astro lesson: tokens leak otherwise, and so does everything else),
-    so every class the script writes text into or toggles is styled
-    globally here rather than in the scoped block above. The warnings
-    list items are the one piece of markup this page builds at
-    runtime. */}
+    Astro lesson, tokens leak otherwise, and so does everything else),
+    so every class the script writes into or toggles is styled
+    globally here. This covers the finding cards, the coverage and
+    rollback list items rendered from plain strings, and the verdict
+    color mapping. */}
 <style is:global>
   .verdict-label[data-verdict='real-change'] {
     color: var(--status-alert);
@@ -672,68 +725,205 @@ function runParameterItems(state: ReturnType<typeof emptyState>) {
   [data-field='warnings-list'] li:last-child {
     margin-bottom: 0;
   }
+
+  .finding {
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
+  }
+
+  .finding:last-child {
+    margin-bottom: 0;
+  }
+
+  .finding[data-risk='critical'] {
+    border-left-color: var(--status-alert);
+  }
+
+  .finding[data-risk='high'] {
+    border-left-color: var(--status-alert);
+  }
+
+  .finding[data-risk='medium'] {
+    border-left-color: var(--status-beta);
+  }
+
+  .finding[data-risk='low'],
+  .finding[data-risk='info'] {
+    border-left-color: var(--line-strong);
+  }
+
+  .finding-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+  }
+
+  .finding-risk,
+  .finding-category,
+  .finding-direction {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    padding: 0.1rem 0.55rem;
+  }
+
+  .finding[data-risk='critical'] .finding-risk,
+  .finding[data-risk='high'] .finding-risk {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .finding[data-risk='medium'] .finding-risk {
+    color: var(--status-beta);
+    border-color: var(--status-beta);
+  }
+
+  .finding[data-direction='widened'] .finding-direction {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .finding[data-direction='narrowed'] .finding-direction {
+    color: var(--status-live);
+    border-color: var(--status-live);
+  }
+
+  .finding-intentional {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    margin-left: auto;
+    cursor: pointer;
+  }
+
+  .finding-headline {
+    font-size: var(--text-base);
+    color: var(--text);
+    margin: 0 0 var(--space-1);
+    max-width: none;
+  }
+
+  .finding-effect {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0 0 var(--space-2);
+    max-width: none;
+  }
+
+  .finding-fields {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .finding-field {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+  }
+
+  .finding-path {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    overflow-wrap: anywhere;
+  }
+
+  .finding-before {
+    color: var(--text-dim);
+    text-decoration: line-through;
+    overflow-wrap: anywhere;
+  }
+
+  .finding-arrow {
+    color: var(--text-dim);
+  }
+
+  .finding-after {
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+
+  .finding-unexplained {
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--status-beta);
+    margin: var(--space-2) 0 0;
+  }
+
+  .clean-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+
+  #headline-callout .finding {
+    background: var(--panel-raised);
+  }
 </style>
 
 <script>
-  import type { DriftState, DriftSnapshot, EvalSetChanged } from '../../lib/tools/drift-monitor';
+  import type {
+    DriftComparison,
+    SystemSnapshot,
+    ComparisonAnalysis,
+    DriftFinding,
+    EvalSetChanged,
+  } from '../../lib/tools/drift-monitor';
   import {
-    emptyState,
-    sampleState,
-    reset as resetState,
-    validate,
-    analyzeDrift,
-    getSample,
-    serialize,
-    SAMPLES,
+    emptySnapshot,
+    parseSnapshotJSON,
+    serializeSnapshot,
+    validateComparison,
+    analyzeComparison,
+    getComparisonSample,
+    sampleComparison,
+    serializeComparison,
+    COMPARISON_SAMPLES,
     VERDICT_LABELS,
   } from '../../lib/tools/drift-monitor';
 
   const app = document.querySelector<HTMLElement>('[data-monitor-app]');
   const emptyStateEl = document.getElementById('monitor-empty-state');
-  if (!app || !emptyStateEl) throw new Error('drift monitor: shell markup is missing');
-
-  let state: DriftState = emptyState();
+  const resultsEl = document.querySelector<HTMLElement>('[data-monitor-results]');
+  if (!app || !emptyStateEl || !resultsEl) throw new Error('drift monitor: shell markup is missing');
 
   /* ---- element lookups -------------------------------------------- */
 
-  function field(id: string): HTMLInputElement | HTMLSelectElement {
+  function field(id: string): HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement {
     const el = document.getElementById(id);
     if (!el) throw new Error(`drift monitor: missing field #${id}`);
-    return el as HTMLInputElement | HTMLSelectElement;
+    return el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
   }
 
   const sampleField = field('field-sample') as HTMLSelectElement;
-  const metricNameField = field('field-metric-name') as HTMLInputElement;
-  const baselineNField = field('field-baseline-n') as HTMLInputElement;
-  const baselineSuccessesField = field('field-baseline-successes') as HTMLInputElement;
-  const currentNField = field('field-current-n') as HTMLInputElement;
-  const currentSuccessesField = field('field-current-successes') as HTMLInputElement;
+  const baselineJsonField = field('field-baseline-json') as HTMLTextAreaElement;
+  const currentJsonField = field('field-current-json') as HTMLTextAreaElement;
   const alphaField = field('field-alpha') as HTMLSelectElement;
   const metricsMonitoredField = field('field-metrics-monitored') as HTMLInputElement;
   const targetPowerField = field('field-target-power') as HTMLSelectElement;
   const minMeaningfulEffectField = field('field-min-meaningful-effect') as HTMLInputElement;
   const evalSetChangedField = field('field-eval-set-changed') as HTMLSelectElement;
 
-  /* ---- reading and writing the form ---------------------------------
+  let interacted = false;
 
-     The DOM is the only place state lives between recomputes; these
-     two functions are the sole translation points between it and the
-     DriftState shape the pure functions in drift-monitor.ts expect. */
+  /* ---- reading significance settings -------------------------------- */
 
-  function readSnapshot(nField: HTMLInputElement, successesField: HTMLInputElement): DriftSnapshot {
-    const n = nField.valueAsNumber;
-    const successes = successesField.valueAsNumber;
+  function readSignificanceSettings() {
     return {
-      n: Number.isNaN(n) ? 0 : n,
-      successes: Number.isNaN(successes) ? 0 : successes,
-    };
-  }
-
-  function readState(): DriftState {
-    return {
-      metricName: metricNameField.value,
-      baseline: readSnapshot(baselineNField, baselineSuccessesField),
-      current: readSnapshot(currentNField, currentSuccessesField),
       alpha: Number(alphaField.value) || 0.05,
       metricsMonitored: Number.isNaN(metricsMonitoredField.valueAsNumber)
         ? 1
@@ -746,24 +936,11 @@ function runParameterItems(state: ReturnType<typeof emptyState>) {
     };
   }
 
-  function writeState(next: DriftState): void {
-    metricNameField.value = next.metricName;
-    baselineNField.value = next.baseline.n ? String(next.baseline.n) : '';
-    baselineSuccessesField.value = next.baseline.successes || next.baseline.successes === 0
-      ? String(next.baseline.successes)
-      : '';
-    currentNField.value = next.current.n ? String(next.current.n) : '';
-    currentSuccessesField.value = next.current.successes || next.current.successes === 0
-      ? String(next.current.successes)
-      : '';
-    alphaField.value = String(next.alpha);
-    metricsMonitoredField.value = String(next.metricsMonitored);
-    targetPowerField.value = String(next.targetPower);
-    minMeaningfulEffectField.value = String(next.minMeaningfulEffect * 100);
-    evalSetChangedField.value = next.evalSetChanged;
-  }
+  /* ---- rendering helpers --------------------------------------------- */
 
-  /* ---- rendering ---------------------------------------------------- */
+  function esc(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
 
   function setText(id: string, text: string) {
     const el = document.querySelector<HTMLElement>(`[data-field="${id}"]`);
@@ -785,72 +962,124 @@ function runParameterItems(state: ReturnType<typeof emptyState>) {
     return `${sign}${value.toFixed(2)} points`;
   }
 
-  function updateAssumptionRow(index: number, value: string) {
-    const row = document.querySelector<HTMLElement>(
-      `[data-list-name="run-parameters"] .assumption-row[data-index="${index}"] [data-assumption-value]`,
-    );
-    if (row) row.textContent = value;
+  function setFieldError(controlId: string, message: string | null) {
+    const errorEl = document.getElementById(`${controlId}-error`);
+    const control = document.getElementById(controlId);
+    if (errorEl) {
+      errorEl.hidden = !message;
+      const text = errorEl.querySelector<HTMLElement>('[data-field-error-text]');
+      if (text) text.textContent = message ?? '';
+    }
+    if (control) {
+      if (message) control.setAttribute('aria-invalid', 'true');
+      else control.removeAttribute('aria-invalid');
+    }
   }
 
-  function hasMeaningfulInput(s: DriftState): boolean {
-    return s.baseline.n > 0 && s.current.n > 0;
+  /* ---- findings, coverage, rollback ----------------------------------- */
+
+  function renderFindingCard(f: DriftFinding): string {
+    const primaryPath = f.fields[0]?.path ?? f.id;
+    const fieldsHtml = f.fields
+      .map(
+        (field) => `
+      <div class="finding-field">
+        <code class="finding-path">${esc(field.path)}</code>
+        <span class="finding-before">${esc(field.before)}</span>
+        <span class="finding-arrow">to</span>
+        <span class="finding-after">${esc(field.after)}</span>
+      </div>`,
+      )
+      .join('');
+    return `
+    <div class="finding" data-risk="${esc(f.risk)}" data-direction="${esc(f.direction)}">
+      <div class="finding-head">
+        <span class="finding-risk">${esc(f.risk)}</span>
+        <span class="finding-category">${esc(f.category)}</span>
+        <span class="finding-direction">${esc(f.direction)}</span>
+        <label class="finding-intentional">
+          <input type="checkbox" data-intentional-toggle data-path="${esc(primaryPath)}" ${f.intentional ? 'checked' : ''} />
+          Intentional
+        </label>
+      </div>
+      <p class="finding-headline">${esc(f.headline)}</p>
+      <p class="finding-effect">${esc(f.likelyEffect)}</p>
+      <div class="finding-fields">${fieldsHtml}</div>
+      ${f.intentional ? '' : '<p class="finding-unexplained">Unexplained: no changelog entry covers this change.</p>'}
+    </div>`;
   }
 
-  function renderIntervalBar(diff: number, lower: number, upper: number) {
+  function renderFindings(analysis: ComparisonAnalysis) {
+    const container = document.querySelector<HTMLElement>('[data-findings]');
+    const headlineWrap = document.getElementById('headline-callout');
+    const headlineContainer = document.querySelector<HTMLElement>('[data-headline-findings]');
+    if (container) {
+      container.innerHTML = analysis.findings.length
+        ? analysis.findings.map(renderFindingCard).join('')
+        : '<p class="clean-note">No differences detected between the two snapshots.</p>';
+    }
+    if (headlineWrap && headlineContainer) {
+      headlineWrap.hidden = analysis.headlineFindings.length === 0;
+      headlineContainer.innerHTML = analysis.headlineFindings.map(renderFindingCard).join('');
+    }
+    setPanelStatus('findings-panel', 'ready');
+  }
+
+  function renderCoverage(analysis: ComparisonAnalysis) {
+    const el = document.querySelector<HTMLElement>('[data-coverage]');
+    if (!el) return;
+    el.innerHTML = analysis.missingCoverage.length
+      ? analysis.missingCoverage
+          .map((m) => `<li><code class="finding-path">${esc(m.path)}</code>: ${esc(m.description)}</li>`)
+          .join('')
+      : '<li class="clean-note">Every changed surface is declared as covered by the current snapshot.</li>';
+    setPanelStatus('coverage-panel', 'ready');
+  }
+
+  function renderRollback(analysis: ComparisonAnalysis) {
+    const el = document.querySelector<HTMLElement>('[data-rollback]');
+    if (!el) return;
+    el.innerHTML = analysis.rollback.length
+      ? analysis.rollback.map((r) => `<li>${esc(r.instruction)}</li>`).join('')
+      : '<li class="clean-note">No configuration change requires a rollback step.</li>';
+    setPanelStatus('rollback-panel', 'ready');
+  }
+
+  /* ---- significance panel, reads analysis.significance ---------------- */
+
+  function renderIntervalBar(lower: number, upper: number) {
     const fill = document.querySelector<HTMLElement>('[data-interval-fill]');
     const zero = document.querySelector<HTMLElement>('[data-interval-zero]');
     if (!fill || !zero) return;
-
-    // Domain is symmetric around zero and padded beyond whichever bound
-    // is furthest out, so the bar always has room to show the zero
-    // marker clearly rather than pinning it to an edge.
     const furthest = Math.max(Math.abs(lower), Math.abs(upper), 0.02);
     const domain = furthest * 1.3;
     const toPct = (value: number) => ((value + domain) / (2 * domain)) * 100;
-
     const leftPct = toPct(lower);
     const rightPct = toPct(upper);
     fill.style.left = `${leftPct}%`;
     fill.style.width = `${Math.max(0.5, rightPct - leftPct)}%`;
     zero.style.left = `${toPct(0)}%`;
-
     setText('scale-min', signedPts(-domain));
     setText('scale-max', signedPts(domain));
   }
 
-  function recompute() {
-    state = readState();
+  function renderSignificance(analysis: ComparisonAnalysis, settings: ReturnType<typeof readSignificanceSettings>) {
+    const s = analysis.significance;
 
-    const show = hasMeaningfulInput(state);
-    app!.hidden = !show;
-    emptyStateEl!.hidden = show;
-    if (!show) return;
-
-    const analysis = analyzeDrift(state);
-
-    // Verdict.
     const verdictLabelEl = document.querySelector<HTMLElement>('[data-field="verdict-label"]');
     if (verdictLabelEl) {
-      verdictLabelEl.textContent = VERDICT_LABELS[analysis.verdict];
-      verdictLabelEl.dataset.verdict = analysis.verdict;
+      verdictLabelEl.textContent = VERDICT_LABELS[s.verdict];
+      verdictLabelEl.dataset.verdict = s.verdict;
     }
-    setText('verdict-reason', analysis.verdictReason);
+    setText('verdict-reason', s.verdictReason);
     setPanelStatus('verdict-panel', 'ready');
 
-    // Confidence interval on the difference.
-    setText(
-      'diff-line',
-      `${signedPts(analysis.differenceInterval.diff)} (current minus baseline)`,
-    );
-    renderIntervalBar(
-      analysis.differenceInterval.diff,
-      analysis.differenceInterval.lower,
-      analysis.differenceInterval.upper,
-    );
-    const crosses = analysis.differenceInterval.lower <= 0 && analysis.differenceInterval.upper >= 0;
+    setText('diff-line', `${signedPts(s.differenceInterval.diff)} (current minus baseline)`);
+    renderIntervalBar(s.differenceInterval.lower, s.differenceInterval.upper);
+    const crosses = s.differenceInterval.lower <= 0 && s.differenceInterval.upper >= 0;
     setText(
       'interval-note',
-      `${(analysis.adjustedConfidence * 100).toFixed(2)} percent interval: ${signedPts(analysis.differenceInterval.lower)} to ${signedPts(analysis.differenceInterval.upper)}. ${
+      `${(s.adjustedConfidence * 100).toFixed(2)} percent interval: ${signedPts(s.differenceInterval.lower)} to ${signedPts(s.differenceInterval.upper)}. ${
         crosses
           ? 'This interval includes zero, so a true difference of exactly zero cannot be ruled out.'
           : 'This interval excludes zero.'
@@ -858,122 +1087,141 @@ function runParameterItems(state: ReturnType<typeof emptyState>) {
     );
     setPanelStatus('interval-panel', 'ready');
 
-    // Rates.
-    setText('baseline-rate', pct(analysis.baselineRate));
-    setText(
-      'baseline-interval',
-      `${pct(analysis.baselineInterval.lower)} to ${pct(analysis.baselineInterval.upper)}`,
-    );
-    setText('current-rate', pct(analysis.currentRate));
-    setText(
-      'current-interval',
-      `${pct(analysis.currentInterval.lower)} to ${pct(analysis.currentInterval.upper)}`,
-    );
+    setText('baseline-rate', pct(s.baselineRate));
+    setText('baseline-interval', `${pct(s.baselineInterval.lower)} to ${pct(s.baselineInterval.upper)}`);
+    setText('current-rate', pct(s.currentRate));
+    setText('current-interval', `${pct(s.currentInterval.lower)} to ${pct(s.currentInterval.upper)}`);
     setPanelStatus('rates-panel', 'ready');
 
-    // Significance tests.
-    setText('z-row-label', `Two proportion z test${analysis.primary.primaryTest === 'z' ? ' (primary)' : ''}`);
-    setText('z-statistic', `z = ${analysis.zTest.z.toFixed(4)}`);
-    setText('z-p', analysis.zTest.pValue.toFixed(4));
-    setText(
-      'fisher-row-label',
-      `Fisher exact test${analysis.primary.primaryTest === 'fisher' ? ' (primary)' : ''}`,
-    );
-    if (analysis.fisher.computed) {
+    setText('z-row-label', `Two proportion z test${s.primary.primaryTest === 'z' ? ' (primary)' : ''}`);
+    setText('z-statistic', `z = ${s.zTest.z.toFixed(4)}`);
+    setText('z-p', s.zTest.pValue.toFixed(4));
+    setText('fisher-row-label', `Fisher exact test${s.primary.primaryTest === 'fisher' ? ' (primary)' : ''}`);
+    if (s.fisher.computed) {
       setText('fisher-statistic', 'exact, hypergeometric');
-      setText('fisher-p', analysis.fisher.pValue.toFixed(4));
+      setText('fisher-p', s.fisher.pValue.toFixed(4));
     } else {
       setText('fisher-statistic', 'skipped');
-      setText('fisher-p', analysis.fisher.note);
+      setText('fisher-p', s.fisher.note);
     }
-    setText('which-test-reason', analysis.primary.reason);
+    setText('which-test-reason', s.primary.reason);
     setText(
       'bonferroni-line',
-      `Bonferroni corrected p value for the primary test: ${analysis.adjustedPValue.toFixed(4)} (raw ${analysis.primaryPValue.toFixed(4)}, ${state.metricsMonitored} metric${state.metricsMonitored === 1 ? '' : 's'} monitored).`,
+      `Bonferroni corrected p value for the primary test: ${s.adjustedPValue.toFixed(4)} (raw ${s.primaryPValue.toFixed(4)}, ${settings.metricsMonitored} metric${settings.metricsMonitored === 1 ? '' : 's'} monitored).`,
     );
     setPanelStatus('tests-panel', 'ready');
 
-    // Power.
-    setText(
-      'mde-line',
-      `Minimum detectable effect at these sample sizes: ${(analysis.minimumDetectableEffect * 100).toFixed(2)} points`,
-    );
+    setText('mde-line', `Minimum detectable effect at these sample sizes: ${(s.minimumDetectableEffect * 100).toFixed(2)} points`);
     setPanelStatus('power-panel', 'ready');
 
-    // Warnings.
     const warningsBlock = document.getElementById('monitor-warnings');
     const warningsList = document.querySelector<HTMLElement>('[data-field="warnings-list"]');
     if (warningsBlock && warningsList) {
-      warningsBlock.hidden = analysis.warnings.length === 0;
-      warningsList.innerHTML = analysis.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('');
+      warningsBlock.hidden = s.warnings.length === 0;
+      warningsList.innerHTML = s.warnings.map((w) => `<li>${esc(w)}</li>`).join('');
     }
 
-    // Run parameter assumption rows, order matches runParameterItems().
-    updateAssumptionRow(0, `${state.alpha}`);
-    updateAssumptionRow(1, `${((1 - state.alpha) * 100).toFixed(0)} percent`);
-    updateAssumptionRow(2, `${state.metricsMonitored}`);
-    updateAssumptionRow(3, `${analysis.adjustedAlpha.toFixed(4)}`);
-    updateAssumptionRow(4, `${(state.targetPower * 100).toFixed(0)} percent`);
-    updateAssumptionRow(5, `${(state.minMeaningfulEffect * 100).toFixed(2)} points`);
-
-    applyErrors(validate(state));
+    updateAssumptionRow(0, `${settings.alpha}`);
+    updateAssumptionRow(1, `${((1 - settings.alpha) * 100).toFixed(0)} percent`);
+    updateAssumptionRow(2, `${settings.metricsMonitored}`);
+    updateAssumptionRow(3, `${s.adjustedAlpha.toFixed(4)}`);
+    updateAssumptionRow(4, `${(settings.targetPower * 100).toFixed(0)} percent`);
+    updateAssumptionRow(5, `${(settings.minMeaningfulEffect * 100).toFixed(2)} points`);
   }
 
-  function escapeHtml(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  function updateAssumptionRow(index: number, value: string) {
+    const row = document.querySelector<HTMLElement>(
+      `[data-list-name="run-parameters"] .assumption-row[data-index="${index}"] [data-assumption-value]`,
+    );
+    if (row) row.textContent = value;
   }
 
-  function applyErrors(issues: ReturnType<typeof validate>) {
-    document.querySelectorAll<HTMLElement>('[data-field-error]').forEach((el) => {
-      el.hidden = true;
-      const text = el.querySelector<HTMLElement>('[data-field-error-text]');
-      if (text) text.textContent = '';
-      const controlId = el.id.replace(/-error$/, '');
-      document.getElementById(controlId)?.removeAttribute('aria-invalid');
-    });
+  /* ---- the recompute cycle -------------------------------------------- */
 
+  function currentComparison(): { comparison: DriftComparison | null; baselineError: string | null; currentError: string | null } {
+    const baselineParsed = parseSnapshotJSON(baselineJsonField.value);
+    const currentParsed = parseSnapshotJSON(currentJsonField.value);
+    if (!baselineParsed.ok || !currentParsed.ok) {
+      return {
+        comparison: null,
+        baselineError: baselineParsed.ok ? null : baselineParsed.error,
+        currentError: currentParsed.ok ? null : currentParsed.error,
+      };
+    }
+    return {
+      comparison: { baseline: baselineParsed.snapshot, current: currentParsed.snapshot, ...readSignificanceSettings() },
+      baselineError: null,
+      currentError: null,
+    };
+  }
+
+  function recompute() {
+    if (interacted) {
+      app!.hidden = false;
+      emptyStateEl!.hidden = true;
+    }
+
+    const { comparison, baselineError, currentError } = currentComparison();
+    setFieldError('field-baseline-json', baselineError);
+    setFieldError('field-current-json', currentError);
+
+    if (!comparison) {
+      resultsEl.hidden = true;
+      return;
+    }
+
+    const issues = validateComparison(comparison).filter(
+      (i) => !i.field.startsWith('baseline.') && !i.field.startsWith('current.'),
+    );
     const fieldToControlId: Record<string, string> = {
-      'baseline.n': 'field-baseline-n',
-      'baseline.successes': 'field-baseline-successes',
-      'current.n': 'field-current-n',
-      'current.successes': 'field-current-successes',
-      metricsMonitored: 'field-metrics-monitored',
       alpha: 'field-alpha',
+      metricsMonitored: 'field-metrics-monitored',
       targetPower: 'field-target-power',
       minMeaningfulEffect: 'field-min-meaningful-effect',
       evalSetChanged: 'field-eval-set-changed',
     };
-
+    for (const controlId of Object.values(fieldToControlId)) setFieldError(controlId, null);
     for (const issue of issues) {
       const controlId = fieldToControlId[issue.field];
-      if (!controlId) continue;
-      const errorEl = document.getElementById(`${controlId}-error`);
-      if (errorEl) {
-        errorEl.hidden = false;
-        const text = errorEl.querySelector<HTMLElement>('[data-field-error-text]');
-        if (text) text.textContent = issue.message;
-      }
-      if (issue.severity === 'error') {
-        document.getElementById(controlId)?.setAttribute('aria-invalid', 'true');
-      }
+      if (controlId) setFieldError(controlId, issue.message);
     }
+
+    resultsEl.hidden = false;
+    const analysis = analyzeComparison(comparison);
+    renderFindings(analysis);
+    renderCoverage(analysis);
+    renderRollback(analysis);
+    renderSignificance(analysis, readSignificanceSettings());
   }
 
-  /* ---- wiring -------------------------------------------------------- */
+  /* ---- wiring ----------------------------------------------------------- */
 
   [
-    metricNameField, baselineNField, baselineSuccessesField, currentNField,
-    currentSuccessesField, alphaField, metricsMonitoredField, targetPowerField,
-    minMeaningfulEffectField, evalSetChangedField,
+    baselineJsonField, currentJsonField, alphaField, metricsMonitoredField,
+    targetPowerField, minMeaningfulEffectField, evalSetChangedField,
   ].forEach((el) => {
-    el.addEventListener('input', recompute);
-    el.addEventListener('change', recompute);
+    el.addEventListener('input', () => {
+      interacted = true;
+      recompute();
+    });
+    el.addEventListener('change', () => {
+      interacted = true;
+      recompute();
+    });
   });
 
   function loadSample(id: string) {
-    writeState(sampleState(id));
+    interacted = true;
+    const sample = getComparisonSample(id) ?? COMPARISON_SAMPLES[0];
+    baselineJsonField.value = serializeSnapshot(sample.comparison.baseline);
+    currentJsonField.value = serializeSnapshot(sample.comparison.current);
+    alphaField.value = String(sample.comparison.alpha);
+    metricsMonitoredField.value = String(sample.comparison.metricsMonitored);
+    targetPowerField.value = String(sample.comparison.targetPower);
+    minMeaningfulEffectField.value = String(sample.comparison.minMeaningfulEffect * 100);
+    evalSetChangedField.value = sample.comparison.evalSetChanged;
     const teaches = document.querySelector<HTMLElement>('[data-teaches]');
-    if (teaches) teaches.textContent = getSample(id)?.teaches ?? '';
+    if (teaches) teaches.textContent = sample.teaches;
     recompute();
   }
 
@@ -982,27 +1230,62 @@ function runParameterItems(state: ReturnType<typeof emptyState>) {
   });
 
   emptyStateEl.addEventListener('workbench:load-sample', () => {
-    loadSample(SAMPLES[0].id);
+    loadSample(COMPARISON_SAMPLES[0].id);
   });
 
   document.querySelector('[data-reset]')?.addEventListener('click', () => {
-    writeState(resetState());
+    interacted = true;
+    baselineJsonField.value = serializeSnapshot(emptySnapshot('Baseline'));
+    currentJsonField.value = serializeSnapshot(emptySnapshot('Current'));
+    alphaField.value = '0.05';
+    metricsMonitoredField.value = '1';
+    targetPowerField.value = '0.8';
+    minMeaningfulEffectField.value = '5';
+    evalSetChangedField.value = 'no';
     const teaches = document.querySelector<HTMLElement>('[data-teaches]');
     if (teaches) teaches.textContent = '';
+    recompute();
+  });
+
+  // Toggling a finding's checkbox edits the CURRENT snapshot's own
+  // changelog, live, which is what the tool module contract calls
+  // "a flag in the snapshot": the mark travels with the export.
+  document.addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    const checkbox = target.closest<HTMLInputElement>('[data-intentional-toggle]');
+    if (!checkbox) return;
+    const path = checkbox.dataset.path;
+    if (!path) return;
+    const parsed = parseSnapshotJSON(currentJsonField.value);
+    if (!parsed.ok) return;
+    const snapshot: SystemSnapshot = parsed.snapshot;
+    const existingIndex = snapshot.changelog.findIndex((entry) => entry.path === path);
+    if (existingIndex >= 0) {
+      snapshot.changelog.splice(existingIndex, 1);
+    } else {
+      snapshot.changelog.push({ path, note: 'Marked intentional by reviewer.' });
+    }
+    currentJsonField.value = serializeSnapshot(snapshot);
     recompute();
   });
 
   app.addEventListener('workbench:export', ((event: CustomEvent) => {
     const { format, resolve } = event.detail ?? {};
     if (typeof resolve !== 'function') return;
+    const { comparison } = currentComparison();
+    if (!comparison) {
+      resolve(null);
+      return;
+    }
     try {
       const fmt = format === 'markdown' ? 'markdown' : 'json';
-      resolve(serialize(readState(), fmt));
+      resolve(serializeComparison(comparison, fmt));
     } catch {
       resolve(null);
     }
   }) as EventListener);
 
-  // Initial paint matches the server rendered empty state.
+  // Initial paint matches the server rendered empty template: both
+  // snapshots have n=0 and fail validation, so results stay hidden.
   recompute();
 </script>

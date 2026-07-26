@@ -14,6 +14,26 @@
  * a step is automatable in the first place. See classifyStep below,
  * which never reads a step's frequency at all.
  *
+ * INPUT MODEL, per the PRD's "Describe an outcome; add inputs, actors,
+ * constraints, and approval points": a process states its outcome,
+ * inputs, and constraints as free text, once, at the process level.
+ * Actors and approval points are NOT a second free text list a user has
+ * to keep in sync by hand. Actors are derived from the owner already
+ * stated on every step (deriveActors), and approval points are derived
+ * from classification and handoff detection (deriveApprovalPoints), so
+ * neither can drift from the steps that actually define them.
+ *
+ * DEPENDENCY MODEL: a step's dependsOn is an array of step ids, so this
+ * is a real DAG, not a linked list. A step may wait on more than one
+ * other step, which real workflows need, a payment run waiting on both
+ * an approval and a separate verification step is one example below.
+ *
+ * AGENT DESIGNER: this file never imports src/lib/tools/agent-designer.ts,
+ * and must never be imported by it either. See "Agent Designer handoff"
+ * below for the explicit, documented export shape that stands in for
+ * any direct coupling, per the PRD: "through an explicit export, not
+ * hidden coupling."
+ *
  * Pure functions only. No DOM, no globals, no I/O, no randomness.
  */
 
@@ -111,23 +131,29 @@ export const DEFAULT_PROPERTIES: StepProperties = {
 export interface Step {
   id: string;
   name: string;
-  /** Who or what is accountable for this step today. A person, a team, or a system. */
+  /** Who or what is accountable for this step today. A person, a team, or a system. PRD: every step needs an owner. */
   owner: string;
   /** How anyone confirms the step actually finished. PRD: every step needs completion evidence. */
   completionEvidence: string;
   /**
-   * The id of the step this one waits on, or null when it starts a
-   * chain. A step other than the process start with no dependency is an
-   * orphan; a chain that loops back on itself is a cycle. See
-   * findGraphIssues.
+   * Ids of every step this one waits on. Empty means it starts a
+   * chain, which is normal for the first step and abnormal, an orphan,
+   * for any step nothing else connects to either. A step may depend on
+   * more than one other step: that is what makes this a DAG rather
+   * than a linked list. See findGraphIssues for cycle and orphan
+   * detection over this shape.
    */
-  dependsOnId: string | null;
+  dependsOn: string[];
   properties: StepProperties;
 }
 
 export interface ProcessState {
-  /** One line describing the outcome the whole process produces. */
-  processName: string;
+  /** One line describing the outcome the whole process produces. PRD: "Describe an outcome". */
+  outcome: string;
+  /** What the process starts with. Free text, process level, not per step. */
+  inputs: string;
+  /** Limits or rules that bound the whole process, not any single step. */
+  constraints: string;
   steps: Step[];
   /** Which sample is loaded, or 'custom' once the user edits it. */
   scenarioId: string;
@@ -290,10 +316,10 @@ export function classifyStep(properties: StepProperties): Classification {
 /* ------------------------------------------------------------------ *
  * Graph issues: cycles, orphans, broken dependencies
  *
- * Each step points at most at one other step, the one it depends on, so
- * the dependency graph is a forest of simple chains rather than an
- * arbitrary graph. That keeps cycle and orphan detection small and
- * exact instead of approximate.
+ * A step's dependsOn lists every step that must finish first, so the
+ * process as a whole is a DAG, and it is only legal to start where no
+ * cycle exists. Cycle and orphan detection here are exact, a real
+ * depth first search with a recursion stack, not an approximation.
  * ------------------------------------------------------------------ */
 
 export type GraphIssueKind = 'cycle' | 'orphan-step' | 'broken-dependency';
@@ -311,39 +337,41 @@ export const GRAPH_ISSUE_LABELS: Record<GraphIssueKind, string> = {
 };
 
 /**
- * Follow each step's dependsOnId chain. A step reached twice on the
- * same walk, before that walk resolves, is a cycle; everything already
- * resolved on an earlier walk is left alone rather than re-walked,
- * which is what keeps this linear in the number of steps.
+ * Depth first search with an explicit recursion stack, the standard
+ * way to find cycles in a directed graph. A step marked "visiting" that
+ * is reached again while still on the current path is a back edge, and
+ * the slice of the path from that step onward is the actual cycle, the
+ * real loop of step ids, not just the fact that one exists. A step
+ * already fully resolved on an earlier walk is left alone, which is
+ * what keeps this linear rather than exponential.
  */
 export function detectCycles(steps: Step[]): string[][] {
   const byId = new Map(steps.map((s) => [s.id, s]));
-  const status = new Map<string, 'visiting' | 'resolved'>();
+  const state = new Map<string, 'visiting' | 'done'>();
   const cycles: string[][] = [];
 
-  for (const start of steps) {
-    if (status.has(start.id)) continue;
-    const path: string[] = [];
-    let current: string | null = start.id;
-
-    while (current !== null) {
-      const mark: 'visiting' | 'resolved' | undefined = status.get(current);
-      if (mark === 'resolved') break;
-      if (mark === 'visiting') {
-        const cycleStart = path.indexOf(current);
-        cycles.push(path.slice(cycleStart));
-        break;
-      }
-      status.set(current, 'visiting');
-      path.push(current);
-      const step = byId.get(current);
-      const next: string | null = step ? step.dependsOnId : null;
-      // A dependsOnId naming a step that no longer exists ends the walk
-      // here. It is reported separately as a broken dependency, not a
-      // cycle, so the two failure modes stay distinguishable.
-      current = next !== null && byId.has(next) ? next : null;
+  function visit(id: string, path: string[]): void {
+    const mark = state.get(id);
+    if (mark === 'done') return;
+    if (mark === 'visiting') {
+      const start = path.indexOf(id);
+      cycles.push(path.slice(start));
+      return;
     }
-    for (const id of path) status.set(id, 'resolved');
+    state.set(id, 'visiting');
+    const step = byId.get(id);
+    // A dependsOn id naming a step that no longer exists is reported
+    // separately as a broken dependency, so it is skipped here rather
+    // than treated as a dead end that could hide a real cycle.
+    const deps = step ? step.dependsOn.filter((d) => byId.has(d)) : [];
+    for (const dep of deps) {
+      visit(dep, [...path, id]);
+    }
+    state.set(id, 'done');
+  }
+
+  for (const step of steps) {
+    if (!state.has(step.id)) visit(step.id, []);
   }
 
   return cycles;
@@ -357,11 +385,9 @@ export function detectCycles(steps: Step[]): string[][] {
  */
 export function detectOrphans(steps: Step[]): string[] {
   if (steps.length <= 1) return [];
-  const hasDependent = new Set(
-    steps.map((s) => s.dependsOnId).filter((id): id is string => id !== null),
-  );
+  const hasDependent = new Set(steps.flatMap((s) => s.dependsOn));
   return steps
-    .filter((s) => s.dependsOnId === null && !hasDependent.has(s.id))
+    .filter((s) => s.dependsOn.length === 0 && !hasDependent.has(s.id))
     .map((s) => s.id);
 }
 
@@ -371,11 +397,14 @@ export function findGraphIssues(steps: Step[]): GraphIssue[] {
   const nameOf = (id: string) => byId.get(id)?.name || id;
 
   for (const step of steps) {
-    if (step.dependsOnId !== null && !byId.has(step.dependsOnId)) {
+    const broken = step.dependsOn.filter((d) => !byId.has(d));
+    if (broken.length > 0) {
+      const phrase =
+        broken.length === 1 ? 'a step that no longer exists' : `${broken.length} steps that no longer exist`;
       issues.push({
         kind: 'broken-dependency',
         stepIds: [step.id],
-        message: `"${nameOf(step.id)}" depends on a step that no longer exists. Point it at a real step or clear the dependency.`,
+        message: `"${nameOf(step.id)}" depends on ${phrase}. Point it at a real step or clear the dependency.`,
       });
     }
   }
@@ -441,25 +470,26 @@ export function findHandoffs(
   const handoffs: Handoff[] = [];
 
   for (const step of steps) {
-    if (step.dependsOnId === null) continue;
-    const upstream = byId.get(step.dependsOnId);
-    if (!upstream) continue; // reported separately, as a broken dependency
+    for (const dependsOnId of step.dependsOn) {
+      const upstream = byId.get(dependsOnId);
+      if (!upstream) continue; // reported separately, as a broken dependency
 
-    const fromLevel = classifications.get(upstream.id)?.level;
-    const toLevel = classifications.get(step.id)?.level;
-    if (!fromLevel || !toLevel) continue;
+      const fromLevel = classifications.get(upstream.id)?.level;
+      const toLevel = classifications.get(step.id)?.level;
+      if (!fromLevel || !toLevel) continue;
 
-    const fromPerformer = performerFor(fromLevel);
-    const toPerformer = performerFor(toLevel);
-    if (fromPerformer === toPerformer) continue;
+      const fromPerformer = performerFor(fromLevel);
+      const toPerformer = performerFor(toLevel);
+      if (fromPerformer === toPerformer) continue;
 
-    handoffs.push({
-      fromStepId: upstream.id,
-      toStepId: step.id,
-      fromPerformer,
-      toPerformer,
-      message: `Work passes from "${upstream.name || upstream.id}" (${PERFORMER_LABELS[fromPerformer]}) to "${step.name || step.id}" (${PERFORMER_LABELS[toPerformer]}). This crossing is where the process is most likely to break.`,
-    });
+      handoffs.push({
+        fromStepId: upstream.id,
+        toStepId: step.id,
+        fromPerformer,
+        toPerformer,
+        message: `Work passes from "${upstream.name || upstream.id}" (${PERFORMER_LABELS[fromPerformer]}) to "${step.name || step.id}" (${PERFORMER_LABELS[toPerformer]}). This crossing is where the process is most likely to break.`,
+      });
+    }
   }
 
   return handoffs;
@@ -478,9 +508,7 @@ export interface SilentFailureRisk {
  * as silent as one between two automated steps.
  */
 export function findSilentFailureRisks(steps: Step[]): SilentFailureRisk[] {
-  const dependedOn = new Set(
-    steps.map((s) => s.dependsOnId).filter((id): id is string => id !== null),
-  );
+  const dependedOn = new Set(steps.flatMap((s) => s.dependsOn));
   return steps
     .filter((s) => dependedOn.has(s.id) && !s.properties.outputVerifiable)
     .map((s) => ({
@@ -541,6 +569,91 @@ export function computeImplementationOrder(
 }
 
 /* ------------------------------------------------------------------ *
+ * Actors and approval points
+ *
+ * PRD input model: "add inputs, actors, constraints, and approval
+ * points." Outcome, inputs, and constraints are free text a user states
+ * once at the process level, above in ProcessState. Actors and approval
+ * points are NOT a second list a user has to maintain by hand: actors
+ * are the distinct owners already stated on every step, and approval
+ * points are the steps classification and handoff detection already
+ * identify as needing a person. Deriving both means neither can drift
+ * out of sync with the steps that define them.
+ * ------------------------------------------------------------------ */
+
+/** Distinct owners across every step, in first appearance order. */
+export function deriveActors(steps: Step[]): string[] {
+  const seen = new Set<string>();
+  const actors: string[] = [];
+  for (const step of steps) {
+    const owner = step.owner.trim();
+    if (owner && !seen.has(owner)) {
+      seen.add(owner);
+      actors.push(owner);
+    }
+  }
+  return actors;
+}
+
+export interface ApprovalPoint {
+  stepId: string;
+  name: string;
+  reason: string;
+}
+
+/**
+ * A step is an approval point when a person must decide something
+ * before the process can rely on it: it is the human side of a handoff,
+ * it is a checkpoint step that needs a sign off regardless of where its
+ * input came from, or it is a fully human step reached by no handoff at
+ * all, for example the first step in the process. Returned in process
+ * order rather than discovery order.
+ */
+export function deriveApprovalPoints(
+  steps: Step[],
+  classifications: Map<string, Classification>,
+  handoffs: Handoff[],
+): ApprovalPoint[] {
+  const byId = new Map(steps.map((s) => [s.id, s]));
+  const points = new Map<string, ApprovalPoint>();
+
+  for (const h of handoffs) {
+    if (h.toPerformer !== 'human') continue;
+    const step = byId.get(h.toStepId);
+    if (!step || points.has(step.id)) continue;
+    points.set(step.id, {
+      stepId: step.id,
+      name: step.name || step.id,
+      reason: 'Work reaches this step from a system, and a person decides what happens next.',
+    });
+  }
+
+  for (const step of steps) {
+    if (points.has(step.id)) continue;
+    if (classifications.get(step.id)?.level === 'automate-with-checkpoint') {
+      points.set(step.id, {
+        stepId: step.id,
+        name: step.name || step.id,
+        reason: 'This step is automated, but a person must sign off before its result is final.',
+      });
+    }
+  }
+
+  for (const step of steps) {
+    if (points.has(step.id)) continue;
+    if (classifications.get(step.id)?.level === 'keep-human') {
+      points.set(step.id, {
+        stepId: step.id,
+        name: step.name || step.id,
+        reason: 'This step is performed by a person end to end.',
+      });
+    }
+  }
+
+  return steps.filter((s) => points.has(s.id)).map((s) => points.get(s.id) as ApprovalPoint);
+}
+
+/* ------------------------------------------------------------------ *
  * Whole process analysis
  * ------------------------------------------------------------------ */
 
@@ -551,6 +664,8 @@ export interface ProcessAnalysis {
   handoffs: Handoff[];
   silentFailureRisks: SilentFailureRisk[];
   implementationOrder: PriorityEntry[];
+  actors: string[];
+  approvalPoints: ApprovalPoint[];
 }
 
 export function analyzeProcess(state: ProcessState): ProcessAnalysis {
@@ -568,14 +683,227 @@ export function analyzeProcess(state: ProcessState): ProcessAnalysis {
   );
   for (const c of classifications.values()) levelCounts[c.level] += 1;
 
+  const handoffs = findHandoffs(state.steps, classifications);
+
   return {
     classifications,
     levelCounts,
     graphIssues: findGraphIssues(state.steps),
-    handoffs: findHandoffs(state.steps, classifications),
+    handoffs,
     silentFailureRisks: findSilentFailureRisks(state.steps),
     implementationOrder: computeImplementationOrder(state.steps, classifications),
+    actors: deriveActors(state.steps),
+    approvalPoints: deriveApprovalPoints(state.steps, classifications, handoffs),
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * Agent Designer handoff, an explicit export only
+ *
+ * PRD acceptance criterion: "User can promote the workflow into Agent
+ * Designer through an explicit export, not hidden coupling." This file
+ * never imports src/lib/tools/agent-designer.ts, and must never be
+ * imported by it either. The shape below IS the whole contract between
+ * the two tools: a user reads or downloads this JSON here and carries
+ * it into Agent Designer by hand. There is no live call, no shared
+ * module, and no runtime dependency in either direction, which is what
+ * "explicit export, not hidden coupling" requires.
+ * ------------------------------------------------------------------ */
+
+export const AGENT_DESIGNER_SCHEMA = 'nixfred.workflow-decomposer.agent-designer-handoff.v1';
+
+export interface AgentDesignerCandidate {
+  /** The step this candidate came from, so a person can trace it back. */
+  sourceStepId: string;
+  name: string;
+  /** Always automate-now or automate-with-checkpoint. Nothing else becomes a candidate. */
+  classification: ClassificationLevel;
+  /** Whether a person must sign off before this candidate's result is final. */
+  requiresHumanCheckpoint: boolean;
+  /** Carried over from the step. What proves the work actually happened. */
+  completionEvidence: string;
+  /** Who owns this today, a starting point for who signs off on the built agent. */
+  currentOwner: string;
+  /** Plain language limits, derived from the step's own properties. */
+  limits: string[];
+  /** Step ids this candidate must wait on before it can run. */
+  dependsOnStepIds: string[];
+}
+
+export interface AgentDesignerEscalationPath {
+  fromStepId: string;
+  toStepId: string;
+  /** Always "human". An escalation path is, by definition, work leaving the system for a person. */
+  toPerformer: Performer;
+  reason: string;
+}
+
+export interface AgentDesignerPayload {
+  schema: typeof AGENT_DESIGNER_SCHEMA;
+  processOutcome: string;
+  generatedBy: string;
+  note: string;
+  candidates: AgentDesignerCandidate[];
+  escalationPaths: AgentDesignerEscalationPath[];
+}
+
+function deriveLimits(properties: StepProperties, requiresCheckpoint: boolean): string[] {
+  const limits: string[] = [];
+  if (requiresCheckpoint) {
+    limits.push('Requires a human check before the result is final.');
+  }
+  if (properties.legalFinancialRisk) {
+    limits.push('Carries legal or financial exposure. Scope its authority narrowly and log every action.');
+  }
+  if (!properties.reversible) {
+    limits.push('Cannot be undone once taken. Verify inputs before it commits.');
+  }
+  if (!properties.inputStructured) {
+    limits.push('Reads unstructured input. Treat its parsing as unreliable until proven otherwise.');
+  }
+  if (limits.length === 0) {
+    limits.push('No special limits beyond normal monitoring.');
+  }
+  return limits;
+}
+
+/**
+ * Build the explicit export payload for Agent Designer. Only steps
+ * classified automate now or automate with a checkpoint become
+ * candidates, since keep human and needs redesign steps are not being
+ * handed to an agent at all. Escalation paths are the handoffs that
+ * land on a person, which is exactly what an agent built from these
+ * candidates would need to hand off itself.
+ */
+export function buildAgentDesignerPayload(state: ProcessState): AgentDesignerPayload {
+  const analysis = analyzeProcess(state);
+
+  const candidates: AgentDesignerCandidate[] = state.steps.flatMap((step) => {
+    const classification = analysis.classifications.get(step.id);
+    if (
+      !classification ||
+      (classification.level !== 'automate-now' && classification.level !== 'automate-with-checkpoint')
+    ) {
+      return [];
+    }
+    const requiresHumanCheckpoint = classification.level === 'automate-with-checkpoint';
+    return [
+      {
+        sourceStepId: step.id,
+        name: step.name || step.id,
+        classification: classification.level,
+        requiresHumanCheckpoint,
+        completionEvidence: step.completionEvidence,
+        currentOwner: step.owner,
+        limits: deriveLimits(step.properties, requiresHumanCheckpoint),
+        dependsOnStepIds: step.dependsOn,
+      },
+    ];
+  });
+
+  const escalationPaths: AgentDesignerEscalationPath[] = analysis.handoffs
+    .filter((h) => h.toPerformer === 'human')
+    .map((h) => ({
+      fromStepId: h.fromStepId,
+      toStepId: h.toStepId,
+      toPerformer: h.toPerformer,
+      reason: h.message,
+    }));
+
+  return {
+    schema: AGENT_DESIGNER_SCHEMA,
+    processOutcome: state.outcome,
+    generatedBy: 'Nixfred AI Systems Workbench, Workflow Decomposer',
+    note: 'Explicit export for Agent Designer. This is a data handoff a person carries over by hand, not a live integration. Nothing in this file calls Agent Designer, and nothing in Agent Designer calls this file.',
+    candidates,
+    escalationPaths,
+  };
+}
+
+/**
+ * Validates a value against the AgentDesignerPayload shape without
+ * importing anything from Agent Designer. This function IS the
+ * documented contract; a shape error here means the payload changed
+ * without this validator changing with it, not that Agent Designer
+ * disagrees with something it never sees. Returns [] when valid.
+ */
+export function validateAgentDesignerPayload(value: unknown): string[] {
+  const errors: string[] = [];
+  if (typeof value !== 'object' || value === null) {
+    return ['payload is not an object'];
+  }
+  const payload = value as Record<string, unknown>;
+
+  if (payload.schema !== AGENT_DESIGNER_SCHEMA) {
+    errors.push(`schema must be "${AGENT_DESIGNER_SCHEMA}", got ${JSON.stringify(payload.schema)}`);
+  }
+  if (typeof payload.processOutcome !== 'string') errors.push('processOutcome must be a string');
+  if (typeof payload.generatedBy !== 'string') errors.push('generatedBy must be a string');
+  if (typeof payload.note !== 'string') errors.push('note must be a string');
+
+  if (!Array.isArray(payload.candidates)) {
+    errors.push('candidates must be an array');
+  } else {
+    payload.candidates.forEach((c, i) => {
+      if (typeof c !== 'object' || c === null) {
+        errors.push(`candidates[${i}] is not an object`);
+        return;
+      }
+      const candidate = c as Record<string, unknown>;
+      const requiredStrings: string[] = [
+        'sourceStepId',
+        'name',
+        'classification',
+        'completionEvidence',
+        'currentOwner',
+      ];
+      for (const field of requiredStrings) {
+        if (typeof candidate[field] !== 'string') {
+          errors.push(`candidates[${i}].${field} must be a string`);
+        }
+      }
+      if (typeof candidate.requiresHumanCheckpoint !== 'boolean') {
+        errors.push(`candidates[${i}].requiresHumanCheckpoint must be a boolean`);
+      }
+      if (!Array.isArray(candidate.limits) || !candidate.limits.every((l) => typeof l === 'string')) {
+        errors.push(`candidates[${i}].limits must be a string array`);
+      }
+      if (
+        !Array.isArray(candidate.dependsOnStepIds) ||
+        !candidate.dependsOnStepIds.every((d) => typeof d === 'string')
+      ) {
+        errors.push(`candidates[${i}].dependsOnStepIds must be a string array`);
+      }
+      if (
+        candidate.classification !== 'automate-now' &&
+        candidate.classification !== 'automate-with-checkpoint'
+      ) {
+        errors.push(
+          `candidates[${i}].classification must be automate-now or automate-with-checkpoint, got ${JSON.stringify(candidate.classification)}`,
+        );
+      }
+    });
+  }
+
+  if (!Array.isArray(payload.escalationPaths)) {
+    errors.push('escalationPaths must be an array');
+  } else {
+    payload.escalationPaths.forEach((p, i) => {
+      if (typeof p !== 'object' || p === null) {
+        errors.push(`escalationPaths[${i}] is not an object`);
+        return;
+      }
+      const path = p as Record<string, unknown>;
+      if (typeof path.fromStepId !== 'string') errors.push(`escalationPaths[${i}].fromStepId must be a string`);
+      if (typeof path.toStepId !== 'string') errors.push(`escalationPaths[${i}].toStepId must be a string`);
+      if (path.toPerformer !== 'human') {
+        errors.push(`escalationPaths[${i}].toPerformer must be "human", got ${JSON.stringify(path.toPerformer)}`);
+      }
+      if (typeof path.reason !== 'string') errors.push(`escalationPaths[${i}].reason must be a string`);
+    });
+  }
+
+  return errors;
 }
 
 /* ------------------------------------------------------------------ *
@@ -585,7 +913,9 @@ export function analyzeProcess(state: ProcessState): ProcessAnalysis {
  * different part of the engine: a step that cannot be classified until
  * it is redefined, the headline rule that volume never overrides an
  * irreversible unverifiable step, and a priority order where the
- * highest stakes step is not the first one worth building.
+ * highest stakes steps are not the first ones worth building. The
+ * invoice sample also carries a genuine DAG merge point, one step
+ * waiting on two others, to exercise the multi dependency model.
  * ------------------------------------------------------------------ */
 
 export interface Sample {
@@ -602,7 +932,11 @@ export const SAMPLES: Sample[] = [
     teaches:
       'A step nobody can verify needs redesign before it can be classified at all, and a human approval feeding straight into an automated payment is exactly the handoff that breaks.',
     state: {
-      processName: 'Customer refund request handling',
+      outcome: 'Customer refund request handling',
+      inputs:
+        'A support ticket containing the order number, the stated reason, and the requested amount.',
+      constraints:
+        'Refunds over 500 dollars require manager approval. All refunds must complete within 5 business days of the request.',
       scenarioId: 'refund-handling',
       steps: [
         {
@@ -610,7 +944,7 @@ export const SAMPLES: Sample[] = [
           name: 'Read the incoming request and pull out order, reason, and amount',
           owner: 'Support system, unassigned today',
           completionEvidence: 'None defined yet',
-          dependsOnId: null,
+          dependsOn: [],
           properties: {
             inputStructured: false,
             outputVerifiable: false,
@@ -626,7 +960,7 @@ export const SAMPLES: Sample[] = [
           name: 'Check the order against the refund policy',
           owner: 'Refund service',
           completionEvidence: 'Eligibility result recorded on the ticket',
-          dependsOnId: 'parse-ticket',
+          dependsOn: ['parse-ticket'],
           properties: {
             inputStructured: true,
             outputVerifiable: true,
@@ -642,7 +976,7 @@ export const SAMPLES: Sample[] = [
           name: 'Approve refunds over 500 dollars',
           owner: 'Support manager',
           completionEvidence: 'Approval decision logged with a name and a timestamp',
-          dependsOnId: 'check-eligibility',
+          dependsOn: ['check-eligibility'],
           properties: {
             inputStructured: true,
             outputVerifiable: true,
@@ -658,7 +992,7 @@ export const SAMPLES: Sample[] = [
           name: 'Send the refund through the payment processor',
           owner: 'Payments service',
           completionEvidence: 'Payment confirmation id stored on the ticket',
-          dependsOnId: 'approve-large-refund',
+          dependsOn: ['approve-large-refund'],
           properties: {
             inputStructured: true,
             outputVerifiable: true,
@@ -674,7 +1008,7 @@ export const SAMPLES: Sample[] = [
           name: 'Email the Customer a refund confirmation',
           owner: 'Notification service',
           completionEvidence: 'Delivery receipt from the email provider',
-          dependsOnId: 'issue-payment',
+          dependsOn: ['issue-payment'],
           properties: {
             inputStructured: true,
             outputVerifiable: true,
@@ -694,7 +1028,9 @@ export const SAMPLES: Sample[] = [
     teaches:
       'The headline rule. Deleting flagged files is the most frequent step in this process and still stays keep human, because it cannot be undone and its result cannot be checked.',
     state: {
-      processName: 'Automated disk cleanup',
+      outcome: 'Automated disk cleanup',
+      inputs: 'A list of file paths under the project root and their last modified dates.',
+      constraints: 'Never delete a file that is referenced by an active import.',
       scenarioId: 'file-cleanup',
       steps: [
         {
@@ -702,7 +1038,7 @@ export const SAMPLES: Sample[] = [
           name: 'Scan the project directory for candidate unused files',
           owner: 'Cleanup agent',
           completionEvidence: 'Candidate file list written to a report',
-          dependsOnId: null,
+          dependsOn: [],
           properties: {
             inputStructured: true,
             outputVerifiable: true,
@@ -718,7 +1054,7 @@ export const SAMPLES: Sample[] = [
           name: 'Delete the flagged files',
           owner: 'Cleanup agent, unsupervised today',
           completionEvidence: 'None. The files are simply gone',
-          dependsOnId: 'scan-files',
+          dependsOn: ['scan-files'],
           properties: {
             inputStructured: true,
             outputVerifiable: false,
@@ -736,9 +1072,12 @@ export const SAMPLES: Sample[] = [
     id: 'invoice-processing',
     name: 'Vendor invoice processing',
     teaches:
-      'Priority order is not a ranking of importance. Approving the largest invoices is the highest stakes step here and still ranks last to build, because it runs rarely and the risk penalty outweighs the payoff.',
+      'Priority order is not a ranking of importance. Approving the largest invoices, and verifying vendor bank details, are the two highest stakes steps here and both still rank last to build, because they run rarely and the risk penalty outweighs the payoff. The payment run also waits on both of them at once, a real DAG merge, not a chain.',
     state: {
-      processName: 'Vendor invoice processing',
+      outcome: 'Vendor invoice processing',
+      inputs: 'A scanned vendor invoice and the purchase order it should match.',
+      constraints:
+        'Invoices over 10000 dollars require finance manager approval before payment is scheduled.',
       scenarioId: 'invoice-processing',
       steps: [
         {
@@ -746,7 +1085,7 @@ export const SAMPLES: Sample[] = [
           name: 'Extract line items and totals from the scanned invoice',
           owner: 'Extraction service',
           completionEvidence: 'Extracted totals cross checked against the purchase order',
-          dependsOnId: null,
+          dependsOn: [],
           properties: {
             inputStructured: false,
             outputVerifiable: true,
@@ -762,7 +1101,7 @@ export const SAMPLES: Sample[] = [
           name: 'Match the invoice to its purchase order',
           owner: 'Invoice service',
           completionEvidence: 'Match result stored with both record ids',
-          dependsOnId: 'extract-invoice',
+          dependsOn: ['extract-invoice'],
           properties: {
             inputStructured: true,
             outputVerifiable: true,
@@ -778,7 +1117,7 @@ export const SAMPLES: Sample[] = [
           name: 'Approve invoices over 10000 dollars',
           owner: 'Finance manager',
           completionEvidence: 'Approval logged with a name and a date',
-          dependsOnId: 'match-po',
+          dependsOn: ['match-po'],
           properties: {
             inputStructured: true,
             outputVerifiable: true,
@@ -790,11 +1129,27 @@ export const SAMPLES: Sample[] = [
           },
         },
         {
+          id: 'verify-vendor-bank-details',
+          name: 'Verify the vendor bank account on file',
+          owner: 'Payments service',
+          completionEvidence: 'Bank account match confirmed against the vendor record',
+          dependsOn: ['match-po'],
+          properties: {
+            inputStructured: true,
+            outputVerifiable: true,
+            reversible: true,
+            needsJudgment: false,
+            legalFinancialRisk: true,
+            frequency: 'monthly',
+            mistakeCost: 'high',
+          },
+        },
+        {
           id: 'schedule-payment',
           name: 'Schedule the payment run',
           owner: 'Payments service',
           completionEvidence: 'Scheduled batch id recorded',
-          dependsOnId: 'approve-large-invoice',
+          dependsOn: ['approve-large-invoice', 'verify-vendor-bank-details'],
           properties: {
             inputStructured: true,
             outputVerifiable: true,
@@ -810,7 +1165,7 @@ export const SAMPLES: Sample[] = [
           name: 'File the invoice record for audit',
           owner: 'Records service',
           completionEvidence: 'Record id appears in the audit index',
-          dependsOnId: 'schedule-payment',
+          dependsOn: ['schedule-payment'],
           properties: {
             inputStructured: true,
             outputVerifiable: true,
@@ -835,18 +1190,23 @@ export function getSample(id: string): Sample | undefined {
  * ------------------------------------------------------------------ */
 
 export function emptyState(): ProcessState {
-  return { processName: '', steps: [], scenarioId: '' };
+  return { outcome: '', inputs: '', constraints: '', steps: [], scenarioId: '' };
 }
 
 export function sampleState(id: string = SAMPLES[0].id): ProcessState {
   const sample = getSample(id) ?? SAMPLES[0];
-  // Deep copy. A tool must never let the page mutate the shipped
-  // sample data out from under a later "load sample" click.
+  // Deep copy, including the dependsOn arrays. A tool must never let
+  // the page mutate the shipped sample data out from under a later
+  // "load sample" click; an array reference shared with the sample
+  // would let a later splice or push corrupt it silently.
   return {
-    processName: sample.state.processName,
+    outcome: sample.state.outcome,
+    inputs: sample.state.inputs,
+    constraints: sample.state.constraints,
     scenarioId: sample.state.scenarioId,
     steps: sample.state.steps.map((s) => ({
       ...s,
+      dependsOn: [...s.dependsOn],
       properties: { ...s.properties },
     })),
   };
@@ -893,7 +1253,7 @@ export function validate(state: ProcessState): ValidationIssue[] {
     if (!step.completionEvidence.trim()) {
       issues.push({
         field: `steps[${index}].completionEvidence`,
-        message: `"${label}" has no completion evidence. State how anyone would confirm it actually finished.`,
+        message: `"${label}" has no completion evidence. State how anyone would confirm it actually finished. A step whose doneness cannot be evidenced cannot be automated or delegated reliably.`,
         severity: 'warning',
       });
     }
@@ -917,18 +1277,15 @@ export function serialize(state: ProcessState, format: ExportFormat): string {
   const analysis = analyzeProcess(state);
   const byId = new Map(state.steps.map((s) => [s.id, s]));
 
-  const stepRows = state.steps.map((step) => {
-    const classification = analysis.classifications.get(step.id);
-    return {
-      id: step.id,
-      name: step.name,
-      owner: step.owner,
-      completionEvidence: step.completionEvidence,
-      dependsOnId: step.dependsOnId,
-      properties: step.properties,
-      classification,
-    };
-  });
+  const stepRows = state.steps.map((step) => ({
+    id: step.id,
+    name: step.name,
+    owner: step.owner,
+    completionEvidence: step.completionEvidence,
+    dependsOn: step.dependsOn,
+    properties: step.properties,
+    classification: analysis.classifications.get(step.id),
+  }));
 
   if (format === 'json') {
     return JSON.stringify(
@@ -936,12 +1293,16 @@ export function serialize(state: ProcessState, format: ExportFormat): string {
         generatedBy: 'Nixfred AI Systems Workbench, Workflow Decomposer',
         note: 'Local rule based classification. No model produced these results.',
         priorityScoreMethod: PRIORITY_SCORE_METHOD,
-        processName: state.processName,
+        outcome: state.outcome,
+        inputs: state.inputs,
+        constraints: state.constraints,
+        actors: analysis.actors,
         steps: stepRows,
         levelCounts: analysis.levelCounts,
         graphIssues: analysis.graphIssues,
         handoffs: analysis.handoffs,
         silentFailureRisks: analysis.silentFailureRisks,
+        approvalPoints: analysis.approvalPoints,
         implementationOrder: analysis.implementationOrder.map((entry) => ({
           ...entry,
           name: byId.get(entry.stepId)?.name ?? entry.stepId,
@@ -954,12 +1315,17 @@ export function serialize(state: ProcessState, format: ExportFormat): string {
 
   const renderStep = (step: Step, index: number) => {
     const c = analysis.classifications.get(step.id);
+    const dependsOnNames = step.dependsOn.length
+      ? step.dependsOn.map((id) => byId.get(id)?.name ?? id).join(', ')
+      : 'Nothing, this starts a chain';
     return [
       `### ${index + 1}. ${step.name || step.id}`,
       '',
       `Owner: ${step.owner || '(none stated)'}`,
       '',
       `Completion evidence: ${step.completionEvidence || '(none stated)'}`,
+      '',
+      `Depends on: ${dependsOnNames}`,
       '',
       `Classification: ${c ? CLASSIFICATION_LABELS[c.level] : 'unclassified'}`,
       '',
@@ -980,6 +1346,10 @@ export function serialize(state: ProcessState, format: ExportFormat): string {
     ? analysis.silentFailureRisks.map((s, i) => `${i + 1}. ${s.message}`).join('\n')
     : 'None detected.';
 
+  const approvalPointsText = analysis.approvalPoints.length
+    ? analysis.approvalPoints.map((a, i) => `${i + 1}. ${a.name}. ${a.reason}`).join('\n')
+    : 'None. Nothing in this process currently requires a human sign off.';
+
   const orderText = analysis.implementationOrder.length
     ? analysis.implementationOrder
         .map(
@@ -990,9 +1360,19 @@ export function serialize(state: ProcessState, format: ExportFormat): string {
     : 'No step in this process is classified automate now or automate with a checkpoint.';
 
   return [
-    `# Workflow Decomposer report: ${state.processName || '(unnamed process)'}`,
+    `# Workflow Decomposer report: ${state.outcome || '(unnamed process)'}`,
     '',
     'Local rule based classification. No model produced these results.',
+    '',
+    '## Process',
+    '',
+    `Outcome: ${state.outcome || '(not stated)'}`,
+    '',
+    `Inputs: ${state.inputs || '(not stated)'}`,
+    '',
+    `Constraints: ${state.constraints || '(not stated)'}`,
+    '',
+    `Actors: ${analysis.actors.length ? analysis.actors.join(', ') : '(none stated)'}`,
     '',
     '## Steps',
     '',
@@ -1009,6 +1389,10 @@ export function serialize(state: ProcessState, format: ExportFormat): string {
     '',
     silentText,
     '',
+    '## Approval points',
+    '',
+    approvalPointsText,
+    '',
     '## Implementation order',
     '',
     `Method: ${PRIORITY_SCORE_METHOD}`,
@@ -1019,5 +1403,5 @@ export function serialize(state: ProcessState, format: ExportFormat): string {
 }
 
 export function filename(state: ProcessState, _format: ExportFormat): string {
-  return `${slugify(state.processName)}-workflow-report`;
+  return `${slugify(state.outcome)}-workflow-report`;
 }

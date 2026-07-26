@@ -12,13 +12,21 @@
  *      case.
  *   5. Halving the dominant stage reduces the total by the predicted
  *      amount.
+ *   6. Baseline versus proposed produces a correct delta at both p50
+ *      and p99, and names the stage responsible.
+ *   7. Moving a stage from serial to parallel reduces total by
+ *      exactly the predicted amount.
+ *   8. Every composed number carries a non empty formula string.
+ *   9. Concurrency changes queue wait in the modeled direction.
  * Plus supporting checks (retry tax, streaming TTFT, budget verdicts,
  * validation, export) that would let a broken engine slip through a
- * gate that only checked the five headline properties.
+ * gate that only checked the headline properties.
  */
 
 import {
   analyzePipeline,
+  comparePipelines,
+  concurrencyMultiplier,
   fitLognormal,
   fitFromMoments,
   momentsFromFit,
@@ -272,7 +280,130 @@ console.log('latency-budgeter logic gate');
   );
 }
 
-/* ---- 12. Export round trip ----------------------------------------- */
+/* ---- 12. Baseline versus proposed: correct delta at p50 and p99,
+ *         and the responsible stage is named ------------------------ */
+{
+  const state = sampleState();
+  const comparison = comparePipelines(state.baseline, state.proposed, state.budgetMs);
+
+  const expectedDeltaP50 = comparison.proposed.totalP50 - comparison.baseline.totalP50;
+  const expectedDeltaP99 = comparison.proposed.totalP99 - comparison.baseline.totalP99;
+  expect('comparison delta p50 is exact', comparison.deltaTotalP50 === expectedDeltaP50, `${comparison.deltaTotalP50} !== ${expectedDeltaP50}`);
+  expect('comparison delta p99 is exact', comparison.deltaTotalP99 === expectedDeltaP99, `${comparison.deltaTotalP99} !== ${expectedDeltaP99}`);
+  expect('proposed is faster at p50', comparison.deltaTotalP50 < 0, `expected a negative (faster) delta, got ${comparison.deltaTotalP50}`);
+  expect('proposed is faster at p99', comparison.deltaTotalP99 < 0, `expected a negative (faster) delta, got ${comparison.deltaTotalP99}`);
+  expect('a lead stage was identified', comparison.leadStageIndex >= 0, 'expected a stage to be named as the largest single change');
+  expect('comparison formula is non empty', comparison.formula.length > 40, 'comparison formula should be substantive prose');
+  expect('comparison formula names a stage', /\b(LLM generation|Gateway queue|Vector search|Cross encoder rerank|Moderation check)\b/.test(comparison.formula), `formula did not name a recognizable stage: ${comparison.formula}`);
+  console.log(
+    `  baseline vs proposed: delta p50 ${comparison.deltaTotalP50.toFixed(1)} ms, delta p99 ${comparison.deltaTotalP99.toFixed(1)} ms, ` +
+      `lead stage index ${comparison.leadStageIndex}`,
+  );
+  console.log(`  comparison formula: "${comparison.formula}"`);
+}
+
+/* ---- 13. Moving a stage from serial to parallel reduces total by
+ *         exactly the predicted amount -------------------------------- */
+{
+  // Deterministic (p99 = p50) so the correct answer is hand arithmetic:
+  // moving C into parallel with B removes C's own latency from the
+  // series sum entirely, since B (300) still dominates the new group.
+  const baselinePipeline = {
+    stages: [
+      makeStage('network', 100, 'series'),
+      makeStage('model-call', 300, 'series'),
+      makeStage('post-processing', 150, 'series'),
+    ],
+  };
+  const proposedPipeline = {
+    stages: baselinePipeline.stages.map((s, i) => (i === 2 ? { ...s, relation: 'parallel' } : { ...s })),
+  };
+
+  const baselineResult = analyzePipeline(baselinePipeline, 10000);
+  const proposedResult = analyzePipeline(proposedPipeline, 10000);
+  const comparison = comparePipelines(baselinePipeline, proposedPipeline, 10000);
+
+  expect(
+    'baseline total is the plain sum',
+    close(baselineResult.totalP50, 550, 0.5),
+    `expected 100+300+150=550, got ${baselineResult.totalP50}`,
+  );
+  expect(
+    'moving to parallel drops the moved stage entirely',
+    close(proposedResult.totalP50, 400, 0.5),
+    `expected 100 + max(300,150)=400, got ${proposedResult.totalP50}`,
+  );
+  expect(
+    'comparison delta matches the predicted 150ms cut',
+    close(comparison.deltaTotalP50, -150, 0.5),
+    `expected a delta of -150, got ${comparison.deltaTotalP50}`,
+  );
+  expect(
+    'the relation change is flagged',
+    comparison.stageDeltas[2].relationChanged === true,
+    'expected stageDeltas[2].relationChanged to be true',
+  );
+  console.log(
+    `  serial to parallel: baseline total ${baselineResult.totalP50} ms, proposed total ${proposedResult.totalP50} ms, ` +
+      `delta ${comparison.deltaTotalP50} ms (predicted -150)`,
+  );
+}
+
+/* ---- 14. Every composed number carries a non empty formula string -- */
+{
+  const state = sampleState();
+  const result = analyzePipeline(state.baseline, state.budgetMs);
+
+  for (const s of result.stages) {
+    expect('stage formula is non empty', typeof s.formula === 'string' && s.formula.length > 20, `stage ${s.stage.label} has no substantive formula`);
+  }
+  for (const g of result.groups) {
+    expect('group formula is non empty', typeof g.formula === 'string' && g.formula.length > 20, `group ${g.index} has no substantive formula`);
+  }
+  expect('composition formula is non empty', typeof result.compositionFormula === 'string' && result.compositionFormula.length > 40, 'compositionFormula missing');
+  expect('composition formula shows the naive sum', /Naive/.test(result.compositionFormula), 'compositionFormula should contrast the naive sum');
+  expect('halved formula is non empty', typeof result.halved.formula === 'string' && result.halved.formula.length > 20, 'halved.formula missing');
+
+  const parallelGroup = result.groups.find((g) => g.memberIndices.length > 1);
+  expect('a parallel group formula mentions solving for t', parallelGroup && /solved for t/i.test(parallelGroup.formula), 'parallel group formula should describe the bisection it solved');
+
+  console.log(`  formulas present: ${result.stages.length} stage, ${result.groups.length} group, 1 composition, 1 halved`);
+}
+
+/* ---- 15. Concurrency changes queue wait in the modeled direction --- */
+{
+  const low = makeStage('queue-wait', 100, 'series');
+  low.utilization = 0.1;
+  const high = makeStage('queue-wait', 100, 'series');
+  high.utilization = 0.8;
+
+  const lowResult = analyzePipeline({ stages: [low] }, 10000);
+  const highResult = analyzePipeline({ stages: [high] }, 10000);
+
+  expect(
+    'higher utilization increases effective p50',
+    highResult.stages[0].effectiveP50 > lowResult.stages[0].effectiveP50,
+    `expected utilization 0.8 (${highResult.stages[0].effectiveP50}) to exceed 0.1 (${lowResult.stages[0].effectiveP50})`,
+  );
+  expect(
+    'higher utilization increases effective p99',
+    highResult.stages[0].effectiveP99 > lowResult.stages[0].effectiveP99,
+    'expected the p99 to move in the same direction as p50',
+  );
+  expect('multiplier grows with utilization', concurrencyMultiplier(0.8) > concurrencyMultiplier(0.1), 'concurrencyMultiplier should increase with utilization');
+  expect('zero utilization is a no-op', concurrencyMultiplier(0) === 1, 'zero utilization should leave latency unchanged');
+  expect(
+    'concurrency tax is visible on the stage',
+    highResult.stages[0].concurrencyTaxP50 > 0,
+    'expected a positive concurrencyTaxP50 when utilization is above zero',
+  );
+  console.log(
+    `  queue wait at 100ms base: utilization 0.1 -> ${lowResult.stages[0].effectiveP50.toFixed(1)} ms, ` +
+      `utilization 0.8 -> ${highResult.stages[0].effectiveP50.toFixed(1)} ms`,
+  );
+}
+
+/* ---- 16. Export round trip ----------------------------------------- */
 {
   const state = sampleState();
   const json = serialize(state, 'json');
@@ -280,10 +411,12 @@ console.log('latency-budgeter logic gate');
   expect('export json has both pipelines', Array.isArray(parsed.baseline.stages) && Array.isArray(parsed.proposed.stages), 'export lost a pipeline');
   expect('export json discloses no live network test', /No live network test/i.test(parsed.note), 'export should disclose the planning-estimate boundary');
   expect('export json states the composition method', typeof parsed.compositionMethod === 'string' && parsed.compositionMethod.length > 20, 'method should be disclosed');
+  expect('export json includes the comparison', typeof parsed.comparison?.formula === 'string' && parsed.comparison.formula.length > 20, 'export should carry the baseline vs proposed comparison');
 
   const md = serialize(state, 'markdown');
   expect('export markdown has a header', md.includes('# Latency Budgeter report'), 'markdown export missing header');
   expect('export markdown discloses independence assumption', /independent/i.test(md), 'markdown export should mention the independence assumption');
+  expect('export markdown includes the comparison section', md.includes('## Baseline versus proposed'), 'markdown export should carry the comparison section');
   console.log(`  export: json ${json.length} bytes, markdown ${md.length} bytes`);
 }
 

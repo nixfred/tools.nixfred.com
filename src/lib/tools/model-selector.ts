@@ -373,34 +373,78 @@ export const CATALOG: ModelEntry[] = [
   },
 ];
 
-/** Above this many days old, a price gets flagged as possibly stale. */
-export const STALE_THRESHOLD_DAYS = 120;
+/**
+ * Above this many days old, a price gets flagged as stale. Ninety days,
+ * about one quarter, because major model vendors commonly change list
+ * pricing or ship a new flagship on roughly that cadence. Past this
+ * threshold a comparison risks missing a change that would have altered
+ * the outcome, which is exactly the risk this tool actively warns
+ * about, not just an old timestamp.
+ */
+export const STALE_THRESHOLD_DAYS = 90;
+
+/**
+ * The consequence, stated plainly, that makes staleness worth an active
+ * warning rather than a printed date left for the reader to do the
+ * arithmetic on. Reused by the page and by the export, so the two
+ * surfaces never drift apart on what the risk actually is.
+ */
+export const STALE_RISK_STATEMENT =
+  'A stale catalog risks more than an out of date price. A model that would have changed this ranking may have shipped, or an existing price may have moved, since the oldest entry below was checked, and a catalog this old cannot know about either one. Treat the ranking above as provisional until the stale entries are confirmed.';
 
 function daysBetween(dateStr: string, reference: Date): number {
   const then = new Date(`${dateStr}T00:00:00Z`).getTime();
   return Math.floor((reference.getTime() - then) / (1000 * 60 * 60 * 24));
 }
 
+/** Days since a single model's price was last checked, given a reference date. */
+export function daysSincePriceDate(model: ModelEntry, reference: Date = new Date()): number {
+  return daysBetween(model.priceEffectiveDate, reference);
+}
+
+/** Whether a single model's price is past the staleness threshold. */
+export function isModelStale(model: ModelEntry, reference: Date = new Date()): boolean {
+  return daysSincePriceDate(model, reference) > STALE_THRESHOLD_DAYS;
+}
+
+export interface StaleModel {
+  model: ModelEntry;
+  days: number;
+}
+
 export interface CatalogStaleness {
   total: number;
   staleCount: number;
+  thresholdDays: number;
   oldest: ModelEntry;
   oldestDays: number;
+  /** Every candidate past the threshold, oldest first. Empty when none are stale. */
+  staleModels: StaleModel[];
 }
 
-/** Pure given a reference date, so it is testable without the system clock. */
+/**
+ * Pure given a reference date, so it is testable without the system
+ * clock, and so the page can compute this against the actual date in
+ * the visitor's browser at load time rather than baking in a build
+ * time answer that quietly goes wrong the longer a static build sits
+ * unpublished.
+ */
 export function catalogStaleness(reference: Date = new Date()): CatalogStaleness {
   const withAge = CATALOG.map((model) => ({
     model,
-    days: daysBetween(model.priceEffectiveDate, reference),
+    days: daysSincePriceDate(model, reference),
   }));
-  const stale = withAge.filter((w) => w.days > STALE_THRESHOLD_DAYS);
+  const staleModels = withAge
+    .filter((w) => w.days > STALE_THRESHOLD_DAYS)
+    .sort((a, b) => b.days - a.days);
   const oldest = withAge.reduce((a, b) => (b.days > a.days ? b : a));
   return {
     total: CATALOG.length,
-    staleCount: stale.length,
+    staleCount: staleModels.length,
+    thresholdDays: STALE_THRESHOLD_DAYS,
     oldest: oldest.model,
     oldestDays: oldest.days,
+    staleModels,
   };
 }
 
@@ -455,9 +499,10 @@ export interface TokenBlend {
 
 export const DEFAULT_TOKEN_BLEND: TokenBlend = { inputShare: 0.75, outputShare: 0.25 };
 
-export type ModelOverride = Partial<
-  Pick<ModelEntry, 'capabilityTier' | 'latencyClass' | 'throughputTier'>
->;
+export const OVERRIDABLE_FIELDS = ['capabilityTier', 'latencyClass', 'throughputTier'] as const;
+export type OverridableField = (typeof OVERRIDABLE_FIELDS)[number];
+
+export type ModelOverride = Partial<Pick<ModelEntry, OverridableField>>;
 export type Overrides = Record<string, ModelOverride>;
 
 export interface SelectorState {
@@ -470,6 +515,19 @@ export interface SelectorState {
 function applyOverride(model: ModelEntry, override?: ModelOverride): ModelEntry {
   if (!override) return model;
   return { ...model, ...override };
+}
+
+/**
+ * Which fields of a candidate carry a user supplied value rather than
+ * shipped catalog data, in a stable order. Empty when the user has not
+ * touched this candidate. This is the fact that makes a row "user
+ * edited" rather than "as shipped," a distinction the PRD requires to
+ * survive into the export, not just show up as a badge on screen.
+ */
+export function overriddenFields(modelId: string, overrides: Overrides): OverridableField[] {
+  const override = overrides[modelId];
+  if (!override) return [];
+  return OVERRIDABLE_FIELDS.filter((field) => override[field] !== undefined);
 }
 
 export function blendedCost(model: ModelEntry, tokenBlend: TokenBlend): number {
@@ -698,12 +756,16 @@ export interface RankedCandidate {
   axisScores: AxisScore[];
   weightedScore: number;
   rank: number;
+  /** Empty when this candidate is exactly as shipped in the catalog. */
+  overriddenFields: OverridableField[];
 }
 
 export interface EliminatedCandidate {
   model: ModelEntry;
   hardChecks: HardCheck[];
   failedChecks: HardCheck[];
+  /** Empty when this candidate is exactly as shipped in the catalog. */
+  overriddenFields: OverridableField[];
 }
 
 export interface SelectionResult {
@@ -728,11 +790,12 @@ export function rankCandidates(state: SelectorState): SelectionResult {
 
   for (const baseModel of CATALOG) {
     const model = applyOverride(baseModel, state.overrides[baseModel.id]);
+    const fields = overriddenFields(baseModel.id, state.overrides);
     const hardChecks = evaluateHardConstraints(model, state.requirements, state.tokenBlend);
     const failedChecks = hardChecks.filter((c) => !c.passed);
 
     if (failedChecks.length > 0) {
-      eliminated.push({ model, hardChecks, failedChecks });
+      eliminated.push({ model, hardChecks, failedChecks, overriddenFields: fields });
       continue;
     }
 
@@ -743,7 +806,7 @@ export function rankCandidates(state: SelectorState): SelectionResult {
       scoreThroughput(model, state.requirements),
     ];
     const weightedScore = computeWeightedScore(axisScores, state.weights);
-    ranked.push({ model, hardChecks, axisScores, weightedScore, rank: 0 });
+    ranked.push({ model, hardChecks, axisScores, weightedScore, rank: 0, overriddenFields: fields });
   }
 
   ranked.sort((a, b) => b.weightedScore - a.weightedScore || a.model.name.localeCompare(b.model.name));
@@ -1080,11 +1143,22 @@ export function validate(state: SelectorState): ValidationIssue[] {
 
 export type ExportFormat = 'json' | 'markdown';
 
+/**
+ * Renders the same override tag on screen and in export, so the two
+ * surfaces cannot say different things about which data is shipped
+ * catalog data and which is user supplied.
+ */
+function overrideTag(fields: OverridableField[]): string {
+  return fields.length ? `user edited: ${fields.join(', ')}` : 'as shipped in the catalog';
+}
+
 export function serialize(state: SelectorState, format: ExportFormat): string {
   const result = rankCandidates(state);
   const sensitivity = computeSensitivity(result.ranked[0], result.ranked[1], state.weights);
   const questions = unansweredQuestions(state, result);
   const plan = evaluationPlan(state, result);
+  // Evaluated at the moment of export, same as the page evaluates it at
+  // load, rather than at some earlier build time.
   const staleness = catalogStaleness();
 
   if (format === 'json') {
@@ -1092,13 +1166,25 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
       {
         generatedBy: 'Nixfred AI Systems Workbench, Model Selector',
         note:
-          'This ranking follows only from the constraints and weights stated below. It is not a claim that any model is objectively best. Capability, latency, and throughput ratings are coarse editorial priors, not measured benchmarks, and every one of them is overridable.',
+          'This ranking follows only from the constraints and weights stated below, and is not a claim that any model is objectively best. Capability, latency, and throughput ratings are coarse editorial priors, not measured benchmarks. Every field the user changed from its catalog default is marked overriddenFields per candidate below, distinct from unedited catalog data.',
+        // Everything needed to reconstruct why this answer came out,
+        // per the PRD user outcome of "a defensible model selection
+        // shortlist": the requirements, the weights, the token blend,
+        // any per candidate overrides, and how current the catalog was
+        // at the moment this was generated.
         catalogStaleness: {
+          thresholdDays: staleness.thresholdDays,
+          totalCandidates: staleness.total,
+          staleCount: staleness.staleCount,
           oldestPriceModel: staleness.oldest.name,
           oldestPriceDate: staleness.oldest.priceEffectiveDate,
           oldestPriceDays: staleness.oldestDays,
-          staleCount: staleness.staleCount,
-          totalCandidates: staleness.total,
+          staleModels: staleness.staleModels.map((s) => ({
+            model: s.model.name,
+            priceEffectiveDate: s.model.priceEffectiveDate,
+            days: s.days,
+          })),
+          riskIfAnyStale: STALE_RISK_STATEMENT,
         },
         requirements: state.requirements,
         weights: state.weights,
@@ -1112,11 +1198,17 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
           axisScores: r.axisScores,
           priceConfidence: r.model.priceConfidence,
           priceEffectiveDate: r.model.priceEffectiveDate,
+          priceStale: isModelStale(r.model),
+          overriddenFields: r.overriddenFields,
         })),
         eliminated: result.eliminated.map((e) => ({
           model: e.model.name,
           provider: e.model.provider,
           failedChecks: e.failedChecks,
+          priceConfidence: e.model.priceConfidence,
+          priceEffectiveDate: e.model.priceEffectiveDate,
+          priceStale: isModelStale(e.model),
+          overriddenFields: e.overriddenFields,
         })),
         tradeoff: sensitivity,
         unansweredQuestions: questions,
@@ -1130,9 +1222,17 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
   const lines: string[] = [
     '# Model Selector report',
     '',
-    'This ranking follows only from the constraints and weights stated below. It is not a claim that any model is objectively best. Capability, latency, and throughput ratings are coarse editorial priors, not measured benchmarks, and every one of them is overridable.',
+    'This ranking follows only from the constraints and weights stated below, and is not a claim that any model is objectively best. Capability, latency, and throughput ratings are coarse editorial priors, not measured benchmarks.',
     '',
-    `Catalog note: oldest price point is ${staleness.oldest.name} at ${staleness.oldestDays} days old, dated ${staleness.oldest.priceEffectiveDate}. ${staleness.staleCount} of ${staleness.total} candidates carry a price older than ${STALE_THRESHOLD_DAYS} days.`,
+    `Catalog currency: checked against a ${STALE_THRESHOLD_DAYS} day staleness threshold. Oldest price point is ${staleness.oldest.name} at ${staleness.oldestDays} days old, dated ${staleness.oldest.priceEffectiveDate}. ${staleness.staleCount} of ${staleness.total} candidates exceed the threshold.`,
+    ...(staleness.staleCount > 0
+      ? [
+          '',
+          `Stale entries: ${staleness.staleModels.map((s) => `${s.model.name} (${s.days} days old)`).join(', ')}.`,
+          '',
+          STALE_RISK_STATEMENT,
+        ]
+      : ['', 'No candidate currently exceeds the staleness threshold.']),
     '',
     '## Stated requirements',
     '',
@@ -1156,7 +1256,7 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
     ...(result.ranked.length
       ? result.ranked.map(
           (r) =>
-            `${r.rank}. ${r.model.name} (${r.model.provider}), weighted score ${r.weightedScore.toFixed(1)}. ` +
+            `${r.rank}. ${r.model.name} (${r.model.provider}), weighted score ${r.weightedScore.toFixed(1)}, ${overrideTag(r.overriddenFields)}. ` +
             r.axisScores.map((a) => `${a.label} ${a.score}`).join(', '),
         )
       : ['No candidate survived every hard constraint.']),
@@ -1166,7 +1266,7 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
     ...(result.eliminated.length
       ? result.eliminated.map(
           (e) =>
-            `${e.model.name} (${e.model.provider}), eliminated by: ${e.failedChecks.map((c) => c.label).join(', ')}.`,
+            `${e.model.name} (${e.model.provider}), ${overrideTag(e.overriddenFields)}, eliminated by: ${e.failedChecks.map((c) => c.label).join(', ')}.`,
         )
       : ['None. Every candidate in the catalog passed every hard constraint.']),
     '',

@@ -30,6 +30,27 @@ import {
   getSample,
   serialize,
   SAMPLES,
+  // Snapshot differ, added when the tool was corrected to make the
+  // structured diff primary and this significance engine secondary.
+  // Everything above this comment is unchanged from the first build.
+  permissionRank,
+  resolveFieldPath,
+  diffSnapshots,
+  sortFindings,
+  missingEvaluationCoverage,
+  buildRollbackChecklist,
+  analyzeComparison,
+  validateComparison,
+  validateSnapshot,
+  parseSnapshotJSON,
+  serializeSnapshot,
+  emptySnapshot,
+  emptyComparison,
+  COMPARISON_SAMPLES,
+  getComparisonSample,
+  sampleComparison,
+  serializeComparison,
+  SNAPSHOT_SCHEMA_VERSION,
 } from '../src/lib/tools/drift-monitor.ts';
 
 let failures = 0;
@@ -380,6 +401,238 @@ const overCount = validate({
   alpha: 0.05, metricsMonitored: 1, targetPower: 0.8, minMeaningfulEffect: 0.05, evalSetChanged: 'no',
 });
 expect('successes greater than n is an error', overCount.some((i) => i.field === 'baseline.successes'), 'out of range successes was not caught');
+
+/* ==================================================================
+   13. SNAPSHOT SHAPE: schema version and validation
+
+   Criterion 4: "snapshot format is versioned and exportable."
+   ================================================================== */
+console.log('\n13. snapshot schema version and validation');
+expect('schema version is a stated constant', typeof SNAPSHOT_SCHEMA_VERSION === 'number' && SNAPSHOT_SCHEMA_VERSION >= 1, `got ${SNAPSHOT_SCHEMA_VERSION}`);
+const emptySnap = emptySnapshot('test');
+expect('empty snapshot carries the current schema version', emptySnap.schemaVersion === SNAPSHOT_SCHEMA_VERSION, `got ${emptySnap.schemaVersion}`);
+expect('empty snapshot fails validation on evaluation.n', validateSnapshot(emptySnap).some((i) => i.field === 'evaluation.n'), 'empty snapshot with n=0 should fail');
+const wrongVersion = { ...emptySnap, schemaVersion: SNAPSHOT_SCHEMA_VERSION + 1, evaluation: { n: 10, successes: 5 } };
+expect('wrong schema version fails validation', validateSnapshot(wrongVersion).some((i) => i.field === 'schemaVersion'), 'wrong version was not caught');
+const badLevel = { ...emptySnap, evaluation: { n: 10, successes: 5 }, permissions: [{ name: 'x', level: 'god-mode', detail: '' }] };
+expect('unknown permission level fails validation', validateSnapshot(badLevel).some((i) => i.field === 'permissions.x'), 'bad level was not caught');
+
+/* ==================================================================
+   14. SNAPSHOT IMPORT AND EXPORT ROUND TRIP
+
+   "Give it a schemaVersion, make it importable and exportable as
+   JSON." serializeSnapshot then parseSnapshotJSON must reproduce the
+   exact snapshot, and a malformed paste must fail with a message
+   rather than throwing.
+   ================================================================== */
+console.log('\n14. snapshot JSON round trip');
+const originalSnapshot = sampleComparison(COMPARISON_SAMPLES[0].id).baseline;
+const snapshotText = serializeSnapshot(originalSnapshot);
+const snapshotRoundTrip = parseSnapshotJSON(snapshotText);
+expect('round trip parses ok', snapshotRoundTrip.ok === true, snapshotRoundTrip.ok ? '' : snapshotRoundTrip.error);
+if (snapshotRoundTrip.ok) {
+  expect('round trip preserves schemaVersion', snapshotRoundTrip.snapshot.schemaVersion === originalSnapshot.schemaVersion, `got ${snapshotRoundTrip.snapshot.schemaVersion}`);
+  expect('round trip preserves label', snapshotRoundTrip.snapshot.label === originalSnapshot.label, `got ${snapshotRoundTrip.snapshot.label}`);
+  expect('round trip preserves evaluation counts', snapshotRoundTrip.snapshot.evaluation.successes === originalSnapshot.evaluation.successes, 'evaluation counts changed across the round trip');
+  expect('round trip preserves permission count', snapshotRoundTrip.snapshot.permissions.length === originalSnapshot.permissions.length, 'permission count changed across the round trip');
+}
+console.log(`  round trip: ${snapshotText.length} bytes out, schemaVersion ${snapshotRoundTrip.ok ? snapshotRoundTrip.snapshot.schemaVersion : 'n/a'} preserved`);
+
+const brokenJson = parseSnapshotJSON('{ this is not json');
+expect('malformed JSON fails without throwing', brokenJson.ok === false && typeof brokenJson.error === 'string', 'malformed JSON did not fail cleanly');
+console.log(`  malformed paste reports: "${brokenJson.error}"`);
+
+/* ==================================================================
+   15. PERMISSION RANK, WIDENING VERSUS NARROWING
+
+   Criterion 2: widening and narrowing are not the same event.
+   ================================================================== */
+console.log('\n15. permission rank and widen versus narrow classification');
+expect('none is the lowest rank', permissionRank('none') === 0, `got ${permissionRank('none')}`);
+expect('unrestricted is the highest rank', permissionRank('unrestricted') === 4, `got ${permissionRank('unrestricted')}`);
+expect('rank increases with each level', permissionRank('read-only') < permissionRank('scoped') && permissionRank('scoped') < permissionRank('read-write') && permissionRank('read-write') < permissionRank('unrestricted'), 'permission levels are not monotonically ordered');
+
+const widenBaseline = emptySnapshot('b');
+widenBaseline.evaluation = { n: 10, successes: 5 };
+widenBaseline.permissions = [{ name: 'filesystem', level: 'read-only', detail: 'x' }];
+const widenCurrent = emptySnapshot('c');
+widenCurrent.evaluation = { n: 10, successes: 5 };
+widenCurrent.permissions = [{ name: 'filesystem', level: 'unrestricted', detail: 'x' }];
+const widenFindings = diffSnapshots(widenBaseline, widenCurrent);
+expect('widening produces exactly one finding', widenFindings.length === 1, `got ${widenFindings.length}`);
+expect('widening is classified as widened', widenFindings[0].direction === 'widened', `got ${widenFindings[0].direction}`);
+expect('widening to unrestricted is critical risk', widenFindings[0].risk === 'critical', `got ${widenFindings[0].risk}`);
+
+const narrowFindings = diffSnapshots(widenCurrent, widenBaseline); // reverse: unrestricted -> read-only
+expect('narrowing is classified as narrowed, not widened', narrowFindings[0].direction === 'narrowed', `got ${narrowFindings[0].direction}`);
+expect('narrowing is low urgency, not critical or high', narrowFindings[0].risk === 'info', `got ${narrowFindings[0].risk}`);
+console.log(`  read-only to unrestricted: ${widenFindings[0].direction}, risk ${widenFindings[0].risk}`);
+console.log(`  unrestricted to read-only: ${narrowFindings[0].direction}, risk ${narrowFindings[0].risk}`);
+
+/* ==================================================================
+   16. A PERMISSION WIDENING ALWAYS RANKS FIRST
+
+   Criterion 2, "outranks everything else, visually and in ordering."
+   Constructed so a critical prompt-adjacent change and a low risk
+   permission widening compete, and the widening must still win purely
+   because of its category and direction, not its risk tier.
+   ================================================================== */
+console.log('\n16. permission widening outranks every other finding regardless of risk');
+const mixed = [
+  { id: 'a', category: 'prompt', direction: 'modified', risk: 'critical', fields: [{ path: 'prompts.x.text', before: 'a', after: 'b' }], headline: '', likelyEffect: '', intentional: false },
+  { id: 'b', category: 'permission', direction: 'widened', risk: 'low', fields: [{ path: 'permissions.y.level', before: 'none', after: 'read-only' }], headline: '', likelyEffect: '', intentional: false },
+  { id: 'c', category: 'model-setting', direction: 'modified', risk: 'critical', fields: [{ path: 'modelSettings.modelName', before: 'a', after: 'b' }], headline: '', likelyEffect: '', intentional: false },
+];
+const sorted = sortFindings(mixed);
+expect('the permission widening sorts first even at low risk', sorted[0].category === 'permission' && sorted[0].direction === 'widened', `first finding was ${sorted[0].category}/${sorted[0].direction}`);
+console.log(`  sort order: ${sorted.map((f) => `${f.category}/${f.direction}/${f.risk}`).join(', ')}`);
+
+// And in a full, real comparison: the sample built for exactly this
+// lesson must put its permission widenings ahead of its medium risk
+// prompt and model setting changes.
+const headlineComparison = sampleComparison('unexplained-permission-widening');
+const headlineAnalysis = analyzeComparison(headlineComparison);
+expect('headlineFindings contains only permission widenings', headlineAnalysis.headlineFindings.every((f) => f.category === 'permission' && f.direction === 'widened'), 'headlineFindings contained something other than a widened permission');
+expect('headlineFindings is non empty for the widening sample', headlineAnalysis.headlineFindings.length >= 1, 'expected at least one widened permission in this sample');
+expect('the first finding overall is a permission widening', headlineAnalysis.findings[0].category === 'permission' && headlineAnalysis.findings[0].direction === 'widened', `first finding was ${headlineAnalysis.findings[0].category}/${headlineAnalysis.findings[0].direction}`);
+console.log(`  ${headlineComparison.current.label}: first finding is ${headlineAnalysis.findings[0].headline}`);
+
+/* ==================================================================
+   17. EVERY FINDING CITES A FIELD PATH THAT RESOLVES
+
+   Criterion 3. added resolves only in current, removed resolves only
+   in baseline, everything else resolves in both, to a value matching
+   what the finding claims.
+   ================================================================== */
+console.log('\n17. every finding cites a real, resolving field path');
+let pathsChecked = 0;
+for (const sample of COMPARISON_SAMPLES) {
+  const comparison = sampleComparison(sample.id);
+  const findings = diffSnapshots(comparison.baseline, comparison.current);
+  for (const f of findings) {
+    for (const field of f.fields) {
+      pathsChecked += 1;
+      const beforeResolved = resolveFieldPath(comparison.baseline, field.path);
+      const afterResolved = resolveFieldPath(comparison.current, field.path);
+      // added, and widened FROM the implicit "not present" rank 0,
+      // both legitimately fail to resolve in baseline: there was
+      // nothing there. removed, and narrowed TO not present, are the
+      // mirror case on the current side. Only "modified" guarantees
+      // both sides resolve, since a diff function only emits it when
+      // the item exists in both snapshots.
+      if (f.direction === 'added' || f.direction === 'widened') {
+        expect('added/widened finding: path resolves in current', afterResolved !== undefined, `${sample.id}: ${field.path} did not resolve in current`);
+      }
+      if (f.direction === 'removed' || f.direction === 'narrowed') {
+        expect('removed/narrowed finding: path resolves in baseline', beforeResolved !== undefined, `${sample.id}: ${field.path} did not resolve in baseline`);
+      }
+      if (f.direction === 'modified') {
+        expect('modified finding: path resolves in baseline', beforeResolved !== undefined, `${sample.id}: ${field.path} did not resolve in baseline`);
+        expect('modified finding: path resolves in current', afterResolved !== undefined, `${sample.id}: ${field.path} did not resolve in current`);
+      }
+    }
+  }
+}
+console.log(`  field paths verified by resolution: ${pathsChecked}`);
+
+/* ==================================================================
+   18. INTENTIONAL VERSUS UNEXPLAINED
+
+   Criterion 1: a change explained by the current snapshot's changelog
+   must read as intentional; the same change with no changelog entry
+   must read as unexplained drift.
+   ================================================================== */
+console.log('\n18. intentional changes separate from unexplained drift');
+const explainedBaseline = emptySnapshot('b');
+explainedBaseline.evaluation = { n: 10, successes: 5 };
+explainedBaseline.modelSettings.temperature = 0.2;
+const explainedCurrent = emptySnapshot('c');
+explainedCurrent.evaluation = { n: 10, successes: 5 };
+explainedCurrent.modelSettings.temperature = 0.5;
+explainedCurrent.changelog = [{ path: 'modelSettings.temperature', note: 'Deliberate tuning change.' }];
+const explainedFindings = diffSnapshots(explainedBaseline, explainedCurrent);
+expect('a changelog entry marks the matching finding intentional', explainedFindings.find((f) => f.id === 'modelSettings.temperature')?.intentional === true, 'changelog entry was not picked up');
+
+const unexplainedCurrent = emptySnapshot('c');
+unexplainedCurrent.evaluation = { n: 10, successes: 5 };
+unexplainedCurrent.modelSettings.temperature = 0.5;
+// no changelog entry at all
+const unexplainedFindings = diffSnapshots(explainedBaseline, unexplainedCurrent);
+expect('the identical change with no changelog entry reads as unexplained', unexplainedFindings.find((f) => f.id === 'modelSettings.temperature')?.intentional === false, 'an unmarked change was incorrectly read as intentional');
+
+// The two shipped samples exercise both directions for real: sample 1
+// has both a marked change (temperature) and unmarked ones
+// (the permission widenings); sample 2 has every change marked.
+const widenedIntentional = headlineAnalysis.findings.filter((f) => f.category === 'permission' && f.direction === 'widened').every((f) => f.intentional === false);
+expect('the unexplained widening sample: its widenings are NOT marked intentional', widenedIntentional, 'a widening in the headline sample was incorrectly marked intentional');
+const routineComparison = sampleComparison('routine-explained-release');
+const routineAnalysis = analyzeComparison(routineComparison);
+expect('the routine sample: every structural finding is marked intentional', routineAnalysis.findings.filter((f) => f.category !== 'metric').every((f) => f.intentional === true), 'the fully explained sample has an unmarked structural change');
+console.log(`  unexplained sample: ${headlineAnalysis.findings.filter((f) => !f.intentional).length} unexplained of ${headlineAnalysis.findings.length}`);
+console.log(`  routine sample: ${routineAnalysis.findings.filter((f) => f.category !== 'metric' && !f.intentional).length} unexplained structural changes of ${routineAnalysis.findings.filter((f) => f.category !== 'metric').length}`);
+
+/* ==================================================================
+   19. MISSING EVALUATION COVERAGE
+   ================================================================== */
+console.log('\n19. missing evaluation coverage');
+expect('the widening sample reports missing coverage', headlineAnalysis.missingCoverage.length > 0, 'expected at least one uncovered surface');
+expect('a path declared as covered is excluded', !headlineAnalysis.missingCoverage.some((m) => m.path === 'prompts.system-prompt'), 'a covered path was incorrectly reported as missing');
+expect('the routine sample declares full coverage of its structural changes', routineAnalysis.missingCoverage.length === 0, `expected zero, got ${routineAnalysis.missingCoverage.length}`);
+console.log(`  widening sample missing coverage: ${headlineAnalysis.missingCoverage.map((m) => m.path).join(', ')}`);
+
+/* ==================================================================
+   20. ROLLBACK CHECKLIST: ORDERED, NEVER EMPTY WHEN A CHANGE EXISTS
+
+   Widened permissions must lead; a metric only diff must not force
+   an empty checklist claim, since metrics are excluded on purpose,
+   but any structural change must always produce at least one step.
+   ================================================================== */
+console.log('\n20. rollback checklist is ordered and non empty when a structural change exists');
+const rollback1 = buildRollbackChecklist(headlineAnalysis.findings);
+expect('rollback checklist is non empty for the widening sample', rollback1.length > 0, 'expected at least one rollback step');
+expect('rollback checklist order numbers are sequential from 1', rollback1.every((r, i) => r.order === i + 1), 'rollback order numbers were not sequential');
+expect('rollback checklist leads with the permission widening', rollback1[0].path.startsWith('permissions.') && rollback1[0].instruction.includes('unrestricted'), `first step was ${rollback1[0].path}`);
+console.log(`  widening sample rollback: ${rollback1.length} steps, first is ${rollback1[0].path}`);
+
+const rollback2 = buildRollbackChecklist(routineAnalysis.findings);
+expect('rollback checklist is non empty for the routine sample too', rollback2.length > 0, 'expected at least one rollback step for the routine sample');
+console.log(`  routine sample rollback: ${rollback2.length} steps`);
+
+const metricOnlyFindings = diffSnapshots(
+  { ...emptySnapshot('b'), evaluation: { n: 10, successes: 5 }, metrics: [{ key: 'x', value: 1 }] },
+  { ...emptySnapshot('c'), evaluation: { n: 10, successes: 5 }, metrics: [{ key: 'x', value: 2 }] },
+);
+expect('a metric only diff produces exactly one finding', metricOnlyFindings.length === 1 && metricOnlyFindings[0].category === 'metric', 'metric only diff produced something unexpected');
+expect('a metric only diff produces an empty rollback checklist, correctly', buildRollbackChecklist(metricOnlyFindings).length === 0, 'metrics are not configuration and should not appear in a rollback checklist');
+
+/* ==================================================================
+   21. VALIDATE COMPARISON AND EMPTY COMPARISON
+   ================================================================== */
+console.log('\n21. comparison level validation');
+expect('empty comparison fails validation on both snapshots', validateComparison(emptyComparison()).filter((i) => i.severity === 'error').length >= 2, 'empty comparison should fail on both snapshots evaluation.n');
+expect('a loaded comparison sample validates cleanly', validateComparison(sampleComparison()).length === 0, 'sample comparison produced validation issues');
+
+/* ==================================================================
+   22. COMPARISON EXPORT ROUND TRIP
+   ================================================================== */
+console.log('\n22. comparison export round trip');
+const comparisonJson = serializeComparison(sampleComparison('unexplained-permission-widening'), 'json');
+const parsedComparison = JSON.parse(comparisonJson);
+expect('comparison export carries a schema version', parsedComparison.schemaVersion === SNAPSHOT_SCHEMA_VERSION, `got ${parsedComparison.schemaVersion}`);
+expect('comparison export carries both full snapshots', parsedComparison.baseline.permissions.length > 0 && parsedComparison.current.permissions.length > 0, 'snapshots were not carried in full');
+expect('comparison export carries findings', Array.isArray(parsedComparison.findings) && parsedComparison.findings.length > 0, 'no findings in the export');
+expect('comparison export carries the rollback checklist', Array.isArray(parsedComparison.rollback) && parsedComparison.rollback.length > 0, 'no rollback checklist in the export');
+expect('comparison export carries the significance verdict', typeof parsedComparison.significance.verdict === 'string', 'no significance verdict in the export');
+// The exported baseline snapshot must itself re-parse as a valid,
+// importable snapshot: exporting and re-importing one side must work.
+const reimportedBaseline = parseSnapshotJSON(JSON.stringify(parsedComparison.baseline));
+expect('the exported baseline snapshot re-imports cleanly', reimportedBaseline.ok === true, reimportedBaseline.ok ? '' : reimportedBaseline.error);
+
+const comparisonMd = serializeComparison(sampleComparison('unexplained-permission-widening'), 'markdown');
+expect('markdown export has a findings section', comparisonMd.includes('## Findings, permission widenings first'), 'markdown export missing findings section');
+expect('markdown export has a rollback section', comparisonMd.includes('## Rollback checklist'), 'markdown export missing rollback section');
+expect('markdown export flags the unexplained widening', comparisonMd.includes('UNEXPLAINED'), 'markdown export does not surface unexplained changes');
+console.log(`  comparison export: json ${comparisonJson.length} bytes, markdown ${comparisonMd.length} bytes`);
 
 /* ==================================================================
    Report

@@ -7,6 +7,13 @@
 // often a step runs, only at whether it can be verified, undone, and
 // handed to a system safely. Frequency only affects which already
 // automatable steps get built first. See src/lib/tools/workflow-decomposer.ts.
+//
+// INPUT MODEL: outcome, inputs, and constraints are free text a user
+// states once, at the process level. Actors and approval points are
+// NOT a second list to keep in sync by hand: actors are the distinct
+// owners already stated on every step, and approval points are the
+// steps classification and handoff detection already identify as
+// needing a person. Both render read only, derived from the steps.
 import ToolLayout from '../../layouts/ToolLayout.astro';
 import Field from '../../components/kit/Field.astro';
 import ResultPanel from '../../components/kit/ResultPanel.astro';
@@ -48,11 +55,35 @@ const tool = getTool('workflow-decomposer')!;
     <p class="teaches" data-teaches role="status" aria-live="polite"></p>
 
     <Field
-      label="Process outcome"
-      name="processName"
+      label="Outcome"
+      name="outcome"
       hint="One line describing what this process is supposed to produce."
       placeholder="For example, a refund is either issued and confirmed, or the request is declined with a reason."
     />
+
+    <Field
+      label="Inputs"
+      name="inputs"
+      type="textarea"
+      rows={2}
+      hint="What the process starts with, stated once for the whole process."
+      placeholder="For example, a support ticket containing the order number and the requested amount."
+    />
+
+    <Field
+      label="Constraints"
+      name="constraints"
+      type="textarea"
+      rows={2}
+      hint="Limits or rules that bound the whole process, not any single step."
+      placeholder="For example, refunds over 500 dollars require manager approval."
+    />
+
+    <div class="derived-line">
+      <span class="derived-label">Actors</span>
+      <p class="derived-value" data-actors>No owners stated yet.</p>
+      <p class="derived-hint">Derived from the owner stated on every step below. Add or edit an owner to change this list.</p>
+    </div>
 
     <div data-empty-wrapper>
       <EmptyState
@@ -74,9 +105,17 @@ const tool = getTool('workflow-decomposer')!;
     </ResultPanel>
 
     <ResultPanel
+      title="Completeness"
+      id="completeness-panel"
+      description="Every step needs an owner and completion evidence. A step whose doneness cannot be evidenced cannot be automated or delegated reliably."
+    >
+      <div data-completeness></div>
+    </ResultPanel>
+
+    <ResultPanel
       title="Structural issues"
       id="graph-issues-panel"
-      description="Cycles, orphan steps, and dependencies that point at a step which no longer exists."
+      description="Cycles, orphan steps, and dependencies that point at a step which no longer exists. A step may depend on more than one other step, so this is checked as a real graph, not a chain."
     >
       <div data-graph-issues></div>
     </ResultPanel>
@@ -95,6 +134,14 @@ const tool = getTool('workflow-decomposer')!;
       description="Steps that feed later steps but whose own result nothing checks."
     >
       <div data-silent-failures></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Approval points"
+      id="approval-points-panel"
+      description="Steps where a person decides something before the process can rely on it: the human side of a handoff, a checkpoint, or a fully human step."
+    >
+      <div data-approval-points></div>
     </ResultPanel>
 
     <ResultPanel
@@ -121,6 +168,14 @@ const tool = getTool('workflow-decomposer')!;
     </ResultPanel>
 
     <ExportBar formats={['json', 'markdown']} filename="workflow-decomposer-report" />
+
+    <div class="agent-export" data-agent-export>
+      <span class="label">Agent Designer handoff</span>
+      <button type="button" class="btn" data-export-agent-handoff>
+        Download Agent Designer payload
+      </button>
+      <span class="agent-export-status mono" data-agent-export-status role="status" aria-live="polite"></span>
+    </div>
 
     <HelpNote title="Why does the same step sometimes stay human and sometimes not?">
       <p>
@@ -152,10 +207,21 @@ const tool = getTool('workflow-decomposer')!;
         rushing to build the riskiest, least common case first is a poor
         use of the first thing you ship.
       </p>
+    </HelpNote>
+
+    <HelpNote title="What does the Agent Designer handoff actually do">
       <p>
-        Exporting this report is the explicit handoff into a tool like
-        Agent Designer. Nothing here reaches another tool on its own;
-        the file is the whole interface.
+        It downloads a JSON file naming every step classified automate
+        now or automate with a checkpoint as a candidate, with its
+        owner, its completion evidence, plain language limits drawn from
+        its own properties, and the escalation paths where a candidate's
+        work reaches a person. That is the whole handoff.
+      </p>
+      <p>
+        Nothing here calls Agent Designer directly, and nothing in
+        Agent Designer calls this file either. You carry the download
+        over yourself. That is what an explicit export means, as
+        opposed to hidden coupling between the two tools.
       </p>
     </HelpNote>
   </div>
@@ -238,6 +304,37 @@ const tool = getTool('workflow-decomposer')!;
     min-height: 1.5em;
   }
 
+  .derived-line {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--bg-alt);
+    padding: var(--space-3);
+  }
+
+  .derived-label {
+    display: block;
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: var(--space-1);
+  }
+
+  .derived-value {
+    margin: 0 0 var(--space-1);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text);
+  }
+
+  .derived-hint {
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+  }
+
   /* An author display rule otherwise beats the user agent stylesheet's
      [hidden] rule, so the hidden attribute needs an explicit override
      here or the list would stay visible while empty. */
@@ -274,6 +371,20 @@ const tool = getTool('workflow-decomposer')!;
     font-size: var(--text-xs);
     color: var(--text-dim);
     margin: 0 0 var(--space-3);
+  }
+
+  .agent-export {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    border-top: 1px solid var(--line);
+    padding-top: var(--space-3);
+  }
+
+  .agent-export-status {
+    font-size: var(--text-xs);
+    color: var(--text-faint);
   }
 </style>
 
@@ -410,6 +521,49 @@ const tool = getTool('workflow-decomposer')!;
     outline: none;
   }
 
+  .depends-fieldset {
+    grid-column: 1 / -1;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3) var(--space-3);
+    margin: 0;
+  }
+
+  .depends-fieldset legend {
+    padding: 0 0.3rem;
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .depends-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-4);
+  }
+
+  .depends-option {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .depends-checkbox {
+    cursor: pointer;
+  }
+
+  .depends-empty {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--text-dim);
+  }
+
   .properties-title {
     font-family: var(--font-sans);
     font-size: var(--text-xs);
@@ -494,7 +648,8 @@ const tool = getTool('workflow-decomposer')!;
 
   .issue-row,
   .handoff-row,
-  .silent-row {
+  .silent-row,
+  .approval-row {
     display: flex;
     gap: var(--space-2);
     align-items: baseline;
@@ -506,7 +661,8 @@ const tool = getTool('workflow-decomposer')!;
 
   .issue-row:last-child,
   .handoff-row:last-child,
-  .silent-row:last-child {
+  .silent-row:last-child,
+  .approval-row:last-child {
     border-bottom: 0;
   }
 
@@ -516,6 +672,11 @@ const tool = getTool('workflow-decomposer')!;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--status-alert);
+  }
+
+  .approval-name {
+    flex: none;
+    color: var(--text);
   }
 
   .clean-note {
@@ -543,6 +704,8 @@ const tool = getTool('workflow-decomposer')!;
     emptyState,
     getSample,
     serialize,
+    validate,
+    buildAgentDesignerPayload,
     SAMPLES,
     FREQUENCY_LEVELS,
     FREQUENCY_LABELS,
@@ -568,9 +731,16 @@ const tool = getTool('workflow-decomposer')!;
         ? crypto.randomUUID()
         : `step-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+    const slugifyLocal = (text: string): string => {
+      const slug = text.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      return slug || 'workflow-decomposer';
+    };
+
     const emptyWrapper = el<HTMLElement>('[data-empty-wrapper]');
     const stepsList = el<HTMLOListElement>('[data-steps-list]');
-    const processNameInput = el<HTMLInputElement>('#field-processName');
+    const outcomeInput = el<HTMLInputElement>('#field-outcome');
+    const inputsInput = el<HTMLTextAreaElement>('#field-inputs');
+    const constraintsInput = el<HTMLTextAreaElement>('#field-constraints');
 
     /* ---- Focus preservation across a full re-render ---------------- */
     interface FocusMark {
@@ -628,15 +798,25 @@ const tool = getTool('workflow-decomposer')!;
 
     function renderStepCard(step: Step, index: number, all: Step[], levels: Map<string, string>): string {
       const level = levels.get(step.id) ?? '';
-      const dependsOptions = [
-        `<option value="" ${step.dependsOnId === null ? 'selected' : ''}>Start of the process</option>`,
-        ...all
-          .filter((s) => s.id !== step.id)
-          .map(
-            (s) =>
-              `<option value="${esc(s.id)}" ${step.dependsOnId === s.id ? 'selected' : ''}>${esc(s.name || s.id)}</option>`,
-          ),
-      ].join('');
+      const others = all.filter((s) => s.id !== step.id);
+      const dependsBody = others.length
+        ? `<div class="depends-options">${others
+            .map(
+              (s) => `
+          <label class="depends-option">
+            <input
+              type="checkbox"
+              class="depends-checkbox"
+              data-step-id="${esc(step.id)}"
+              data-step-field="dependsOn"
+              data-depends-on-id="${esc(s.id)}"
+              ${step.dependsOn.includes(s.id) ? 'checked' : ''}
+            />
+            ${esc(s.name || s.id)}
+          </label>`,
+            )
+            .join('')}</div>`
+        : '<p class="depends-empty">No other steps yet. This step starts the process.</p>';
 
       return `
       <li class="step-card" data-step-card data-step-id="${esc(step.id)}">
@@ -659,16 +839,14 @@ const tool = getTool('workflow-decomposer')!;
             <label class="mini-label" for="${step.id}-owner">Owner today</label>
             <input class="mini-control" id="${step.id}-owner" type="text" data-step-id="${step.id}" data-step-field="owner" value="${esc(step.owner)}" autocomplete="off" spellcheck="false" />
           </div>
-          <div class="mini-field">
-            <label class="mini-label" for="${step.id}-dependsOnId">Depends on</label>
-            <select class="mini-control" id="${step.id}-dependsOnId" data-step-id="${step.id}" data-step-field="dependsOnId">
-              ${dependsOptions}
-            </select>
-          </div>
           <div class="mini-field wide">
             <label class="mini-label" for="${step.id}-completionEvidence">Completion evidence</label>
             <textarea class="mini-control" id="${step.id}-completionEvidence" rows="2" data-step-id="${step.id}" data-step-field="completionEvidence" spellcheck="false">${esc(step.completionEvidence)}</textarea>
           </div>
+          <fieldset class="depends-fieldset">
+            <legend>Depends on</legend>
+            ${dependsBody}
+          </fieldset>
         </div>
 
         <p class="properties-title">Properties that decide automatability</p>
@@ -751,6 +929,27 @@ const tool = getTool('workflow-decomposer')!;
         .join('');
     }
 
+    function renderCompleteness() {
+      const target = el('[data-completeness]');
+      if (!target) return;
+      const issues = validate(state).filter((i) => i.field !== 'steps');
+      if (!issues.length) {
+        target.innerHTML = state.steps.length
+          ? '<p class="clean-note">Every step has a name, an owner, and completion evidence.</p>'
+          : '<p class="clean-note">Add a step to check its completeness.</p>';
+        return;
+      }
+      target.innerHTML = issues
+        .map(
+          (i) => `
+        <div class="issue-row">
+          <span class="issue-kind mono">${i.severity === 'error' ? 'Error' : 'Incomplete'}</span>
+          <p>${esc(i.message)}</p>
+        </div>`,
+        )
+        .join('');
+    }
+
     function renderGraphIssues(analysis: ReturnType<typeof analyzeProcess>) {
       const target = el('[data-graph-issues]');
       if (!target) return;
@@ -794,6 +993,30 @@ const tool = getTool('workflow-decomposer')!;
         .join('');
     }
 
+    function renderApprovalPoints(analysis: ReturnType<typeof analyzeProcess>) {
+      const target = el('[data-approval-points]');
+      if (!target) return;
+      if (!analysis.approvalPoints.length) {
+        target.innerHTML = '<p class="clean-note">Nothing in this process currently requires a human sign off.</p>';
+        return;
+      }
+      target.innerHTML = analysis.approvalPoints
+        .map(
+          (p) => `
+        <div class="approval-row">
+          <strong class="approval-name">${esc(p.name)}</strong>
+          <p>${esc(p.reason)}</p>
+        </div>`,
+        )
+        .join('');
+    }
+
+    function renderActors(analysis: ReturnType<typeof analyzeProcess>) {
+      const target = el('[data-actors]');
+      if (!target) return;
+      target.textContent = analysis.actors.length ? analysis.actors.join(', ') : 'No owners stated yet.';
+    }
+
     function renderOrder(analysis: ReturnType<typeof analyzeProcess>) {
       const target = el('[data-order-list]');
       const method = el('[data-order-method]');
@@ -820,15 +1043,19 @@ const tool = getTool('workflow-decomposer')!;
 
     function renderPanels(analysis: ReturnType<typeof analyzeProcess>) {
       renderClassifications(analysis);
+      renderCompleteness();
       renderGraphIssues(analysis);
       renderHandoffs(analysis);
       renderSilentFailures(analysis);
+      renderApprovalPoints(analysis);
+      renderActors(analysis);
       renderOrder(analysis);
     }
 
     // Full path: the editor cards and every read only panel, from a
     // fresh analysis. Used whenever the shape of the process might have
-    // changed, add, remove, move, a dropdown commit, load sample, reset.
+    // changed, add, remove, move, a dropdown or checkbox commit, load
+    // sample, reset.
     function renderResults() {
       const analysis = analyzeProcess(state);
       const levels = new Map(
@@ -856,9 +1083,7 @@ const tool = getTool('workflow-decomposer')!;
       const step = state.steps.find((s) => s.id === stepId);
       if (!step) return;
 
-      if (field === 'dependsOnId') {
-        step.dependsOnId = rawValue === '' ? null : rawValue;
-      } else if (field === 'name' || field === 'owner' || field === 'completionEvidence') {
+      if (field === 'name' || field === 'owner' || field === 'completionEvidence') {
         step[field] = rawValue;
       } else if (
         field === 'inputStructured' ||
@@ -876,6 +1101,17 @@ const tool = getTool('workflow-decomposer')!;
       state.scenarioId = 'custom';
     }
 
+    function updateDependsOn(stepId: string, otherId: string, checked: boolean) {
+      const step = state.steps.find((s) => s.id === stepId);
+      if (!step) return;
+      if (checked) {
+        if (!step.dependsOn.includes(otherId)) step.dependsOn.push(otherId);
+      } else {
+        step.dependsOn = step.dependsOn.filter((id) => id !== otherId);
+      }
+      state.scenarioId = 'custom';
+    }
+
     function addStep() {
       const last = state.steps[state.steps.length - 1];
       const step: Step = {
@@ -883,7 +1119,7 @@ const tool = getTool('workflow-decomposer')!;
         name: '',
         owner: '',
         completionEvidence: '',
-        dependsOnId: last ? last.id : null,
+        dependsOn: last ? [last.id] : [],
         properties: { ...DEFAULT_PROPERTIES },
       };
       state.steps.push(step);
@@ -901,7 +1137,7 @@ const tool = getTool('workflow-decomposer')!;
       // rather than pointing at a ghost. It surfaces as an orphan if
       // nothing else connects it, which is the honest thing to show.
       for (const step of state.steps) {
-        if (step.dependsOnId === stepId) step.dependsOnId = null;
+        step.dependsOn = step.dependsOn.filter((id) => id !== stepId);
       }
       state.scenarioId = 'custom';
       render();
@@ -919,7 +1155,9 @@ const tool = getTool('workflow-decomposer')!;
 
     function loadSample(id: string) {
       state = sampleState(id);
-      if (processNameInput) processNameInput.value = state.processName;
+      if (outcomeInput) outcomeInput.value = state.outcome;
+      if (inputsInput) inputsInput.value = state.inputs;
+      if (constraintsInput) constraintsInput.value = state.constraints;
       const teaches = el('[data-teaches]');
       if (teaches) teaches.textContent = getSample(id)?.teaches ?? '';
       render();
@@ -928,8 +1166,16 @@ const tool = getTool('workflow-decomposer')!;
     /* ---- Wiring ------------------------------------------------------ */
     root.addEventListener('input', (event) => {
       const target = event.target as HTMLElement;
-      if (target.matches('#field-processName')) {
-        state.processName = (target as HTMLInputElement).value;
+      if (target.matches('#field-outcome')) {
+        state.outcome = (target as HTMLInputElement).value;
+        return;
+      }
+      if (target.matches('#field-inputs')) {
+        state.inputs = (target as HTMLTextAreaElement).value;
+        return;
+      }
+      if (target.matches('#field-constraints')) {
+        state.constraints = (target as HTMLTextAreaElement).value;
         return;
       }
       const stepId = target.getAttribute('data-step-id');
@@ -938,9 +1184,9 @@ const tool = getTool('workflow-decomposer')!;
       const kind = target.getAttribute('data-step-kind');
       // Text and textarea fields update state quietly and only refresh
       // the read only results, so the field the visitor is typing in
-      // never loses focus. Select fields fire 'change', not 'input', so
-      // this branch only ever sees free text.
-      if (kind !== 'bool' && !(target instanceof HTMLSelectElement)) {
+      // never loses focus. Select and checkbox fields fire 'change',
+      // not 'input', so this branch only ever sees free text.
+      if (kind !== 'bool' && !(target instanceof HTMLSelectElement) && !(target instanceof HTMLInputElement && target.type === 'checkbox')) {
         updateStepField(stepId, field, (target as HTMLInputElement | HTMLTextAreaElement).value);
         renderPanelsOnly();
       }
@@ -948,6 +1194,17 @@ const tool = getTool('workflow-decomposer')!;
 
     root.addEventListener('change', (event) => {
       const target = event.target as HTMLElement;
+
+      if (target instanceof HTMLInputElement && target.type === 'checkbox' && target.dataset.stepField === 'dependsOn') {
+        const stepId = target.dataset.stepId;
+        const otherId = target.dataset.dependsOnId;
+        if (stepId && otherId) {
+          updateDependsOn(stepId, otherId, target.checked);
+          render();
+        }
+        return;
+      }
+
       const stepId = target.getAttribute('data-step-id');
       const field = target.getAttribute('data-step-field');
       if (!stepId || !field) return;
@@ -976,7 +1233,9 @@ const tool = getTool('workflow-decomposer')!;
 
     el('[data-reset]')?.addEventListener('click', () => {
       state = emptyState();
-      if (processNameInput) processNameInput.value = '';
+      if (outcomeInput) outcomeInput.value = '';
+      if (inputsInput) inputsInput.value = '';
+      if (constraintsInput) constraintsInput.value = '';
       const teaches = el('[data-teaches]');
       if (teaches) teaches.textContent = '';
       render();
@@ -990,6 +1249,32 @@ const tool = getTool('workflow-decomposer')!;
       const fmt = format === 'markdown' ? 'markdown' : 'json';
       resolve(serialize(state, fmt));
     }) as EventListener);
+
+    // Explicit export for Agent Designer. This is a plain download, not
+    // a live call into that tool: see buildAgentDesignerPayload in the
+    // lib module, which never imports that other tool's own module and
+    // is never imported by it either.
+    el('[data-export-agent-handoff]')?.addEventListener('click', () => {
+      const payload = buildAgentDesignerPayload(state);
+      const text = JSON.stringify(payload, null, 2);
+      const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${slugifyLocal(state.outcome)}-agent-handoff.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+
+      const status = el('[data-agent-export-status]');
+      if (status) {
+        status.textContent = 'Downloaded. Carry this file into Agent Designer by hand once it ships.';
+        window.setTimeout(() => {
+          if (status.textContent) status.textContent = '';
+        }, 4000);
+      }
+    });
 
     render();
   }

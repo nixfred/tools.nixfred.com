@@ -16,6 +16,13 @@
  *      source poorly, and the documented well matched query genuinely
  *      does not, proving both are real properties of the engine rather
  *      than asserted in a comment somewhere.
+ *   7. Every retrieved chunk, selected or missed, resolves to a real
+ *      document id and offsets that slice back to its own text.
+ *   8. Two configurations over the same corpus and query produce a
+ *      correctly computed diff: what one found that the other did not.
+ *   9. The answer template has exactly one citation slot per top k, and
+ *      a query with no good match produces visible GAP slots rather
+ *      than a confident, quietly shorter template.
  *
  * A gate that only checked "results.length > 0" would pass on an engine
  * that silently dropped half the corpus, and coverage is the whole
@@ -37,6 +44,7 @@ import {
   mmrRerank,
   runRetrieval,
   runForState,
+  compareConfigs,
   emptyState,
   sampleState,
   reset,
@@ -376,14 +384,149 @@ console.log(`  chunking coverage verified: ${coverageChecked} (strategy x docume
   const chunks = chunkCorpus(CORPUS, { strategy: 'paragraph', chunkSize: 2000, overlap: 0 });
   const noQuery = runRetrieval(CORPUS, '', { chunking: { strategy: 'paragraph', chunkSize: 2000, overlap: 0 }, rankMethod: 'bm25', topK: 3, scoreThreshold: 0, useMmr: false, mmrLambda: 0.5 });
   expect('answer template empty query', /enter a query/i.test(noQuery.answerTemplate), 'an empty query should produce a template that asks for one');
+  expect('empty query yields no slots', noQuery.answerSlots.length === 0, 'an empty query should produce zero slots, not zero filled slots');
 
   const impossible = runRetrieval(CORPUS, 'rollback deployment', { chunking: { strategy: 'paragraph', chunkSize: 2000, overlap: 0 }, rankMethod: 'bm25', topK: 3, scoreThreshold: 1000, useMmr: false, mmrLambda: 0.5 });
-  expect('answer template no results', impossible.selected.length === 0 && /no chunk cleared/i.test(impossible.answerTemplate), 'an impossibly high threshold should produce zero selected chunks and say so in the template');
+  expect('answer template no results', impossible.selected.length === 0 && /GAP/.test(impossible.answerTemplate), 'an impossibly high threshold should produce zero selected chunks and a template full of explicit GAP slots');
   expect('missed evidence populated when nothing selected', impossible.missed.length > 0, 'with everything filtered out, the missed evidence list should report the highest scoring chunks and why they did not make it');
 
   const normal = runRetrieval(CORPUS, 'roll back a failed deployment', { chunking: { strategy: 'paragraph', chunkSize: 2000, overlap: 0 }, rankMethod: 'bm25', topK: 2, scoreThreshold: 0, useMmr: false, mmrLambda: 0.5 });
   expect('answer template cites selected chunks', normal.selected.every((s, i) => normal.answerTemplate.includes(`${i + 1}. ${s.chunk.docTitle}`)), 'the answer template should number and title every selected chunk as a citation');
+  expect('answer template cites exact offsets', normal.selected.every((s) => normal.answerTemplate.includes(`characters ${s.chunk.start} to ${s.chunk.end}`)), 'the answer template should cite the exact character offsets of every selected chunk, so a citation traces to a source');
   expect('chunks list independent of ranking', normal.chunks.length === chunks.length, 'the full chunk list returned alongside a result should not be filtered by the ranking method');
+}
+
+/* ==================================================================
+   14. Traceability on retrieval results, not just on raw chunking.
+
+   03-RAG-LAB.md acceptance criterion: "Every selected passage can be
+   traced to its source." Section 2 already proved chunkDocument itself
+   never loses or mislabels a character. This proves the same property
+   survives ranking, selection, and the missed evidence list, on every
+   sample query and both configurations, by resolving each chunk back
+   to a real document and slicing its own offsets out of that
+   document's text.
+   ================================================================== */
+{
+  const docById = new Map(CORPUS.map((d) => [d.id, d]));
+  let traced = 0;
+  for (const sample of SAMPLE_QUERIES) {
+    const state = sampleState(sample.id);
+    for (const slot of ['a', 'b']) {
+      const result = runForState(state, slot);
+      const toCheck = [...result.selected, ...result.missed.map((m) => m.scored)];
+      for (const s of toCheck) {
+        const doc = docById.get(s.chunk.docId);
+        expect('traceable to a real document', Boolean(doc), `chunk ${s.chunk.id} names unknown document id "${s.chunk.docId}"`);
+        if (!doc) continue;
+        const sliced = doc.text.slice(s.chunk.start, s.chunk.end);
+        expect('traceable offsets slice back to chunk text', sliced === s.chunk.text, `chunk ${s.chunk.id} text does not match ${s.chunk.docId}.text.slice(${s.chunk.start}, ${s.chunk.end})`);
+        traced += 1;
+      }
+    }
+  }
+  expect('traceability actually exercised', traced > 20, `only ${traced} chunks were checked, too few to trust this proof covers the sample queries`);
+  console.log(`  traceability verified on retrieval results, selected and missed, both configs, all sample queries: ${traced} chunks, every one resolved to a real document and sliced back exactly`);
+}
+
+/* ==================================================================
+   15. Comparing two configurations, the diff is computed correctly.
+
+   PRD acceptance criterion: "User can compare two configurations."
+   Cross checks compareConfigs against independently computed set
+   arithmetic over the raw selected arrays, rather than trusting its
+   own bookkeeping, and separately proves the span overlap flag with a
+   synthetic case, since the real corpus's paragraph strategy always
+   happens to produce a single whole document chunk and so never
+   exercises the "same document, non overlapping fragments" branch on
+   its own.
+   ================================================================== */
+{
+  const state = sampleState('refund-paraphrase');
+  const resultA = runForState(state, 'a');
+  const resultB = runForState(state, 'b');
+  const comparison = compareConfigs(resultA, resultB);
+
+  const docIdsA = new Set(resultA.selected.map((s) => s.chunk.docId));
+  const docIdsB = new Set(resultB.selected.map((s) => s.chunk.docId));
+  const expectedOnlyA = [...docIdsA].filter((d) => !docIdsB.has(d));
+  const expectedOnlyB = [...docIdsB].filter((d) => !docIdsA.has(d));
+  const expectedBoth = [...docIdsA].filter((d) => docIdsB.has(d));
+
+  expect(
+    'compare configs: the two default configs actually differ',
+    expectedOnlyA.length > 0 || expectedOnlyB.length > 0,
+    'config A and config B for the refund sample query retrieved the exact same set of documents, so there is nothing here for the comparison to show',
+  );
+  expect('compare configs: onlyInA count matches independent count', comparison.onlyInA.length === expectedOnlyA.length, `expected ${expectedOnlyA.length} documents only in A, compareConfigs reported ${comparison.onlyInA.length}`);
+  expect('compare configs: onlyInB count matches independent count', comparison.onlyInB.length === expectedOnlyB.length, `expected ${expectedOnlyB.length} documents only in B, compareConfigs reported ${comparison.onlyInB.length}`);
+  expect('compare configs: inBoth count matches independent count', comparison.inBoth.length === expectedBoth.length, `expected ${expectedBoth.length} documents in both, compareConfigs reported ${comparison.inBoth.length}`);
+
+  // Cross check every row against the raw selected arrays directly,
+  // rather than trusting compareConfigs' own bookkeeping.
+  for (const row of comparison.rows) {
+    const inASelected = resultA.selected.some((s) => s.chunk.docId === row.docId);
+    const inBSelected = resultB.selected.some((s) => s.chunk.docId === row.docId);
+    expect('compare configs: row A presence matches raw selection', (row.inA.length > 0) === inASelected, `row for ${row.docId} disagrees with resultA.selected about presence`);
+    expect('compare configs: row B presence matches raw selection', (row.inB.length > 0) === inBSelected, `row for ${row.docId} disagrees with resultB.selected about presence`);
+  }
+  expect(
+    'compare configs: billing adjustment procedure is the headline difference',
+    comparison.onlyInB.includes('Billing Adjustment Procedure'),
+    'the refund sample query is supposed to show config B recovering the billing document that config A misses entirely, but it does not appear in onlyInB',
+  );
+  console.log(`  compare configs: onlyInA=[${comparison.onlyInA.join(', ')}], onlyInB=[${comparison.onlyInB.join(', ')}], inBoth=[${comparison.inBoth.join(', ')}]`);
+
+  // Span overlap, synthetic: same document, two configurations, one
+  // pair of chunks overlaps and one pair does not.
+  const mk = (id, start, end) => ({
+    chunk: { id, docId: 'doc', docTitle: 'Doc', index: 0, start, end, text: 'x'.repeat(end - start) },
+    score: 1,
+    matchedTerms: [],
+    reason: '',
+  });
+  const overlapping = compareConfigs(
+    { chunks: [], ranked: [], selected: [mk('a0', 0, 50)], missed: [], answerSlots: [], answerTemplate: '' },
+    { chunks: [], ranked: [], selected: [mk('b0', 30, 80)], missed: [], answerSlots: [], answerTemplate: '' },
+  );
+  expect('compare configs: overlapping spans detected', overlapping.rows[0].spansOverlap === true, 'chunks at 0 to 50 and 30 to 80 share characters 30 to 50 and should be flagged as overlapping');
+
+  const disjoint = compareConfigs(
+    { chunks: [], ranked: [], selected: [mk('a0', 0, 50)], missed: [], answerSlots: [], answerTemplate: '' },
+    { chunks: [], ranked: [], selected: [mk('b0', 100, 150)], missed: [], answerSlots: [], answerTemplate: '' },
+  );
+  expect('compare configs: disjoint spans are not flagged as overlapping', disjoint.rows[0].spansOverlap === false, 'chunks at 0 to 50 and 100 to 150 share no characters and should not be flagged as overlapping');
+  console.log('  compare configs span overlap: correctly distinguishes overlapping fragments of one document from disjoint fragments of it');
+}
+
+/* ==================================================================
+   16. Answer template slots: exactly one per top k, gaps explicit.
+   ================================================================== */
+{
+  const baseConfig = { chunking: { strategy: 'paragraph', chunkSize: 2000, overlap: 0 }, rankMethod: 'bm25', scoreThreshold: 0, useMmr: false, mmrLambda: 0.5 };
+
+  // A query with real evidence, sized so every slot fills: verified by
+  // running it first, deploy-runbook and billing-adjustments both
+  // score above zero against this query, and nothing else does.
+  const goodMatch = runRetrieval(CORPUS, 'roll back a failed deployment', { ...baseConfig, topK: 2 });
+  expect('good match slot count equals top k', goodMatch.answerSlots.length === 2, `expected 2 slots, got ${goodMatch.answerSlots.length}`);
+  expect('good match fills every slot', goodMatch.answerSlots.every((s) => s.chunk !== null), 'a query with two genuinely matching documents at top k 2 should fill both slots');
+  expect('good match template has no gap', !/GAP/.test(goodMatch.answerTemplate), 'a fully filled answer template should not contain a GAP marker');
+
+  // A query built from tokens that appear nowhere in the corpus: every
+  // slot must come back a gap, and the template must say so plainly
+  // rather than silently listing fewer citations.
+  const noMatch = runRetrieval(CORPUS, 'zzqxxplorf wibbleflorp nonexistent gibberish', { ...baseConfig, topK: 3 });
+  expect('no match slot count equals top k', noMatch.answerSlots.length === 3, `expected 3 slots even with no matches, got ${noMatch.answerSlots.length}`);
+  expect('no match yields all gap slots', noMatch.answerSlots.every((s) => s.chunk === null), 'a query matching nothing in the corpus should still produce topK slots, every one a gap');
+  const gapLines = (noMatch.answerTemplate.match(/^\d+\. GAP\./gm) ?? []).length;
+  expect('no match template shows every gap explicitly', gapLines === 3, `expected 3 GAP markers in the template, found ${gapLines}`);
+  expect('no match instructs against answering the gap', /do not (write|answer)/i.test(noMatch.answerTemplate), 'the template should explicitly instruct against answering from an empty slot rather than merely omitting it');
+  console.log(`  answer slots: a fully matched query fills every slot with zero GAP markers, an unmatched query produces exactly top k, ${gapLines}, GAP markers`);
+
+  // Top k of 0 is its own sensible case: no slots to fill or gap.
+  const zeroTopK = runRetrieval(CORPUS, 'roll back a failed deployment', { ...baseConfig, topK: 0 });
+  expect('zero top k yields no slots', zeroTopK.answerSlots.length === 0, 'top k of 0 should produce zero slots, not zero gaps');
 }
 
 /* ---- Report ------------------------------------------------------- */

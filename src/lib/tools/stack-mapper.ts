@@ -810,8 +810,14 @@ export function buildDiagram(state: StackMapperState): Diagram {
         ? `<rect x="${n.x}" y="${n.y}" width="${STRIPE_W}" height="${n.height}" style="fill:var(--status-beta)" />`
         : '';
 
+      // Avoid announcing "Client, Client" when an instance keeps its
+      // default name: only name the kind separately once it differs
+      // from the instance label the user gave it.
+      const kindSuffix = c.label === CATALOG[c.kind].label ? '' : `, ${CATALOG[c.kind].label}`;
+      const nodeAriaLabel = `${c.label}${kindSuffix}. ${badges || 'no flagged properties'}.`;
+
       return `
-    <g role="img" aria-label="${escapeXml(`${c.label}, ${CATALOG[c.kind].label}. ${badges || 'no flagged properties'}.`)}">
+    <g role="img" aria-label="${escapeXml(nodeAriaLabel)}">
       <rect x="${n.x}" y="${n.y}" width="${n.width}" height="${n.height}" rx="6" style="fill:var(--panel);stroke:${stroke};stroke-width:${strokeWidth}" />
       ${stripe}
       <text x="${n.x + 18}" y="${n.y + 28}" style="font:700 0.95rem var(--font-sans);fill:var(--text)">${label}</text>

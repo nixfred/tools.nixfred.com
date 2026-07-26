@@ -536,10 +536,26 @@ export interface MissedEvidence {
   reason: string;
 }
 
+/**
+ * One numbered citation slot in the answer template. The slot exists
+ * whether or not a chunk filled it: PRD requirement "where a slot has
+ * no supporting chunk, show the gap explicitly". A template with
+ * topK - 1 gaps and one real citation looks like what it is, evidence
+ * for a fifth of an answer, rather than a confident paragraph.
+ */
+export interface AnswerSlot {
+  /** 1 based, matches the citation number printed in answerTemplate. */
+  index: number;
+  /** Null means this slot is a gap: nothing cleared the settings for it. */
+  chunk: ScoredChunk | null;
+}
+
 export interface RetrievalResult {
   /** Every chunk the configuration produced, in document order. This is
    * the PRD requirement to "show the actual chunks produced from the
-   * corpus", independent of ranking. */
+   * corpus", independent of ranking. Every chunk carries its docId and
+   * its start and end character offsets into that document, which is
+   * what "every selected passage can be traced to its source" rests on. */
   chunks: Chunk[];
   /** Every chunk, scored and sorted, before top k or the threshold cut. */
   ranked: ScoredChunk[];
@@ -547,9 +563,12 @@ export interface RetrievalResult {
   selected: ScoredChunk[];
   /** Notable chunks that scored but were not selected, and why. */
   missed: MissedEvidence[];
-  /** A grounded answer scaffold, not a generated answer. It cites the
-   * selected chunks and instructs whoever, or whatever, answers next to
-   * stay inside them. */
+  /** Exactly topK slots, in order. A slot with chunk null is a gap: no
+   * chunk cleared the current settings for that citation number. */
+  answerSlots: AnswerSlot[];
+  /** A grounded answer scaffold, not a generated answer. Built directly
+   * from answerSlots, so a gap in the slots is a GAP line here too,
+   * never silently omitted. */
   answerTemplate: string;
 }
 
@@ -558,22 +577,42 @@ function excerpt(text: string, max = 160): string {
   return trimmed.length > max ? `${trimmed.slice(0, max)}...` : trimmed;
 }
 
-function buildAnswerTemplate(query: string, selected: ScoredChunk[]): string {
+function buildAnswerSlots(topK: number, selected: ScoredChunk[]): AnswerSlot[] {
+  const count = Math.max(0, topK);
+  return Array.from({ length: count }, (_, i) => ({
+    index: i + 1,
+    chunk: selected[i] ?? null,
+  }));
+}
+
+/**
+ * Render the slots as text. Every gap is printed as GAP, in place,
+ * rather than skipped, so a query with no good match produces a
+ * template that is visibly full of holes rather than one that quietly
+ * has fewer citations and reads as more confident than the evidence
+ * supports.
+ */
+function buildAnswerTemplate(query: string, slots: AnswerSlot[]): string {
   if (!query.trim()) return 'Enter a query to generate a grounded answer template.';
-  if (selected.length === 0) {
-    return `No chunk cleared the current settings for "${query}". Lower the score threshold, raise top k, or try a different ranking method.`;
+  if (slots.length === 0) {
+    return 'Top k is 0, so there are no citation slots to fill. Raise top k to generate a template.';
   }
-  const citations = selected
-    .map(
-      (s, i) =>
-        `${i + 1}. ${s.chunk.docTitle}, chunk ${s.chunk.index + 1}: "${excerpt(s.chunk.text)}"`,
-    )
-    .join('\n');
-  return [
-    `Answer "${query}" using only the numbered evidence below. Cite the matching number for every claim, and say plainly when the evidence does not cover part of the question.`,
-    '',
-    citations,
-  ].join('\n');
+
+  const lines = slots.map((slot) => {
+    if (!slot.chunk) {
+      return `${slot.index}. GAP. No chunk cleared the current settings for this slot. Do not write a claim here without evidence.`;
+    }
+    const c = slot.chunk.chunk;
+    return `${slot.index}. ${c.docTitle}, chunk ${c.index + 1}, characters ${c.start} to ${c.end}: "${excerpt(c.text)}"`;
+  });
+
+  const gapCount = slots.filter((s) => !s.chunk).length;
+  const header =
+    gapCount > 0
+      ? `Answer "${query}" using only the numbered evidence below. Cite the matching number for every claim. ${gapCount} of ${slots.length} slots have no supporting evidence and are marked GAP. Do not answer the part of the question those slots would have covered.`
+      : `Answer "${query}" using only the numbered evidence below. Cite the matching number for every claim, and say plainly when the evidence does not cover part of the question.`;
+
+  return [header, '', ...lines].join('\n');
 }
 
 export function runRetrieval(
@@ -601,12 +640,81 @@ export function runRetrieval(
           : `Scored ${r.score.toFixed(3)}, ranked outside the top ${config.topK}.`,
     }));
 
+  const answerSlots = query.trim() ? buildAnswerSlots(config.topK, selected) : [];
+
   return {
     chunks,
     ranked,
     selected,
     missed,
-    answerTemplate: buildAnswerTemplate(query, selected),
+    answerSlots,
+    answerTemplate: buildAnswerTemplate(query, answerSlots),
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Comparing two configurations.
+ *
+ * PRD acceptance criterion: "User can compare two configurations." The
+ * useful output is not the two result lists side by side, it is the
+ * difference between them: which documents one configuration surfaced
+ * that the other did not, and, for a document both surfaced, whether
+ * they actually point at the same underlying text or at two different
+ * fragments of it. Different chunking strategies rarely produce chunks
+ * with identical character offsets, so the comparison is keyed on
+ * document id, with span overlap computed separately, rather than on
+ * chunk id, which would almost never match between two configurations.
+ * ------------------------------------------------------------------ */
+
+export interface ComparisonRow {
+  docId: string;
+  docTitle: string;
+  /** Chunks from this document Config A selected, empty if none. */
+  inA: ScoredChunk[];
+  /** Chunks from this document Config B selected, empty if none. */
+  inB: ScoredChunk[];
+  /** True when at least one selected chunk from A and one from B, for
+   * this document, share at least one character. False when both
+   * configurations selected this document but pointed at different
+   * fragments of it, which is its own useful fact to see. */
+  spansOverlap: boolean;
+}
+
+export interface ConfigComparison {
+  rows: ComparisonRow[];
+  /** Document titles Config A selected that Config B did not select at all. */
+  onlyInA: string[];
+  /** Document titles Config B selected that Config A did not select at all. */
+  onlyInB: string[];
+  /** Document titles both configurations selected. */
+  inBoth: string[];
+}
+
+function rangesOverlap(a: ScoredChunk, b: ScoredChunk): boolean {
+  return a.chunk.start < b.chunk.end && b.chunk.start < a.chunk.end;
+}
+
+export function compareConfigs(resultA: RetrievalResult, resultB: RetrievalResult): ConfigComparison {
+  const docIds = new Set<string>([
+    ...resultA.selected.map((s) => s.chunk.docId),
+    ...resultB.selected.map((s) => s.chunk.docId),
+  ]);
+
+  const rows: ComparisonRow[] = Array.from(docIds)
+    .map((docId) => {
+      const inA = resultA.selected.filter((s) => s.chunk.docId === docId);
+      const inB = resultB.selected.filter((s) => s.chunk.docId === docId);
+      const docTitle = (inA[0] ?? inB[0]).chunk.docTitle;
+      const spansOverlap = inA.some((a) => inB.some((b) => rangesOverlap(a, b)));
+      return { docId, docTitle, inA, inB, spansOverlap };
+    })
+    .sort((x, y) => x.docTitle.localeCompare(y.docTitle));
+
+  return {
+    rows,
+    onlyInA: rows.filter((r) => r.inA.length > 0 && r.inB.length === 0).map((r) => r.docTitle),
+    onlyInB: rows.filter((r) => r.inB.length > 0 && r.inA.length === 0).map((r) => r.docTitle),
+    inBoth: rows.filter((r) => r.inA.length > 0 && r.inB.length > 0).map((r) => r.docTitle),
   };
 }
 

@@ -242,6 +242,17 @@ expect(
 // src/data/registry.ts, which 04-LANDING-PAGE.md permits as "a small
 // ordered configuration list". Anywhere else a slug literal means the
 // grid is hardcoded and the modularity criterion is false.
+// Every entry here needs a PRD citation. If a change cannot cite one,
+// it does not belong in this list.
+const CROSS_TOOL_ALLOWLIST = [
+  {
+    file: 'src/pages/tools/workflow-decomposer.astro',
+    slug: 'agent-designer',
+    reason:
+      '07-WORKFLOW-DECOMPOSER.md acceptance criterion 4 requires promoting a workflow into Agent Designer through an explicit export.',
+  },
+];
+
 const LANDING_DIRS = ['src/components', 'src/layouts', 'src/pages'];
 const allSlugs = MERGED.map((t) => t.slug);
 function walk(dir) {
@@ -277,10 +288,31 @@ for (const dir of LANDING_DIRS) {
     const ownPageMatch = rel.match(/^src\/pages\/tools\/([a-z0-9-]+)\.astro$/);
     const ownSlug = ownPageMatch ? ownPageMatch[1] : null;
 
+    // CROSS TOOL ALLOWLIST, added 2026-07-26.
+    //
+    // One PRD explicitly REQUIRES a tool to reference another by name,
+    // so a blanket ban would put this gate in direct conflict with the
+    // pack it exists to enforce. 07-WORKFLOW-DECOMPOSER.md acceptance
+    // criterion 4: "User can promote the workflow into Agent Designer
+    // through an explicit export, not hidden coupling."
+    //
+    // Note what that criterion asks for and what it forbids. The export
+    // is required. The COUPLING is forbidden. So the allowance below is
+    // deliberately paired with an import check further down: naming the
+    // target tool is permitted, importing its module is not.
+    //
+    // This list is explicit rather than a marker comment so that adding
+    // an entry is a visible, reviewable act instead of something that
+    // can be sprinkled into a file to silence the gate.
+    const crossToolAllowed = CROSS_TOOL_ALLOWLIST.filter(
+      (entry) => entry.file === rel,
+    ).map((entry) => entry.slug);
+
     landingFilesScanned += 1;
     const text = readFileSync(file, 'utf8');
     for (const slug of allSlugs) {
       if (slug === ownSlug) continue;
+      if (crossToolAllowed.includes(slug)) continue;
       if (text.includes(slug)) {
         fail(
           'hardcoded slug',
@@ -289,6 +321,33 @@ for (const dir of LANDING_DIRS) {
       }
     }
   }
+}
+
+/* ---- 7e. The allowance above is NOT permission to couple ---------
+   07-WORKFLOW-DECOMPOSER.md criterion 4 permits an explicit export and
+   forbids "hidden coupling". Naming the target tool is therefore fine,
+   but importing its module is exactly the coupling the PRD rules out.
+   So every allowlisted file is checked for a real import of the tool it
+   is allowed to name. Without this, the allowlist would quietly widen
+   from "may mention" to "may depend on".
+   ------------------------------------------------------------------ */
+for (const entry of CROSS_TOOL_ALLOWLIST) {
+  const full = join(ROOT, entry.file);
+  let text = '';
+  try {
+    text = readFileSync(full, 'utf8');
+  } catch {
+    fail('cross tool allowlist', `${entry.file} is allowlisted but does not exist`);
+    continue;
+  }
+  const importPattern = new RegExp(
+    `(import|from)\\s+['"][^'"]*tools/${entry.slug}(\\.ts)?['"]`,
+  );
+  expect(
+    'no hidden coupling',
+    !importPattern.test(text),
+    `${entry.file} IMPORTS the ${entry.slug} module. The PRD permits an explicit export and forbids hidden coupling, so emit a documented payload instead of importing that tool.`,
+  );
 }
 
 /* ==================================================================
