@@ -310,7 +310,16 @@ expect('moveComponent no-ops past the start', noop.components[0].id === moveStat
 console.log('  CRUD primitives: add, remove, move, and id collision avoidance after remove and re-add');
 
 /* ---- 12. Catalog coverage ------------------------------------------------ */
-expect('14 component kinds', COMPONENT_KINDS.length === 14, `got ${COMPONENT_KINDS.length}`);
+// UPDATED 2026-07-26, deliberately: was a hardcoded 14. Three kinds the
+// PRD names were missing (orchestration, memory, storage) and were added,
+// so a fixed count is now the wrong assertion. Checking the floor plus
+// the PRD vocabulary is stricter than a magic number: it cannot be
+// satisfied by adding arbitrary kinds, and it fails if a named one is
+// removed.
+expect('component kind floor', COMPONENT_KINDS.length >= 17, `got ${COMPONENT_KINDS.length}, expected at least 17`);
+for (const required of ['client', 'gateway', 'orchestration', 'model-provider', 'retriever', 'tool-call', 'memory', 'guardrail', 'logging', 'storage']) {
+  expect('PRD vocabulary covered', COMPONENT_KINDS.includes(required), `${required} is named in the PRD workflow line but missing from COMPONENT_KINDS`);
+}
 for (const kind of COMPONENT_KINDS) {
   expect('catalog entry complete', Boolean(CATALOG[kind]?.label && CATALOG[kind]?.whatCouldFail), `${kind} is missing a catalog fact`);
 }
@@ -326,6 +335,77 @@ for (const sample of SAMPLES) {
 console.log('  diagram accessibility: role=img, title, and desc present on both samples');
 
 /* ---- Report --------------------------------------------------------------- */
+
+/* ==================================================================
+   TEMPLATES, added 2026-07-26.
+
+   14-STACK-MAPPER.md's workflow line offers "an architecture template
+   or assemble ... components". Templates were the missing half.
+
+   The load bearing assertion is that EVERY shipped template validates
+   clean. A template that ships with a validity finding teaches the
+   wrong thing on first click, and it is also the control proving the
+   validator discriminates rather than firing on everything.
+   ================================================================== */
+{
+  const mod = await import('../src/lib/tools/stack-mapper.ts');
+  const { TEMPLATES, templateState, getTemplate, validate, COMPONENT_KINDS, CATALOG } = mod;
+
+  expect('templates exist', Array.isArray(TEMPLATES) && TEMPLATES.length >= 3,
+    `expected at least 3 templates, got ${TEMPLATES?.length}`);
+
+  const seen = new Set();
+  for (const t of TEMPLATES) {
+    expect('template shape', Boolean(t.id && t.name && t.description),
+      `template ${t.id} is missing a field`);
+    expect('template unique', !seen.has(t.id), `duplicate template id ${t.id}`);
+    seen.add(t.id);
+
+    expect('template kinds valid', t.kinds.every((k) => COMPONENT_KINDS.includes(k)),
+      `template ${t.id} names a kind not in COMPONENT_KINDS`);
+
+    // Every path must begin at a client, which is what the validator
+    // requires and what makes a trace meaningful.
+    expect('template starts at client', t.kinds[0] === 'client',
+      `template ${t.id} starts at ${t.kinds[0]}, not client`);
+
+    const state = templateState(t.id);
+    expect('template materializes', state.components.length === t.kinds.length,
+      `template ${t.id} produced ${state.components.length} components for ${t.kinds.length} kinds`);
+
+    // Ids must be unique or the diagram and CRUD both break.
+    const ids = state.components.map((c) => c.id);
+    expect('template ids unique', new Set(ids).size === ids.length,
+      `template ${t.id} produced duplicate component ids`);
+
+    const findings = validate(state);
+    expect('template validates clean', findings.length === 0,
+      `template ${t.id} ships with validity findings: ${findings.map((f) => f.message || f.kind).join('; ')}`);
+  }
+
+  // An unknown id must not throw; it falls back to the first template.
+  const fallback = templateState('no-such-template');
+  expect('template fallback', fallback.components.length > 0,
+    'unknown template id produced an empty stack instead of falling back');
+  expect('getTemplate miss', getTemplate('no-such-template') === undefined,
+    'getTemplate returned something for an unknown id');
+
+  // The PRD names a vocabulary. Confirm the three that were missing
+  // before 2026-07-26 now exist and are reachable from a template.
+  for (const kind of ['orchestration', 'memory', 'storage']) {
+    expect('prd vocabulary present', COMPONENT_KINDS.includes(kind),
+      `${kind} is named in the PRD workflow but is not a component kind`);
+    expect('prd vocabulary has catalog entry', Boolean(CATALOG[kind]?.label),
+      `${kind} has no catalog entry`);
+    expect('prd vocabulary reachable', TEMPLATES.some((t) => t.kinds.includes(kind)),
+      `${kind} exists but no template uses it, so a visitor never meets it`);
+  }
+
+  console.log(`  templates: ${TEMPLATES.length}, all validate clean, all start at a client`);
+  console.log(`  component kinds: ${COMPONENT_KINDS.length}, including orchestration, memory, and storage`);
+}
+
+
 console.log(`\nchecks run: ${checks}`);
 if (failures) {
   console.log(`STACK MAPPER LOGIC: FAILED (${failures})`);
