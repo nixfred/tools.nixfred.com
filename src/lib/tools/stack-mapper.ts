@@ -36,18 +36,32 @@
  * ------------------------------------------------------------------ */
 
 /** The 14 component kinds a stack is built from, per the product brief. */
+// 14-STACK-MAPPER.md names the vocabulary this tool must be able to
+// assemble: "client, gateway, orchestration, model, retrieval, tools,
+// memory, policy, observability, and storage components."
+//
+// Most of that list was already covered under a more specific name:
+// retrieval by retriever, model by model-provider, tools by tool-call,
+// policy by guardrail, observability by logging and evaluation-hook.
+// Three had no representative at all and were added 2026-07-26:
+// orchestration, memory, and storage. They are the three people
+// most often forget when drawing their own stack, which is exactly
+// why the PRD enumerates them.
 export const COMPONENT_KINDS = [
   'client',
   'gateway',
   'auth',
   'rate-limiter',
+  'orchestration',
   'cache',
   'retriever',
   'vector-store',
   'reranker',
+  'memory',
   'model-provider',
   'tool-call',
   'guardrail',
+  'storage',
   'logging',
   'evaluation-hook',
   'human-review',
@@ -88,6 +102,45 @@ interface CatalogEntry {
 }
 
 export const CATALOG: Record<ComponentKind, CatalogEntry> = {
+  orchestration: {
+    label: 'Orchestration',
+    description:
+      'The layer that decides what happens next. Runs the agent loop, sequences tool calls, and owns retries and stop conditions.',
+    defaultSeesRawUserData: true,
+    defaultThirdParty: false,
+    defaultPersists: false,
+    defaultFailureMode: 'fails-closed',
+    typicallyBlockingIO: false,
+    criticalByDefault: true,
+    whatCouldFail:
+      'It can loop without a stop condition, retry a non idempotent action twice, or swallow a tool error and carry on as though the step succeeded.',
+  },
+  memory: {
+    label: 'Memory',
+    description:
+      'State that survives the request. Conversation history, summaries, or facts the system carries between turns.',
+    defaultSeesRawUserData: true,
+    defaultThirdParty: false,
+    defaultPersists: true,
+    defaultFailureMode: 'fails-open',
+    typicallyBlockingIO: true,
+    criticalByDefault: false,
+    whatCouldFail:
+      'It can serve stale or another Customer state, grow past the context window, or persist something a visitor expected to be transient. Because it both reads raw input and persists, it is usually the component that turns a one time input into a lasting record.',
+  },
+  storage: {
+    label: 'Storage',
+    description:
+      'Where data comes to rest. Databases, object stores, and file systems the request reads from or writes to.',
+    defaultSeesRawUserData: true,
+    defaultThirdParty: false,
+    defaultPersists: true,
+    defaultFailureMode: 'fails-closed',
+    typicallyBlockingIO: true,
+    criticalByDefault: true,
+    whatCouldFail:
+      'It can be unavailable, return stale reads, or retain data past the point anyone intended. For the question a Customer actually asks, where does my data end up, this is usually the answer.',
+  },
   client: {
     label: 'Client',
     description: 'Where the request originates. A person or another system.',
@@ -850,6 +903,137 @@ export function buildDiagram(state: StackMapperState): Diagram {
  * exercises all four risk flag kinds, including a guardrail placed
  * after the model it is meant to guard.
  * ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
+ * Architecture templates
+ *
+ * 14-STACK-MAPPER.md, workflow: "Select an architecture template or
+ * assemble ... components." A blank canvas is the harder half of that
+ * sentence and was the only half implemented; these are the other half.
+ *
+ * A template is an ordered list of KINDS, not a list of prebuilt
+ * components. Materializing it through createComponent means a template
+ * can never drift from the catalog: change a default in CATALOG and
+ * every template inherits it. Hand written component objects would have
+ * frozen the defaults as they were on the day the template was typed.
+ *
+ * Every shipped template must validate clean. That is asserted in
+ * tests/tool-stack-mapper.mjs, and it is the control that proves the
+ * validator discriminates rather than always firing.
+ * ------------------------------------------------------------------ */
+
+export interface ArchitectureTemplate {
+  id: string;
+  name: string;
+  description: string;
+  kinds: ComponentKind[];
+}
+
+export const TEMPLATES: ArchitectureTemplate[] = [
+  {
+    id: 'minimal-chat',
+    name: 'Minimal chat',
+    description:
+      'The smallest thing that answers a question. Useful as a starting point, and useful for seeing how quickly flags appear as you add nothing but a model.',
+    kinds: ['client', 'gateway', 'model-provider'],
+  },
+  {
+    id: 'guarded-chat',
+    name: 'Guarded chat',
+    description:
+      'Chat with the controls most teams add first: authentication, a rate limiter, an input guardrail ahead of the model, and logging behind it.',
+    kinds: [
+      'client',
+      'gateway',
+      'auth',
+      'rate-limiter',
+      'guardrail',
+      'model-provider',
+      'logging',
+    ],
+  },
+  {
+    id: 'rag-pipeline',
+    name: 'Retrieval pipeline',
+    description:
+      'Retrieval in front of generation. Shows how many components see raw user input once a query is embedded and sent to a vector store.',
+    kinds: [
+      'client',
+      'gateway',
+      'auth',
+      'orchestration',
+      'retriever',
+      'vector-store',
+      'reranker',
+      'guardrail',
+      'model-provider',
+      'logging',
+    ],
+  },
+  {
+    id: 'agent-with-tools',
+    name: 'Agent with tools and memory',
+    description:
+      'An orchestration loop with tool calls, persistent memory, and storage. The stack where the data flow question gets genuinely hard to answer from memory, which is the reason to draw it.',
+    kinds: [
+      'client',
+      'gateway',
+      'auth',
+      'orchestration',
+      'memory',
+      'guardrail',
+      'model-provider',
+      'tool-call',
+      'storage',
+      'logging',
+      'evaluation-hook',
+    ],
+  },
+  {
+    id: 'reviewed-enterprise',
+    name: 'Enterprise with human review',
+    description:
+      'The full vocabulary, including the human review step that most diagrams leave out and most regulated deployments require.',
+    kinds: [
+      'client',
+      'gateway',
+      'auth',
+      'rate-limiter',
+      'orchestration',
+      'cache',
+      'retriever',
+      'vector-store',
+      'memory',
+      'guardrail',
+      'model-provider',
+      'tool-call',
+      'storage',
+      'human-review',
+      'logging',
+      'evaluation-hook',
+    ],
+  },
+];
+
+export function getTemplate(id: string): ArchitectureTemplate | undefined {
+  return TEMPLATES.find((t) => t.id === id);
+}
+
+/**
+ * Build a state from a template by materializing each kind through the
+ * same factory the add button uses, so a templated stack is
+ * indistinguishable from one assembled by hand.
+ */
+export function templateState(id: string): StackMapperState {
+  const template = getTemplate(id) ?? TEMPLATES[0];
+  const components: StackComponent[] = [];
+  for (const kind of template.kinds) {
+    components.push(createComponent(kind, components));
+  }
+  // sampleId is the toolbar selection and is cosmetic. A templated stack
+  // did not come from a sample, so it carries the template id instead.
+  return { components, sampleId: template.id };
+}
 
 export interface Sample {
   id: string;
