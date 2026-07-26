@@ -8,13 +8,14 @@
     "build": "astro build",
     "preview": "astro preview",
     "deploy": "./deploy.sh",
-    "test": "bun astro build && ./tests/check-links.sh && ./tests/check-safety.sh && ./tests/check-copy.sh && bun tests/check-registry.mjs && bun tests/check-contrast.mjs && bun run test:tools",
+    "test": "bun astro build && ./tests/check-links.sh && ./tests/check-safety.sh && ./tests/check-copy.sh && bun tests/check-registry.mjs && bun tests/check-contrast.mjs && bun tests/check-cross-tool-facts.mjs && bun run test:tools",
     "test:links": "./tests/check-links.sh",
     "test:safety": "./tests/check-safety.sh",
     "test:copy": "./tests/check-copy.sh",
     "test:registry": "bun tests/check-registry.mjs",
     "test:contrast": "bun tests/check-contrast.mjs",
-    "test:tools": "for f in tests/tool-*.mjs; do bun \"$f\" || exit 1; done"
+    "test:tools": "for f in tests/tool-*.mjs; do bun \"$f\" || exit 1; done",
+    "test:facts": "bun tests/check-cross-tool-facts.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",

@@ -226,14 +226,14 @@ export const CATALOG: ModelEntry[] = [
     hosting: ['vendor-api', 'private-cloud'],
     latencyClass: 'slow',
     throughputTier: 'limited',
-    pricePerMillionInput: 15,
-    pricePerMillionOutput: 75,
-    priceConfidence: 'placeholder',
+    pricePerMillionInput: 5,
+    pricePerMillionOutput: 25,
+    priceConfidence: 'published',
     priceSource:
-      'Placeholder, extrapolated from Anthropic historical Opus tier pricing (Opus 4 published at $15 and $75 per million tokens). Not confirmed for this specific release.',
-    priceEffectiveDate: '2026-07-20',
+      'Anthropic published list price, first party model table cached 2026-06-24.',
+    priceEffectiveDate: '2026-06-24',
     notes:
-      'Context window assumed consistent with the established 200000 token Claude family standard. Not confirmed for this specific release.',
+      'Corrected 2026-07-26. This row previously carried an extrapolated placeholder of $15 and $75, which was three times the real price and disagreed with the Token and Cost Planner on the same model. Both tools now read the same published figures.',
   },
   {
     id: 'claude-sonnet-5',
@@ -249,12 +249,12 @@ export const CATALOG: ModelEntry[] = [
     throughputTier: 'standard',
     pricePerMillionInput: 3,
     pricePerMillionOutput: 15,
-    priceConfidence: 'placeholder',
+    priceConfidence: 'published',
     priceSource:
-      'Placeholder, extrapolated from Anthropic historical Sonnet tier pricing. Not confirmed for this specific release.',
-    priceEffectiveDate: '2026-07-20',
+      'Anthropic published list price, first party model table cached 2026-06-24.',
+    priceEffectiveDate: '2026-06-24',
     notes:
-      'Context window assumed consistent with the established 200000 token Claude family standard. Not confirmed for this specific release.',
+      'Introductory pricing of $2 and $10 per million tokens runs through 2026-08-31. The figures here are the standard rates that apply after it, so a near term estimate using this row is conservative rather than optimistic.',
   },
   {
     id: 'claude-haiku-4-5',
@@ -270,12 +270,12 @@ export const CATALOG: ModelEntry[] = [
     throughputTier: 'scale',
     pricePerMillionInput: 1,
     pricePerMillionOutput: 5,
-    priceConfidence: 'placeholder',
+    priceConfidence: 'published',
     priceSource:
-      'Placeholder, extrapolated from Anthropic historical Haiku tier pricing. Not confirmed for this specific release.',
-    priceEffectiveDate: '2026-07-20',
+      'Anthropic published list price, first party model table cached 2026-06-24.',
+    priceEffectiveDate: '2026-06-24',
     notes:
-      'Context window assumed consistent with the established 200000 token Claude family standard. Not confirmed for this specific release.',
+      'Context window is 200000 tokens, smaller than the 1M window on the Claude 5 family. That is a hard constraint, not a preference, so it eliminates this candidate outright on long context workloads.',
   },
   {
     id: 'gpt-4o',
