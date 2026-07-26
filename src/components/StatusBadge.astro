@@ -1,0 +1,80 @@
+---
+// Status badge. The word carries the meaning; the color only seconds
+// it. A monochrome screen, a printed page, and a red/green color vision
+// difference all still get the state, because the state is spelled out.
+//
+// 01-INFORMATION-ARCHITECTURE.md, "Tool states".
+import type { ToolStatus } from '../data/types';
+
+interface Props {
+  status: ToolStatus;
+}
+
+const { status } = Astro.props;
+
+const LABELS: Record<ToolStatus, string> = {
+  released: 'Released',
+  beta: 'Beta',
+  'coming-soon': 'Coming soon',
+  hidden: '',
+};
+
+// `hidden` never appears on a public surface, so this component renders
+// nothing at all for it: no element, no whitespace, no empty badge box
+// for a layout to leave a gap around.
+const visible = status !== 'hidden';
+---
+
+{
+  visible && (
+    <span class="badge mono" data-status={status}>
+      <span class="visually-hidden">Status: </span>
+      {LABELS[status]}
+    </span>
+  )
+}
+
+<style>
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+    font-size: var(--text-xs);
+    font-weight: 500;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    line-height: 1;
+    padding: 0.34em 0.6em;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    white-space: nowrap;
+  }
+
+  /* A leading tick, purely a second visual channel next to the word.
+     Never the only signal. */
+  .badge::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    border-radius: var(--radius-pill);
+    background: currentColor;
+    flex: none;
+  }
+
+  .badge[data-status='released'] {
+    color: var(--status-live);
+    border-color: var(--status-live);
+  }
+
+  .badge[data-status='beta'] {
+    color: var(--status-beta);
+    border-color: var(--status-beta);
+  }
+
+  /* Queued work reads quiet on purpose: it is not a thing you can use
+     yet, so it should not compete with the tools you can. */
+  .badge[data-status='coming-soon'] {
+    color: var(--status-queued);
+    border-color: var(--line-strong);
+  }
+</style>

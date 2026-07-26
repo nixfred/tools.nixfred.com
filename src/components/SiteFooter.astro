@@ -1,0 +1,160 @@
+---
+// Site footer. States plainly where the work happens (this device),
+// points back to nixfred.com, and stamps the build.
+//
+// No newsletter capture, no account, no social icons. 04-LANDING-PAGE.md
+// excludes all three.
+import { NAV_ITEMS, PARENT_SITE, isCurrentPath } from '../data/navigation';
+
+const pathname = Astro.url.pathname;
+
+// Secondary links only: the footer repeats the explanatory pages, not
+// the directory the visitor is already standing in.
+const footerLinks = NAV_ITEMS.filter((item) => item.href !== '/');
+
+// Build stamp. Generated at build time, in UTC, so two builds of the
+// same commit on two machines produce a comparable value.
+const built = new Date();
+const pad = (n: number) => String(n).padStart(2, '0');
+const buildStamp = `${built.getUTCFullYear()}.${pad(built.getUTCMonth() + 1)}.${pad(
+  built.getUTCDate(),
+)} ${pad(built.getUTCHours())}:${pad(built.getUTCMinutes())}Z`;
+---
+
+<footer class="site-footer">
+  <div class="rail">
+    <div class="statement">
+      <p class="label">Local processing</p>
+      <p class="copy">
+        Every tool here runs entirely in your browser. Nothing you type, paste,
+        or import is uploaded, stored on a server, or sent to a model provider.
+        There is no account and no backend to send it to.
+      </p>
+    </div>
+
+    <div class="meta">
+      <nav class="footer-nav" aria-label="Secondary">
+        <ul>
+          {
+            footerLinks.map((item) => (
+              <li>
+                <a
+                  href={item.href}
+                  aria-current={isCurrentPath(pathname, item.href) ? 'page' : undefined}
+                >
+                  {item.label}
+                </a>
+              </li>
+            ))
+          }
+          <li>
+            <a href={PARENT_SITE.href} target="_blank" rel="noopener">
+              {PARENT_SITE.label}
+            </a>
+          </li>
+        </ul>
+      </nav>
+
+      <p class="stamp mono">
+        <span class="stamp-key">BUILD</span>
+        <span class="stamp-val">{buildStamp}</span>
+      </p>
+    </div>
+  </div>
+</footer>
+
+<style>
+  .site-footer {
+    border-top: 1px solid var(--line);
+    background: var(--bg);
+    margin-top: var(--space-7);
+  }
+
+  .rail {
+    max-width: var(--page-max);
+    margin: 0 auto;
+    padding: var(--space-5) var(--space-4) var(--space-6);
+    display: grid;
+    gap: var(--space-5);
+  }
+
+  @media (min-width: 52rem) {
+    .rail {
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      gap: var(--space-6);
+    }
+  }
+
+  .statement .label {
+    margin: 0 0 var(--space-2);
+  }
+
+  .copy {
+    margin: 0;
+    max-width: 58ch;
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .meta {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .footer-nav ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-4);
+  }
+
+  .footer-nav a {
+    display: inline-flex;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    text-decoration: none;
+    color: var(--text-faint);
+    border-bottom: 1px solid transparent;
+  }
+
+  .footer-nav a:hover {
+    color: var(--text);
+    border-bottom-color: var(--line-strong);
+  }
+
+  .footer-nav a[aria-current='page'] {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+
+  .stamp {
+    margin: 0;
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
+  }
+
+  .stamp-key {
+    letter-spacing: var(--track-label);
+    color: var(--text-dim);
+  }
+
+  .stamp-val {
+    color: var(--text-faint);
+  }
+
+  @media (min-width: 52rem) {
+    .meta {
+      align-items: flex-end;
+      text-align: right;
+    }
+  }
+</style>

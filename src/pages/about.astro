@@ -1,0 +1,213 @@
+---
+// /about. What the workbench is, and what it is not.
+// Source: tools-nixfred-prds/00-PRODUCT-VISION.md ("Audience", "Principles",
+// "Product boundaries") and tools-nixfred-prds/01-INFORMATION-ARCHITECTURE.md
+// ("Tool states"). This page states no launch date, no team, no company,
+// and no metric that is not literally true of this codebase today.
+import Base from '../layouts/Base.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+
+const audiences = [
+  {
+    label: 'Architects',
+    text: 'explaining an AI system to a Customer or a team, who need a working instrument on screen instead of a slide.',
+  },
+  {
+    label: 'Builders',
+    text: 'making a design decision before writing code: what a request costs, what fits in a context window, how a prompt actually behaves.',
+  },
+  {
+    label: 'Operators',
+    text: 'diagnosing production behavior after the system is live, where a hunch is not a diagnosis.',
+  },
+  {
+    label: 'Curious technical users',
+    text: 'who learn a system fastest by manipulating it, not by reading a description of it.',
+  },
+];
+
+const principles = [
+  'Every page must let you do something. Reading about a concept is not the point; using an instrument is.',
+  'An input produces an inspectable result, not generic prose.',
+  'Assumptions are visible and editable, never a hidden default baked into a black box.',
+  'A result is exportable or shareable where that is genuinely useful, not as a default gimmick.',
+  'A tool teaches through use. It should not turn into a textbook chapter you have to read first.',
+  'Every instrument shares one visual language. This reads as one Nixfred laboratory, not a pile of unrelated demos.',
+  'A tool works with sample data out of the box. Its core experience never requires an API key.',
+  'No user input leaves your browser unless the interface explicitly says so.',
+];
+
+const exclusions = [
+  'A general AI chat interface. Every tool here does one legible job, not open ended conversation.',
+  'A news feed, a trend roundup, an essay collection, or a home for speculative dead internet material. This is a workbench, not a magazine.',
+  'A full production agent runtime. These instruments help you design and reason about agents; none of them deploys or operates one on your behalf.',
+  'An account system. No billing and no team collaboration, at least not in this first release.',
+];
+---
+
+<Base
+  title="About | Nixfred AI Systems Workbench"
+  description="What the Nixfred AI Systems Workbench is, who it is built for, and what it deliberately leaves out."
+>
+  <SiteHeader />
+
+  <main id="main" class="page">
+    <header class="intro">
+      <p class="eyebrow">About</p>
+      <h1>Practical instruments for understanding and building reliable AI systems.</h1>
+      <p class="lede">
+        This is a workbench, not a demo reel. Every page is meant to be used,
+        not just read: you put something in, you get an inspectable result
+        out, and you can see exactly which assumptions produced it.
+      </p>
+    </header>
+
+    <section aria-labelledby="who-heading">
+      <h2 id="who-heading">Who this is for</h2>
+      <dl class="audience-list">
+        {audiences.map((a) => (
+          <div class="audience-item">
+            <dt>{a.label}</dt>
+            <dd>{a.text}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+
+    <section aria-labelledby="principles-heading">
+      <h2 id="principles-heading">What actually constrains the build</h2>
+      <p>
+        These are not aspirations. They are the rules a tool has to pass
+        before it ships:
+      </p>
+      <ol class="principle-list">
+        {principles.map((p) => (
+          <li>{p}</li>
+        ))}
+      </ol>
+    </section>
+
+    <section aria-labelledby="not-heading">
+      <h2 id="not-heading">What this is not</h2>
+      <ul class="exclusion-list">
+        {exclusions.map((e) => (
+          <li>{e}</li>
+        ))}
+      </ul>
+      <p class="trust-statement">
+        One commitment sits underneath all of it. A simulated result is
+        never presented as a real model benchmark. If a number on this site
+        is illustrative rather than measured against an actual model, the
+        interface says so, in the interface, not in a footnote.
+      </p>
+    </section>
+
+    <section aria-labelledby="status-heading">
+      <h2 id="status-heading">The catalog is under construction</h2>
+      <p>
+        Every tool in the <a href="/">catalog</a> currently reads coming
+        soon. That is deliberate, not neglect. The shared platform and this
+        landing experience are built and working; each individual tool is
+        its own PRD, reviewed and accepted on its own before it ships, one
+        at a time, under a build control protocol. A tool's card stops
+        reading coming soon only once its own PRD has actually been
+        implemented. Nothing here should be mistaken for a working tool
+        before that happens.
+      </p>
+      <p>
+        See how the site handles anything you type into it on the
+        <a href="/privacy">privacy page</a>.
+      </p>
+    </section>
+  </main>
+
+  <SiteFooter />
+
+  <style>
+    .page {
+      max-width: var(--page-max);
+      margin: 0 auto;
+      padding: var(--space-6) var(--space-4) var(--space-7);
+    }
+
+    .intro {
+      max-width: var(--measure);
+      margin-bottom: var(--space-6);
+    }
+
+    h1 {
+      font-size: var(--text-3xl);
+      margin-top: var(--space-2);
+    }
+
+    .lede {
+      font-size: var(--text-lg);
+      color: var(--text-muted);
+    }
+
+    section {
+      max-width: var(--measure);
+      padding-top: var(--space-5);
+      border-top: 1px solid var(--line);
+      margin-bottom: var(--space-5);
+    }
+
+    section h2 {
+      font-size: var(--text-xl);
+      margin-bottom: var(--space-3);
+    }
+
+    section p {
+      color: var(--text-muted);
+    }
+
+    .audience-list {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-3);
+    }
+
+    .audience-item {
+      padding-left: var(--space-3);
+      border-left: 2px solid var(--line-strong);
+    }
+
+    .audience-item dt {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      color: var(--accent);
+      font-size: var(--text-sm);
+      letter-spacing: var(--track-tight);
+    }
+
+    .audience-item dd {
+      margin: var(--space-1) 0 0;
+      color: var(--text-muted);
+    }
+
+    .principle-list,
+    .exclusion-list {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+      padding-left: var(--space-4);
+      color: var(--text-muted);
+    }
+
+    .principle-list li,
+    .exclusion-list li {
+      padding-left: var(--space-1);
+    }
+
+    .trust-statement {
+      margin-top: var(--space-4);
+      padding: var(--space-3) var(--space-4);
+      background: var(--panel);
+      border-left: 2px solid var(--accent);
+      border-radius: var(--radius);
+      color: var(--text);
+    }
+  </style>
+</Base>

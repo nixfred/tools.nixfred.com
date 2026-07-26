@@ -1,49 +1,770 @@
 ---
-// FACTORY SCAFFOLD PAGE. Replaced by the real homepage in Stage 3.
-// Exists so the bootstrap has a page to build and deploy.
+/**
+ * LANDING PAGE. Implements tools-nixfred-prds/04-LANDING-PAGE.md only.
+ *
+ * Every visible tool, category, count, and section heading on this page
+ * is derived from src/data/registry.ts. There is no hard coded card
+ * grid and no tool or category name typed as a string anywhere below.
+ * Adding a conforming registry entry places the tool in search, in the
+ * filters, and in the grid with zero edits to this file. The dev
+ * fixtures in src/data/fixtures.ts are the standing proof.
+ *
+ * Scope note: no tool logic lives here. Cards are rendered by
+ * ToolCard.astro from registry metadata alone.
+ */
 import Base from '../layouts/Base.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import ToolCard from '../components/ToolCard.astro';
+import { PUBLIC_TOOLS, FEATURED_TOOLS, activeCategories } from '../data/registry';
+import { isActionable, type ToolEntry } from '../data/types';
+
+/** Filter chips come from the data, never from a literal list. */
+const categories = activeCategories().map((name) => ({
+  name,
+  count: PUBLIC_TOOLS.filter((t) => t.category === name).length,
+}));
+
+const totalCount = PUBLIC_TOOLS.length;
+const availableCount = PUBLIC_TOOLS.filter(isActionable).length;
+const featuredAvailable = FEATURED_TOOLS.filter(isActionable).length;
+
+/**
+ * Honest headings. With every registry entry still queued, calling
+ * three disabled cards "Featured" would be a lie, so the heading and
+ * the note under it are both computed from status.
+ */
+const featuredHeading = featuredAvailable > 0 ? 'Featured' : 'First release queue';
+const catalogHeading = availableCount > 0 ? 'All instruments' : 'Catalog in build';
+
+/**
+ * Search haystack: name, description, category, and tags, per the PRD.
+ * Curly punctuation is folded to ASCII so a typed apostrophe matches.
+ */
+const searchIndex = (t: ToolEntry): string =>
+  [t.name, t.shortDescription, t.category, ...t.tags]
+    .join(' ')
+    .replace(/[‘’]/g, "'") // check-copy:allow-curly
+    .replace(/[“”]/g, '"') // check-copy:allow-curly
+    .toLowerCase();
+
+/** Kept in sync with the identical function in the script below. */
+const countLabel = (shown: number, total: number): string =>
+  `Showing ${shown} of ${total} ${total === 1 ? 'instrument' : 'instruments'}.`;
+
+const description =
+  'Practical instruments for reliable AI systems. Interactive tools that run in your browser, with sample data and results you can inspect.';
 ---
 
-<Base
-  title="Nixfred AI Systems Workbench"
-  description="Nixfred AI Systems Workbench is being prepared."
-  surface="crisis"
->
-  <main id="main" class="hold">
-    <p class="eyebrow">Nixfred AI Systems Workbench</p>
-    <h1>Scaffold live.</h1>
-    <p class="lede">
-      Infrastructure is provisioned and serving this page. The site is
-      being manufactured.
-    </p>
-    <p class="mono status">STATUS: FACTORY BOOTSTRAP COMPLETE</p>
+<Base title="Nixfred AI Systems Workbench" description={description} surface="chassis">
+  <SiteHeader />
+
+  <main id="main">
+    <!-- 1. Compact hero -->
+    <section class="hero" aria-labelledby="hero-heading">
+      <p class="eyebrow">Nixfred AI Systems Workbench</p>
+      <h1 id="hero-heading">Practical instruments for reliable AI systems.</h1>
+      <p class="lede">
+        Each instrument takes real inputs and returns a result you can inspect,
+        edit, and export. Sample data is included. No account, and no API key
+        for the core experience.
+      </p>
+
+      <dl class="readout">
+        <div class="readout-cell">
+          <dt>Registered</dt>
+          <dd class="mono">{totalCount}</dd>
+        </div>
+        <div class="readout-cell">
+          <dt>Available now</dt>
+          <dd class="mono">{availableCount}</dd>
+        </div>
+        <div class="readout-cell">
+          <dt>Categories</dt>
+          <dd class="mono">{categories.length}</dd>
+        </div>
+      </dl>
+    </section>
+
+    <!-- 2. Search and category filters. No form element, so there is
+         nothing to submit and nothing to reload. -->
+    <search class="controls" aria-label="Search and filter instruments">
+      <div class="control-search">
+        <label class="control-label" for="tool-search">Search</label>
+        <input
+          type="search"
+          id="tool-search"
+          class="search-input"
+          placeholder="name, outcome, or tag"
+          autocomplete="off"
+          spellcheck="false"
+          data-search-input
+        />
+      </div>
+
+      <fieldset class="control-cats">
+        <legend class="control-label">Category</legend>
+        <div class="chips">
+          {
+            categories.map((cat) => (
+              <label class="chip">
+                <input type="checkbox" value={cat.name} data-cat-input />
+                <span class="chip-body">
+                  <span class="tick" aria-hidden="true" />
+                  <span class="chip-name">{cat.name}</span>
+                  <span class="chip-count mono" data-cat-count>
+                    {cat.count}
+                  </span>
+                </span>
+              </label>
+            ))
+          }
+        </div>
+      </fieldset>
+
+      <div class="control-status">
+        <p class="count mono" data-result-count>{countLabel(totalCount, totalCount)}</p>
+        <button type="button" class="clear" data-clear data-clear-bar hidden>
+          Clear filters
+        </button>
+      </div>
+
+      <!-- Screen reader announcement channel. Empty on load so nothing
+           is read twice, updated on a short debounce so typing does not
+           produce a stream of interruptions. -->
+      <p class="sr-only" role="status" aria-live="polite" data-result-live></p>
+    </search>
+
+    <!-- 3. Featured, selected through registry metadata -->
+    {
+      FEATURED_TOOLS.length > 0 && (
+        <section class="section featured" aria-labelledby="featured-heading" data-featured>
+          <div class="section-head">
+            <h2 id="featured-heading">{featuredHeading}</h2>
+            <p class="section-note">
+              {featuredAvailable > 0 ? (
+                <Fragment>
+                  Start here. <span class="mono">{featuredAvailable}</span> of these
+                  are live and ready to use.
+                </Fragment>
+              ) : (
+                <Fragment>
+                  Nothing here is usable yet. These{' '}
+                  <span class="mono">{FEATURED_TOOLS.length}</span> instruments are
+                  being built first, in this order.
+                </Fragment>
+              )}
+            </p>
+          </div>
+
+          <ul class="grid" role="list">
+            {FEATURED_TOOLS.map((tool) => (
+              <li class="cell">
+                <ToolCard tool={tool} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )
+    }
+
+    <!-- 4. Every public tool in a responsive grid -->
+    <section class="section catalog" aria-labelledby="catalog-heading">
+      <div class="section-head">
+        <h2 id="catalog-heading">{catalogHeading}</h2>
+        <p class="section-note">
+          {
+            availableCount > 0 ? (
+              <Fragment>
+                <span class="mono">{availableCount}</span> of{' '}
+                <span class="mono">{totalCount}</span> instruments are available.
+                The rest are queued and cannot be opened yet.
+              </Fragment>
+            ) : (
+              <Fragment>
+                <span class="mono">{totalCount}</span> instruments are specified and
+                queued. None can be opened yet. Each one ships when its own
+                specification is built and accepted, not before.
+              </Fragment>
+            )
+          }
+        </p>
+      </div>
+
+      <ul class="grid" role="list">
+        {
+          PUBLIC_TOOLS.map((tool) => (
+            <li
+              class="cell"
+              data-cell
+              data-category={tool.category}
+              data-search={searchIndex(tool)}
+            >
+              <ToolCard tool={tool} />
+            </li>
+          ))
+        }
+      </ul>
+
+      <p class="empty" data-empty hidden>
+        <span>No instrument matches that search and filter combination.</span>
+        <button type="button" class="clear" data-clear>Clear filters</button>
+      </p>
+    </section>
+
+    <!-- 5. Privacy and local processing -->
+    <section class="section panel" data-surface="panel" aria-labelledby="local-heading">
+      <h2 id="local-heading" class="panel-heading">Local by default</h2>
+      <p>
+        Every instrument runs in your browser. What you type stays on your
+        device, and there is no server here to send it to. No accounts, no
+        tracking, no analytics.
+      </p>
+      <p>
+        If an instrument ever needs to send something somewhere, it says so on
+        its own page, before you use it, and it tells you exactly what leaves.
+      </p>
+      <p class="panel-links">
+        <a href="/privacy">How data is handled</a>
+      </p>
+    </section>
+
+    <!-- 6. About and the connection back to nixfred.com -->
+    <section class="section outro" aria-labelledby="outro-heading">
+      <h2 id="outro-heading">About this workbench</h2>
+      <p>
+        A workbench of small, sharp instruments for the parts of AI system work
+        that are easy to get wrong. It is not a chat product and not a news
+        feed. Read what it is and what it is not on the
+        <a href="/about">about page</a>.
+      </p>
+      <p class="outro-link">
+        Built by Fred Nix. More at <a href="https://nixfred.com">nixfred.com</a>.
+      </p>
+    </section>
   </main>
 
-  <style>
-    .hold {
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: flex-start;
-      max-width: var(--page-max);
-      margin: 0 auto;
-      padding: var(--space-7) var(--space-4);
-    }
-
-    h1 { font-size: var(--text-hero); }
-
-    .lede {
-      font-size: var(--text-lg);
-      color: var(--text-muted);
-      max-width: 52ch;
-    }
-
-    .status {
-      font-size: var(--text-sm);
-      color: var(--accent);
-      letter-spacing: 0.08em;
-      margin-top: var(--space-4);
-    }
-  </style>
+  <SiteFooter />
 </Base>
+
+<script>
+  /**
+   * Catalog filtering. Vanilla, no framework, operating only on server
+   * rendered DOM: cards are toggled with the hidden attribute rather
+   * than injected, because Astro scoped styles never reach markup that
+   * JavaScript creates at runtime.
+   */
+  const input = document.querySelector<HTMLInputElement>('[data-search-input]');
+  const boxes = Array.from(
+    document.querySelectorAll<HTMLInputElement>('[data-cat-input]'),
+  );
+  const cells = Array.from(document.querySelectorAll<HTMLElement>('[data-cell]'));
+  const countEl = document.querySelector<HTMLElement>('[data-result-count]');
+  const liveEl = document.querySelector<HTMLElement>('[data-result-live]');
+  const emptyEl = document.querySelector<HTMLElement>('[data-empty]');
+  const featuredEl = document.querySelector<HTMLElement>('[data-featured]');
+  const clearEls = Array.from(document.querySelectorAll<HTMLElement>('[data-clear]'));
+  const clearBar = document.querySelector<HTMLElement>('[data-clear-bar]');
+
+  if (input && cells.length) {
+    const total = cells.length;
+
+    /** Identical to countLabel in the frontmatter above. */
+    const countLabel = (shown: number, sum: number) =>
+      `Showing ${shown} of ${sum} ${sum === 1 ? 'instrument' : 'instruments'}.`;
+
+    let announceTimer = 0;
+    const announce = (text: string) => {
+      if (!liveEl) return;
+      window.clearTimeout(announceTimer);
+      announceTimer = window.setTimeout(() => {
+        liveEl.textContent = text;
+      }, 350);
+    };
+
+    const apply = (writeUrl: boolean) => {
+      const query = input.value.trim().toLowerCase();
+      const terms = query.split(/\s+/).filter(Boolean);
+      const cats = boxes.filter((b) => b.checked).map((b) => b.value);
+
+      const perCat = new Map<string, number>();
+      let shown = 0;
+
+      for (const cell of cells) {
+        const hay = cell.dataset.search ?? '';
+        const cat = cell.dataset.category ?? '';
+        const hitsQuery = terms.every((t) => hay.includes(t));
+        if (hitsQuery) perCat.set(cat, (perCat.get(cat) ?? 0) + 1);
+
+        const match = hitsQuery && (cats.length === 0 || cats.includes(cat));
+        cell.hidden = !match;
+        if (match) shown += 1;
+      }
+
+      // Chip counts track the current search so a filter never promises
+      // results it cannot deliver.
+      for (const box of boxes) {
+        const badge = box.parentElement?.querySelector<HTMLElement>('[data-cat-count]');
+        if (badge) badge.textContent = String(perCat.get(box.value) ?? 0);
+      }
+
+      const active = terms.length > 0 || cats.length > 0;
+      const label = countLabel(shown, total);
+
+      if (countEl) countEl.textContent = label;
+      announce(shown === 0 ? `${label} Clear filters to see everything.` : label);
+      if (emptyEl) emptyEl.hidden = shown !== 0;
+      if (clearBar) clearBar.hidden = !active;
+      // Featured is a curated shortcut, not a search result. While a
+      // filter is running it would only duplicate cards below.
+      if (featuredEl) featuredEl.hidden = active;
+
+      if (writeUrl) {
+        const params = new URLSearchParams();
+        if (query) params.set('q', query);
+        for (const cat of cats) params.append('cat', cat);
+        const qs = params.toString();
+        history.replaceState(null, '', qs ? `${location.pathname}?${qs}` : location.pathname);
+      }
+    };
+
+    const clear = () => {
+      input.value = '';
+      for (const box of boxes) box.checked = false;
+      apply(true);
+      input.focus();
+    };
+
+    input.addEventListener('input', () => apply(true));
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && input.value) {
+        event.preventDefault();
+        clear();
+      }
+    });
+    for (const box of boxes) box.addEventListener('change', () => apply(true));
+    for (const el of clearEls) el.addEventListener('click', clear);
+
+    // Restore a linked or reloaded view before the first paint of state.
+    const params = new URLSearchParams(location.search);
+    const q = params.get('q');
+    if (q) input.value = q;
+    const wanted = params.getAll('cat');
+    for (const box of boxes) box.checked = wanted.includes(box.value);
+    apply(false);
+  }
+</script>
+
+<style>
+  /* Scoped to this page. Cards style themselves. */
+
+  [hidden] {
+    display: none;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  main {
+    max-width: var(--page-max);
+    margin: 0 auto;
+    padding: 0 var(--space-4) var(--space-7);
+  }
+
+  /* ---- Hero ------------------------------------------------- */
+
+  .hero {
+    padding: var(--space-6) 0 var(--space-5);
+  }
+
+  .eyebrow {
+    margin-bottom: var(--space-2);
+  }
+
+  h1 {
+    font-size: var(--text-hero);
+    letter-spacing: var(--track-tight);
+    max-width: 16ch;
+    margin-bottom: var(--space-3);
+  }
+
+  .lede {
+    font-size: var(--text-lg);
+    color: var(--text-muted);
+    max-width: 56ch;
+  }
+
+  .readout {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    margin: var(--space-4) 0 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .readout-cell {
+    padding: var(--space-2) var(--space-4) var(--space-2) 0;
+    margin-right: var(--space-4);
+    border-right: 1px solid var(--line-faint);
+  }
+
+  .readout-cell:last-child {
+    border-right: 0;
+    margin-right: 0;
+  }
+
+  .readout dt {
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .readout dd {
+    margin: 0;
+    font-size: var(--text-xl);
+    line-height: 1.2;
+    color: var(--text);
+  }
+
+  /* ---- Controls ---------------------------------------------- */
+
+  .controls {
+    display: grid;
+    grid-template-columns: minmax(min(20rem, 100%), 22rem) 1fr;
+    gap: var(--space-4);
+    align-items: start;
+    padding: var(--space-4) 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .control-label {
+    display: block;
+    padding: 0;
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: var(--space-2);
+  }
+
+  .search-input {
+    width: 100%;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.55rem 0.75rem;
+    font-family: var(--font-mono);
+    letter-spacing: 0.01em;
+  }
+
+  .search-input::placeholder {
+    color: var(--text-dim);
+  }
+
+  .search-input:hover {
+    border-color: var(--line-strong);
+  }
+
+  .search-input:focus {
+    border-color: var(--accent);
+    outline: none;
+    background: var(--bg-alt);
+  }
+
+  .search-input:focus-visible {
+    outline: 3px solid var(--accent-strong);
+    outline-offset: 2px;
+  }
+
+  .control-cats {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    min-width: 0;
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .chip {
+    position: relative;
+    display: inline-flex;
+    cursor: pointer;
+  }
+
+  /* Visually hidden but focusable and hit testable. */
+  .chip input[type='checkbox'] {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  .chip-body {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.42rem 0.75rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    background: var(--panel);
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    line-height: 1.4;
+    transition:
+      border-color var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
+  }
+
+  /* Selection is signalled by three channels at once: a filled tick, a
+     weight change, and color. Never by color alone. */
+  .tick {
+    width: 0.62rem;
+    height: 0.62rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 1px;
+    flex: none;
+    position: relative;
+  }
+
+  .chip input:checked + .chip-body {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--signal-wash);
+    font-weight: 700;
+  }
+
+  .chip input:checked + .chip-body .tick {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+
+  .chip input:checked + .chip-body .tick::after {
+    content: '';
+    position: absolute;
+    left: 0.13rem;
+    top: -0.02rem;
+    width: 0.2rem;
+    height: 0.38rem;
+    border: solid var(--chassis-950);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+
+  .chip:hover .chip-body {
+    border-color: var(--line-strong);
+    color: var(--text);
+  }
+
+  .chip input:focus-visible + .chip-body {
+    outline: 3px solid var(--accent-strong);
+    outline-offset: 2px;
+  }
+
+  .chip-count {
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .chip input:checked + .chip-body .chip-count {
+    color: var(--accent);
+  }
+
+  .control-status {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .count {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .clear {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    padding: 0.35rem 0.85rem;
+    cursor: pointer;
+  }
+
+  .clear:hover {
+    border-color: var(--accent);
+    background: var(--signal-wash);
+  }
+
+  /* ---- Sections and grid ------------------------------------- */
+
+  .section {
+    padding: var(--space-5) 0;
+  }
+
+  .section-head {
+    margin-bottom: var(--space-4);
+  }
+
+  .section-head h2 {
+    font-size: var(--text-2xl);
+    margin-bottom: var(--space-2);
+  }
+
+  .section-note {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    max-width: 62ch;
+    margin: 0;
+  }
+
+  .section-note .mono {
+    color: var(--text-muted);
+  }
+
+  .grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    /* auto-fill with a collapsible floor: reads correctly at 3, 15, and
+       50 entries, and never overflows a 320px phone. */
+    grid-template-columns: repeat(auto-fill, minmax(min(19rem, 100%), 1fr));
+    gap: var(--space-3);
+  }
+
+  /* Cell stretches so cards in a row share a height without this page
+     reaching into ToolCard's scoped styles. */
+  .cell {
+    display: grid;
+  }
+
+  .cell[hidden] {
+    display: none;
+  }
+
+  .empty {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    margin: var(--space-4) 0 0;
+    padding: var(--space-4);
+    border: 1px dashed var(--line);
+    border-radius: var(--radius);
+    color: var(--text-muted);
+    max-width: none;
+  }
+
+  .empty[hidden] {
+    display: none;
+  }
+
+  /* ---- Panel and outro --------------------------------------- */
+
+  .panel {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+    margin-top: var(--space-4);
+  }
+
+  .panel-heading {
+    font-size: var(--text-lg);
+    color: var(--text);
+  }
+
+  .panel p {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+  }
+
+  .panel-links {
+    margin: 0;
+  }
+
+  .outro h2 {
+    font-size: var(--text-xl);
+  }
+
+  .outro p {
+    color: var(--text-muted);
+  }
+
+  .outro-link {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+
+  /* ---- Small screens ------------------------------------------
+     Same controls, same counts, same status information as desktop.
+     Nothing is collapsed behind a menu. */
+  @media (max-width: 46rem) {
+    main {
+      padding: 0 var(--space-3) var(--space-6);
+    }
+
+    .controls {
+      grid-template-columns: 1fr;
+      gap: var(--space-3);
+    }
+
+    .hero {
+      padding: var(--space-5) 0 var(--space-4);
+    }
+
+    h1 {
+      max-width: none;
+    }
+
+    .readout-cell {
+      padding-right: var(--space-3);
+      margin-right: var(--space-3);
+    }
+  }
+
+  @media (pointer: coarse) {
+    .chip-body {
+      min-height: 44px;
+      padding-left: var(--space-3);
+      padding-right: var(--space-3);
+    }
+
+    .clear {
+      min-height: 44px;
+    }
+  }
+</style>

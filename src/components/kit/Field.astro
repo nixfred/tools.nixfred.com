@@ -1,0 +1,293 @@
+---
+/**
+ * Field. The labeled input wrapper every tool control uses.
+ *
+ * 03-SHARED-PLATFORM.md, Requirements: "Consistent input, result,
+ * assumption, help, warning, and export components" and "Responsive
+ * keyboard-accessible UI".
+ *
+ * Semantics first. A real <label for>, a real control, a hint element
+ * and an error element both wired through aria-describedby, and
+ * aria-invalid on the control when an error is present. The error
+ * element is always rendered (hidden when empty) so a tool can write
+ * into it at runtime and have the polite live region announce it.
+ *
+ * This component NEVER renders a <form>. Nothing on this site submits.
+ */
+export type FieldType = 'text' | 'number' | 'textarea' | 'select';
+
+export interface FieldOption {
+  value: string;
+  label: string;
+}
+
+interface Props {
+  /** Visible label text. Required. */
+  label: string;
+  /** Control name. Also seeds the generated id. */
+  name: string;
+  /** Which control to render. */
+  type?: FieldType;
+  /** Quiet guidance under the control. */
+  hint?: string;
+  /** Validation message. Presence flips aria-invalid. */
+  error?: string;
+  /** Adds the required attribute and the visible required tag. */
+  required?: boolean;
+  /** Initial value. Tools own state; this is the render-time value. */
+  value?: string | number;
+  /** Options for type="select". Strings are used as value and label. */
+  options?: Array<string | FieldOption>;
+  placeholder?: string;
+  /** Rows for type="textarea". */
+  rows?: number;
+  min?: number | string;
+  max?: number | string;
+  step?: number | string;
+  disabled?: boolean;
+  /** Override the generated id when a tool needs a stable handle. */
+  id?: string;
+}
+
+const {
+  label,
+  name,
+  type = 'text',
+  hint,
+  error,
+  required = false,
+  value,
+  options = [],
+  placeholder,
+  rows = 6,
+  min,
+  max,
+  step,
+  disabled = false,
+  id,
+} = Astro.props;
+
+const fieldId = id ?? `field-${name}`;
+const hintId = `${fieldId}-hint`;
+const errorId = `${fieldId}-error`;
+
+// The error id is always referenced, even when empty, so a message
+// written at runtime is picked up without rewriting the attribute.
+const describedBy = [hint ? hintId : null, errorId].filter(Boolean).join(' ');
+
+const normalizedOptions: FieldOption[] = options.map((option) =>
+  typeof option === 'string' ? { value: option, label: option } : option,
+);
+
+const renderValue = value === undefined || value === null ? '' : String(value);
+const invalid = error ? 'true' : undefined;
+const hasErrorSlot = Astro.slots.has('error');
+---
+
+<div class="field" data-kit-field={name} data-field-type={type}>
+  <div class="field-head">
+    <label class="field-label" for={fieldId}>{label}</label>
+    {
+      required && (
+        <span class="field-required" aria-hidden="true">
+          required
+        </span>
+      )
+    }
+  </div>
+
+  {
+    type === 'textarea' && (
+      <textarea
+        class="control control-textarea"
+        id={fieldId}
+        name={name}
+        rows={rows}
+        placeholder={placeholder}
+        required={required}
+        disabled={disabled}
+        aria-describedby={describedBy}
+        aria-invalid={invalid}
+        autocomplete="off"
+        spellcheck="false">{renderValue}</textarea>
+    )
+  }
+
+  {
+    type === 'select' && (
+      <select
+        class="control control-select"
+        id={fieldId}
+        name={name}
+        required={required}
+        disabled={disabled}
+        aria-describedby={describedBy}
+        aria-invalid={invalid}
+      >
+        {normalizedOptions.map((option) => (
+          <option value={option.value} selected={option.value === renderValue}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    )
+  }
+
+  {
+    (type === 'text' || type === 'number') && (
+      <input
+        class="control"
+        id={fieldId}
+        name={name}
+        type={type}
+        value={renderValue}
+        placeholder={placeholder}
+        min={min}
+        max={max}
+        step={step}
+        inputmode={type === 'number' ? 'decimal' : undefined}
+        required={required}
+        disabled={disabled}
+        aria-describedby={describedBy}
+        aria-invalid={invalid}
+        autocomplete="off"
+        spellcheck="false"
+      />
+    )
+  }
+
+  {hint && <p class="field-hint" id={hintId}>{hint}</p>}
+
+  <div
+    class="field-error"
+    id={errorId}
+    data-field-error
+    aria-live="polite"
+    hidden={!error && !hasErrorSlot}
+  >
+    <span class="field-error-tag">Error</span>
+    <span class="field-error-text" data-field-error-text>{error}<slot name="error" /></span>
+  </div>
+</div>
+
+<style>
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin-bottom: var(--space-4);
+  }
+
+  .field-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .field-label {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  /* The control carries the required attribute for assistive tech. This
+     tag exists so sighted users see the same fact. */
+  .field-required {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  .control {
+    width: 100%;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    background: var(--bg-alt);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.55rem 0.7rem;
+    line-height: 1.5;
+    transition:
+      border-color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
+  }
+
+  .control::placeholder {
+    color: var(--text-dim);
+  }
+
+  .control:hover:not(:disabled) {
+    border-color: var(--line-strong);
+  }
+
+  .control:focus {
+    border-color: var(--accent);
+    background: var(--bg);
+  }
+
+  .control:disabled {
+    color: var(--text-dim);
+    cursor: not-allowed;
+  }
+
+  .control-textarea {
+    resize: vertical;
+    min-height: 7rem;
+  }
+
+  /* Native select arrow stays; a custom one buys nothing and costs
+     keyboard behavior. */
+  .control-select {
+    appearance: none;
+    padding-right: 2rem;
+    cursor: pointer;
+  }
+
+  /* Invalid state is a border color AND the error line below, never
+     color alone. */
+  .control[aria-invalid='true'] {
+    border-color: var(--status-alert);
+  }
+
+  .field-hint {
+    margin: 0;
+    max-width: var(--measure);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    color: var(--text-faint);
+  }
+
+  .field-error {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    color: var(--text-muted);
+  }
+
+  /* display:flex overrides the hidden attribute, so restore it. */
+  .field-error[hidden] {
+    display: none;
+  }
+
+  .field-error-tag {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--status-alert);
+  }
+
+  .field-error-text {
+    max-width: var(--measure);
+  }
+</style>

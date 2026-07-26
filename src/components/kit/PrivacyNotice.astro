@@ -1,0 +1,83 @@
+---
+// Privacy notice.
+//
+// 03-SHARED-PLATFORM.md: "Privacy notice near any import or paste
+// surface." 00-PRODUCT-VISION.md principle 8: "No user input leaves the
+// browser unless the interface explicitly says so."
+//
+// Deliberately compact and inline, not a banner and not a modal. A
+// notice a visitor has to dismiss is a notice they learn to dismiss
+// without reading. This one sits next to the thing it describes and
+// states a fact about the software, which is the only kind of privacy
+// claim worth printing.
+//
+// The wording scales with how sensitive the tool's input is expected to
+// be, because "we do not transmit this" carries different weight next
+// to a number than next to a pasted production log.
+import type { InputSensitivity } from '../../data/types';
+
+interface Props {
+  sensitivity: InputSensitivity;
+  /** Optional override for tools with an unusual input surface. */
+  message?: string;
+}
+
+const { sensitivity, message } = Astro.props;
+
+const MESSAGES: Record<InputSensitivity, string> = {
+  none: 'This tool runs entirely in your browser.',
+  low: 'Runs in your browser. Nothing you enter is sent anywhere.',
+  medium:
+    'Runs in your browser. Nothing you enter is sent to a server, and nothing is stored unless you save it to this device.',
+  high: 'Runs in your browser. Nothing you paste here is transmitted, logged, or stored unless you explicitly save it to this device. Treat the page like a local scratchpad.',
+};
+
+const text = message ?? MESSAGES[sensitivity];
+
+// High sensitivity earns visual weight. The others stay quiet so the
+// loud one still means something.
+const prominent = sensitivity === 'high';
+---
+
+<p class:list={['privacy-notice', { prominent }]} data-sensitivity={sensitivity}>
+  <svg
+    class="lock"
+    width="13"
+    height="13"
+    viewBox="0 0 24 24"
+    fill="none"
+    aria-hidden="true"
+  >
+    <path
+      d="M6 10V7a6 6 0 0 1 12 0v3M5 10h14v11H5z"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"></path>
+  </svg>
+  <span>{text}</span>
+</p>
+
+<style>
+  .privacy-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    max-width: var(--measure);
+    margin: var(--space-3) 0 0;
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+
+  .lock {
+    flex: none;
+    /* Optical alignment with the first line of text, not the box. */
+    margin-top: 0.28em;
+  }
+
+  .prominent {
+    color: var(--text-muted);
+    border-left: 2px solid var(--accent-deep);
+    padding: var(--space-2) 0 var(--space-2) var(--space-3);
+  }
+</style>

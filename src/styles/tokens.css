@@ -1,52 +1,110 @@
 /* ============================================================
-   Nixfred AI Systems Workbench, design tokens
-   REBRAND ME: this palette is the factory placeholder. Stage 2
-   replaces every value from the build pack's design system before
-   any page ships. Tokens are law: no raw hex downstream, ever.
-   The data-surface pattern supports multiple surface moods; scope
+   NIXFRED AI SYSTEMS WORKBENCH, design tokens
+
+   Visual ruling (Fred, 2026-07-25): dark instrument panel. Near-black
+   surfaces, monospace data, thin precise rules, one electric accent.
+   Reads like test equipment, not a marketing site.
+
+   Tokens are law. No raw hex downstream, ever. If a component needs a
+   color that is not here, the token set is wrong, not the component.
+
+   The data-surface pattern supports multiple surface moods. Scope
    data-surface onto any section that overrides the page surface
    (Astro lesson: tokens leak otherwise).
    ============================================================ */
 
 :root {
-  /* Accent ramp */
-  --accent-300: #f2c14e;
-  --accent-500: #e0a32e;
-  --accent-700: #b57f16;
+  /* ---- Instrument chassis: near-black ramp -------------------
+     950 is the page ground. Panels step up, never down, so a card
+     always reads as sitting ON the chassis. */
+  --chassis-950: #06080c;
+  --chassis-900: #0a0d13;
+  --chassis-850: #0e1219;
+  --chassis-800: #131822;
+  --chassis-750: #19202b;
+  --chassis-700: #212936;
 
-  /* Primary dark ramp */
-  --base-950: #050d1c;
-  --base-900: #081426;
-  --base-800: #0e1f3a;
-  --base-700: #1a3054;
+  /* ---- Rules and hairlines ----------------------------------
+     Instrument panels are defined by thin precise lines, not by
+     shadows. rule is the default 1px hairline, rule-strong is for
+     structural separation. */
+  --rule-faint: #1b222d;
+  --rule: #262f3d;
+  --rule-strong: #35414f;
 
-  /* Secondary surface ramp */
-  --paper: #0b1322;
-  --paper-warm: #101a2e;
-  --gray-200: #223145;
-  --gray-500: #74819a;
-  --gray-700: #a7b2c6;
-  --ink: #e8edf7;
+  /* ---- Readout text ramp ----------------------------------- */
+  --readout-100: #eef2f8;
+  --readout-300: #c3ccda;
+  --readout-500: #9aa5b6;
+  --readout-700: #6d7889;
+  --readout-900: #4a5464;
 
-  /* Alert, reserved */
-  --alert: #b3261e;
+  /* ---- THE electric accent ---------------------------------
+     One accent, five stops. Signal cyan: the color of a live trace on
+     a scope. 400 is the text-safe stop; every pairing that ships is
+     verified by tests/check-contrast.mjs, not by eye. */
+  --signal-300: #8defff;
+  --signal-400: #4dd9f0;
+  --signal-500: #22bcd8;
+  --signal-600: #128aa4;
+  --signal-700: #0b5f73;
 
-  /* Typography: self host via fontsource, never CDN */
-  --font-display: Georgia, 'Times New Roman', serif;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  /* Accent at low alpha, for energized fills and focus glows. Kept as
+     tokens so no component hand-rolls an rgba().
+     The two wash stops are FILLS, they sit behind text and are judged
+     by the contrast of the text composited over them.
+     signal-edge is different: it is a visible BOUNDARY, so WCAG 1.4.11
+     holds it to 3.0 against every ground it can appear on. It shipped
+     at 0.38 and measured 2.50 on the chassis, which failed. 0.45 is
+     the lowest alpha that clears 3.0 on all four grounds, verified by
+     tests/check-contrast.mjs. Do not lower it back for looks. */
+  --signal-wash: rgba(77, 217, 240, 0.08);
+  --signal-wash-strong: rgba(77, 217, 240, 0.16);
+  --signal-edge: rgba(77, 217, 240, 0.45);
 
-  /* Type scale */
-  --text-xs: 0.75rem;
+  /* ---- Status ramp -----------------------------------------
+     Status is information, not decoration. These are the ONLY hues
+     allowed besides the signal accent, and only on status surfaces. */
+  --status-live: #4ade80;
+  --status-beta: #fbbf24;
+  --status-queued: #8b96a7;
+  --status-alert: #fb7185;
+
+  /* ---- Category dots ---------------------------------------
+     Small identifying marks only, never fills and never text.
+     Desaturated on purpose so the electric accent stays the only
+     loud color on the page. */
+  --cat-design: #7dd3fc;
+  --cat-build: #a5b4fc;
+  --cat-evaluate: #6ee7b7;
+  --cat-operate: #fcd34d;
+  --cat-understand: #f0abfc;
+
+  /* ---- Typography -------------------------------------------
+     Self hosted via fontsource, never a CDN (Base.astro imports).
+     Inter for interface, JetBrains Mono for every number, token
+     count, slug, and machine-readable value. */
+  --font-sans: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-display: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* ---- Type scale -------------------------------------------
+     Root is 112.5% (18px) per Fred's standing size ruling, so every
+     rem here scales off 18, not 16. */
+  --text-xs: 0.7rem;
   --text-sm: 0.9rem; /* 16.2px at an 18px root: above iOS's zoom-on-focus threshold */
-  --text-base: 1.0625rem;
-  --text-lg: 1.25rem;
-  --text-xl: 1.5rem;
-  --text-2xl: 2rem;
-  --text-3xl: clamp(2.4rem, 5vw, 3.4rem);
-  --text-hero: clamp(2.8rem, 7vw, 4.8rem);
+  --text-base: 1rem;
+  --text-lg: 1.15rem;
+  --text-xl: 1.4rem;
+  --text-2xl: 1.85rem;
+  --text-3xl: clamp(2rem, 4vw, 2.6rem);
+  --text-hero: clamp(2.1rem, 5.2vw, 3.4rem);
 
-  /* Spacing rhythm */
+  /* Instrument labelling: small, wide-tracked, uppercase */
+  --track-label: 0.18em;
+  --track-tight: -0.02em;
+
+  /* ---- Spacing rhythm --------------------------------------- */
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 1rem;
@@ -55,43 +113,60 @@
   --space-6: 3.4rem;
   --space-7: 4.8rem;
 
-  /* Layout */
+  /* ---- Layout ------------------------------------------------ */
   --measure: 68ch;
   --page-max: 1200px;
   --page-wide: 1400px;
-  --radius: 6px;
-  --radius-lg: 12px;
+  --radius: 4px;
+  --radius-lg: 8px;
+  --radius-pill: 999px;
 
-  /* Motion */
+  /* ---- Motion ------------------------------------------------ */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-  --dur-fast: 160ms;
-  --dur-med: 320ms;
-  --dur-slow: 640ms;
+  --dur-fast: 120ms;
+  --dur-med: 240ms;
+  --dur-slow: 480ms;
 }
 
-/* Default surface */
+/* ============================================================
+   SURFACES
+   Default is the chassis. Any section that changes the ground must
+   carry data-surface so nested components inherit the right tokens.
+   ============================================================ */
+
 :root,
-[data-surface='editorial'] {
-  --bg: var(--paper);
-  --bg-alt: var(--paper-warm);
-  --text: var(--ink);
-  --text-muted: var(--gray-700);
-  --text-faint: var(--gray-500);
-  --line: var(--gray-200);
-  --accent: var(--accent-300);
-  --accent-strong: var(--accent-500);
-  --card-bg: #121d33;
+[data-surface='chassis'] {
+  --bg: var(--chassis-950);
+  --bg-alt: var(--chassis-900);
+  --panel: var(--chassis-850);
+  --panel-raised: var(--chassis-800);
+  --text: var(--readout-100);
+  --text-muted: var(--readout-300);
+  --text-faint: var(--readout-500);
+  --text-dim: var(--readout-700);
+  --line: var(--rule);
+  --line-faint: var(--rule-faint);
+  --line-strong: var(--rule-strong);
+  --accent: var(--signal-400);
+  --accent-strong: var(--signal-300);
+  --accent-deep: var(--signal-600);
 }
 
-/* Emphasis surface */
-[data-surface='crisis'] {
-  --bg: var(--base-900);
-  --bg-alt: var(--base-800);
-  --text: #eef1f7;
-  --text-muted: #aab6c9;
-  --text-faint: #7a879c;
-  --line: #22385c;
-  --accent: var(--accent-300);
-  --accent-strong: var(--accent-500);
-  --card-bg: var(--base-800);
+/* Raised surface: panels, cards, and any block that sits on the
+   chassis and needs its own interior contrast. */
+[data-surface='panel'] {
+  --bg: var(--chassis-850);
+  --bg-alt: var(--chassis-800);
+  --panel: var(--chassis-800);
+  --panel-raised: var(--chassis-750);
+  --text: var(--readout-100);
+  --text-muted: var(--readout-300);
+  --text-faint: var(--readout-500);
+  --text-dim: var(--readout-700);
+  --line: var(--rule);
+  --line-faint: var(--rule-faint);
+  --line-strong: var(--rule-strong);
+  --accent: var(--signal-400);
+  --accent-strong: var(--signal-300);
+  --accent-deep: var(--signal-600);
 }

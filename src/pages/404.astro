@@ -1,0 +1,79 @@
+---
+// 404. Instrument panel treatment: a clean signal lost readout, not a
+// joke. Every link on this page resolves (tests/check-links.sh fails
+// the build otherwise); only /, /about, and /privacy exist, so those
+// are the only internal links used here.
+import Base from '../layouts/Base.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+---
+
+<Base
+  title="Signal lost | Nixfred AI Systems Workbench"
+  description="No route matches this address."
+>
+  <SiteHeader />
+
+  <main id="main" class="readout">
+    <p class="eyebrow">Telemetry</p>
+    <p class="code mono">404</p>
+    <h1>Signal lost.</h1>
+    <p class="lede">
+      Nothing is broadcasting at this address. The route you requested
+      does not exist in this build.
+    </p>
+    <p class="status mono">STATUS: NO ROUTE MATCHED</p>
+    <nav class="links" aria-label="Recover">
+      <a href="/">Return to the catalog</a>
+      <a href="/about">Read about the workbench</a>
+    </nav>
+  </main>
+
+  <SiteFooter />
+
+  <style>
+    .readout {
+      min-height: 60vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      max-width: var(--page-max);
+      margin: 0 auto;
+      padding: var(--space-7) var(--space-4);
+    }
+
+    .code {
+      font-size: var(--text-hero);
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: var(--track-tight);
+      line-height: 1;
+      margin: var(--space-2) 0;
+    }
+
+    h1 {
+      font-size: var(--text-2xl);
+    }
+
+    .lede {
+      font-size: var(--text-lg);
+      color: var(--text-muted);
+      max-width: 52ch;
+    }
+
+    .status {
+      font-size: var(--text-sm);
+      color: var(--text-faint);
+      letter-spacing: var(--track-label);
+      text-transform: uppercase;
+      margin-top: var(--space-3);
+    }
+
+    .links {
+      display: flex;
+      gap: var(--space-4);
+      margin-top: var(--space-5);
+      flex-wrap: wrap;
+    }
+  </style>
+</Base>

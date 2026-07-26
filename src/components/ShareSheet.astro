@@ -11,7 +11,7 @@ interface Props {
 const { title, url } = Astro.props;
 const pageUrl = url ?? new URL(Astro.url.pathname, Astro.site).toString();
 const enc = encodeURIComponent;
-const shareText = `${title} · Solar Save Foundation`;
+const shareText = `${title} · Nixfred AI Systems Workbench`;
 ---
 
 <div class="sharesheet" data-share-url={pageUrl} data-share-title={shareText}>
@@ -49,7 +49,7 @@ const shareText = `${title} · Solar Save Foundation`;
           url: sheet.dataset.shareUrl ?? location.href,
         })
         .catch(() => {
-          /* user dismissed the sheet; the Sun remains shareable */
+          /* User dismissed the native sheet. Nothing to recover. */
         });
     });
   });
@@ -64,8 +64,8 @@ const shareText = `${title} · Solar Save Foundation`;
 
   .share-label {
     display: block;
-    font-size: 0.62rem;
-    letter-spacing: 0.16em;
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
     color: var(--text-faint);
     margin-bottom: var(--space-2);
   }
@@ -79,9 +79,9 @@ const shareText = `${title} · Solar Save Foundation`;
     font: 600 var(--text-xs) var(--font-sans);
     letter-spacing: 0.04em;
     color: var(--text-muted);
-    background: var(--card-bg);
+    background: var(--panel);
     border: 1px solid var(--line);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     padding: 0.5rem 0.95rem;
     text-decoration: none;
     cursor: pointer;

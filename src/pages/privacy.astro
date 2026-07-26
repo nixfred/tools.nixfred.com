@@ -1,0 +1,150 @@
+---
+// /privacy. The data handling explanation.
+// Every claim on this page must be literally true of this codebase.
+// Source: tools-nixfred-prds/00-PRODUCT-VISION.md principle 8 ("No user
+// input leaves the browser unless the interface explicitly says so") and
+// tools-nixfred-prds/03-SHARED-PLATFORM.md (local persistence with schema
+// versioning, URL-safe share state restricted to small non-sensitive
+// input, static safety gate). Do not add a cookie banner, a retention
+// period, a data controller, or a contact address; none of that exists
+// here.
+import Base from '../layouts/Base.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+---
+
+<Base
+  title="Privacy | Nixfred AI Systems Workbench"
+  description="How this site handles data: a static build with no backend, browser-local tool state, and no tracking."
+>
+  <SiteHeader />
+
+  <main id="main" class="page">
+    <header class="intro">
+      <p class="eyebrow">Privacy</p>
+      <h1>How this site handles data.</h1>
+      <p class="lede">
+        Short version: there is very little to explain, because there is
+        very little happening on a server anywhere.
+      </p>
+    </header>
+
+    <section aria-labelledby="static-heading">
+      <h2 id="static-heading">1. This is a static site</h2>
+      <p>
+        There is no backend, no application server, no database, and no
+        account system. Every page here was generated at build time and is
+        served as a plain file.
+      </p>
+    </section>
+
+    <section aria-labelledby="local-heading">
+      <h2 id="local-heading">2. Tool input stays in your browser</h2>
+      <p>
+        When a tool asks you for input, that input is processed in your
+        browser. It is not transmitted anywhere. No user input leaves the
+        browser unless a specific interface explicitly tells you it will,
+        before you use it.
+      </p>
+    </section>
+
+    <section aria-labelledby="storage-heading">
+      <h2 id="storage-heading">3. Anything saved is saved to this browser</h2>
+      <p>
+        If a tool saves your work, it is saved to this browser's local
+        storage on this device. That storage is versioned, and it can be
+        cleared globally, in one action, at any time. Nothing you save
+        travels to us or to anyone else.
+      </p>
+    </section>
+
+    <section aria-labelledby="share-heading">
+      <h2 id="share-heading">4. Share by URL is opt in and deliberately limited</h2>
+      <p>
+        Where a tool offers a share link, that link encodes state directly
+        in the URL you choose to copy and send. This is deliberately
+        restricted to small, non sensitive inputs; a tool whose input
+        carries meaningful sensitivity does not offer it. You decide when
+        and whether to share a link. Nothing is shared on your behalf.
+      </p>
+    </section>
+
+    <section aria-labelledby="host-heading">
+      <h2 id="host-heading">5. Cloudflare serves the site</h2>
+      <p>
+        Cloudflare hosts and serves these pages, and like any host, it sees
+        standard request logs as a byproduct of delivering them, the same
+        way any web host does for any site. We are stating that plainly
+        rather than implying the site is somehow invisible to its own host.
+      </p>
+    </section>
+
+    <section aria-labelledby="tracking-heading">
+      <h2 id="tracking-heading">6. No advertising, no analytics, no tracking</h2>
+      <p>
+        No advertising, no third party analytics, no tracking pixels, and
+        no external scripts of any kind run on this site. That is not just
+        a promise; it is enforced by an automated static safety check that
+        runs against every build and fails the build outright if a form
+        action, an external script or stylesheet, a password field, or a
+        payment integration ever shows up in the output. It is a verifiable
+        claim about how this site is built, not a statement of intent.
+      </p>
+    </section>
+
+    <p class="closing">
+      Read what this workbench is built to do, and not do, on the
+      <a href="/about">about page</a>.
+    </p>
+  </main>
+
+  <SiteFooter />
+
+  <style>
+    .page {
+      max-width: var(--page-max);
+      margin: 0 auto;
+      padding: var(--space-6) var(--space-4) var(--space-7);
+    }
+
+    .intro {
+      max-width: var(--measure);
+      margin-bottom: var(--space-6);
+    }
+
+    h1 {
+      font-size: var(--text-3xl);
+      margin-top: var(--space-2);
+    }
+
+    .lede {
+      font-size: var(--text-lg);
+      color: var(--text-muted);
+    }
+
+    section {
+      max-width: var(--measure);
+      padding-top: var(--space-4);
+      border-top: 1px solid var(--line);
+      margin-bottom: var(--space-4);
+    }
+
+    section h2 {
+      font-size: var(--text-lg);
+      margin-bottom: var(--space-2);
+      font-family: var(--font-mono);
+      letter-spacing: var(--track-tight);
+    }
+
+    section p {
+      color: var(--text-muted);
+    }
+
+    .closing {
+      max-width: var(--measure);
+      margin-top: var(--space-5);
+      font-size: var(--text-sm);
+      color: var(--text-faint);
+    }
+  </style>
+</Base>

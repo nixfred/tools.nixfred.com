@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Nixfred AI Systems Workbench">
+  <title>Nixfred AI Systems Workbench</title>
+  <!-- Instrument chassis. Mirrors --chassis-950 in src/styles/tokens.css.
+       A favicon cannot read a CSS custom property, so these two values
+       are the one place outside tokens.css where the palette is
+       restated. Keep them in sync by hand. -->
+  <rect width="32" height="32" rx="6" fill="#06080c"/>
+  <!-- Hairline bezel, mirrors --rule -->
+  <rect x="0.5" y="0.5" width="31" height="31" rx="5.5" fill="none" stroke="#262f3d"/>
+  <!-- A live trace on a scope. Mirrors --signal-400. -->
+  <path d="M5 20 L10 20 L13 11 L17 24 L20 16 L23 16 L27 16"
+        fill="none" stroke="#4dd9f0" stroke-width="2.2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

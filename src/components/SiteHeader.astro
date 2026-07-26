@@ -1,0 +1,136 @@
+---
+// Site header. A top rail: wordmark on the left, primary navigation on
+// the right, one hairline underneath. No JavaScript, no hamburger, no
+// disclosure widget. Three links fit on a 390px screen because the rail
+// wraps the nav onto its own line instead of hiding it.
+//
+// Every href comes from src/data/navigation.ts, the route contract.
+import { NAV_ITEMS, isCurrentPath } from '../data/navigation';
+
+const pathname = Astro.url.pathname;
+---
+
+<header class="site-header">
+  <div class="rail">
+    <a class="wordmark" href="/">
+      <span class="wm-mark">NIXFRED</span>
+      <span class="wm-sep" aria-hidden="true">/</span>
+      <span class="wm-sub">WORKBENCH</span>
+    </a>
+
+    <nav class="nav" aria-label="Primary">
+      <ul>
+        {
+          NAV_ITEMS.map((item) => {
+            const current = isCurrentPath(pathname, item.href);
+            return (
+              <li>
+                <a
+                  href={item.href}
+                  title={item.description}
+                  aria-current={current ? 'page' : undefined}
+                >
+                  {item.label}
+                </a>
+              </li>
+            );
+          })
+        }
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<style>
+  .site-header {
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
+  }
+
+  .rail {
+    max-width: var(--page-max);
+    margin: 0 auto;
+    padding: var(--space-3) var(--space-4);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2) var(--space-4);
+  }
+
+  /* ---- Wordmark ---------------------------------------------- */
+
+  .wordmark {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4em;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-decoration: none;
+    color: var(--text);
+  }
+
+  .wm-sep {
+    color: var(--text-dim);
+    font-weight: 400;
+  }
+
+  .wm-sub {
+    color: var(--text-faint);
+    font-weight: 400;
+  }
+
+  .wordmark:hover .wm-sep,
+  .wordmark:focus-visible .wm-sep {
+    color: var(--accent);
+  }
+
+  .wordmark:hover {
+    color: var(--text);
+  }
+
+  /* ---- Navigation --------------------------------------------- */
+
+  .nav ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-4);
+  }
+
+  .nav a {
+    display: inline-flex;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    text-decoration: none;
+    color: var(--text-faint);
+    padding: var(--space-1) 0;
+    border-bottom: 1px solid transparent;
+    transition: color var(--dur-fast) var(--ease-out);
+  }
+
+  .nav a:hover {
+    color: var(--text);
+    border-bottom-color: var(--line-strong);
+  }
+
+  /* Current page carries a rule as well as a color, so the state
+     survives a monochrome screen and a color vision difference. */
+  .nav a[aria-current='page'] {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+
+  /* On a coarse pointer global.css raises these to a 44px target. The
+     inline-flex box centers the label in that taller hit area and the
+     rule rides the bottom of the box, reading as a tab indicator
+     rather than an underline. Intentional: the target stays 44px. */
+</style>

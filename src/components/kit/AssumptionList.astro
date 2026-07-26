@@ -1,0 +1,234 @@
+---
+/**
+ * AssumptionList.
+ *
+ * 00-PRODUCT-VISION.md principle 3: "Assumptions must be visible and
+ * editable." Every number a tool leans on gets a row here, with where
+ * it came from and whether the user is allowed to move it.
+ *
+ * This component owns no state. The edit affordance dispatches a
+ * bubbling CustomEvent ("kit:assumption-edit") and stops. The tool
+ * decides what an edit means, re-renders, and passes new items back in.
+ */
+export interface AssumptionItem {
+  /** What the assumption is. Sentence case, short. */
+  label: string;
+  /** The current value. Rendered monospace with tabular figures. */
+  value: string | number;
+  /** Whether the user may change it. */
+  editable?: boolean;
+  /** Where the value came from. "default", "your input", a source name. */
+  source?: string;
+}
+
+interface Props {
+  items: AssumptionItem[];
+  /** Optional heading above the list. */
+  title?: string;
+  /** Identifies this list in the dispatched event. */
+  name?: string;
+  /** Text of the edit affordance. */
+  editLabel?: string;
+}
+
+const {
+  items,
+  title = 'Assumptions',
+  name = 'assumptions',
+  editLabel = 'Edit',
+} = Astro.props;
+---
+
+<div class="assumptions" data-kit-assumptions data-list-name={name}>
+  <div class="assumptions-head">
+    <p class="assumptions-title">{title}</p>
+    <p class="assumptions-note">Every value below is stated, not hidden.</p>
+  </div>
+
+  <dl class="assumption-rows">
+    {
+      items.map((item, index) => (
+        <div
+          class="assumption-row"
+          data-index={index}
+          data-editable={item.editable ? 'true' : 'false'}
+        >
+          <dt class="assumption-label">{item.label}</dt>
+          <dd class="assumption-value">
+            <span class="value" data-assumption-value>
+              {String(item.value)}
+            </span>
+            {item.source && <span class="source">from {item.source}</span>}
+            {item.editable ? (
+              <button
+                type="button"
+                class="edit"
+                data-assumption-edit
+                data-index={index}
+                aria-label={`${editLabel} ${item.label}`}
+              >
+                {editLabel}
+              </button>
+            ) : (
+              <span class="fixed">fixed</span>
+            )}
+          </dd>
+        </div>
+      ))
+    }
+  </dl>
+</div>
+
+<script>
+  // The list is an announcer, not an owner. It reports the intent to
+  // edit and lets the tool hold the state.
+  document
+    .querySelectorAll<HTMLElement>('[data-kit-assumptions]')
+    .forEach((list) => {
+      list
+        .querySelectorAll<HTMLButtonElement>('[data-assumption-edit]')
+        .forEach((button) => {
+          button.addEventListener('click', () => {
+            const row = button.closest<HTMLElement>('.assumption-row');
+            const valueEl = row?.querySelector<HTMLElement>('[data-assumption-value]');
+            const labelEl = row?.querySelector<HTMLElement>('.assumption-label');
+
+            button.dispatchEvent(
+              new CustomEvent('kit:assumption-edit', {
+                bubbles: true,
+                composed: true,
+                detail: {
+                  list: list.dataset.listName ?? '',
+                  index: Number(button.dataset.index ?? '-1'),
+                  label: labelEl?.textContent?.trim() ?? '',
+                  value: valueEl?.textContent?.trim() ?? '',
+                },
+              }),
+            );
+          });
+        });
+    });
+</script>
+
+<style>
+  .assumptions {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--bg-alt);
+  }
+
+  .assumptions-head {
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .assumptions-title {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .assumptions-note {
+    margin: var(--space-1) 0 0;
+    font-size: var(--text-sm);
+    color: var(--text-dim);
+  }
+
+  .assumption-rows {
+    margin: 0;
+  }
+
+  .assumption-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    align-items: baseline;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--line-faint);
+  }
+
+  .assumption-row:last-child {
+    border-bottom: 0;
+  }
+
+  .assumption-label {
+    font-size: var(--text-sm);
+    line-height: 1.4;
+    color: var(--text-muted);
+  }
+
+  .assumption-value {
+    display: flex;
+    align-items: baseline;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin: 0;
+    min-width: 0;
+  }
+
+  .value {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--text-sm);
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+
+  .source {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+
+  .edit {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.2rem 0.55rem;
+    cursor: pointer;
+    transition:
+      border-color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
+  }
+
+  .edit:hover {
+    border-color: var(--accent);
+    background: var(--signal-wash);
+  }
+
+  /* A locked row says so in words. Absence of a button is not a state
+     a screen reader user can see. */
+  .fixed {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border: 1px solid transparent;
+    padding: 0.2rem 0.55rem;
+  }
+
+  @media (max-width: 34rem) {
+    .assumption-row {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--space-1);
+    }
+
+    .assumption-value {
+      justify-content: flex-start;
+    }
+  }
+</style>

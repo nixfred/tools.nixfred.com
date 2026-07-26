@@ -1,0 +1,85 @@
+---
+// Canonical tool route: /tools/[slug].
+// Contract: 01-INFORMATION-ARCHITECTURE.md ("No route should be
+// generated for hidden or unimplemented tools") and
+// 03-SHARED-PLATFORM.md (registry contract, tool module contract).
+//
+// getStaticPaths maps ONLY ACTIONABLE_TOOLS (src/data/registry.ts),
+// which is every entry whose status is "released" or "beta". In the
+// production build BASE_TOOLS currently contains zero released or
+// beta entries (every tool is "coming-soon" per 02-BUILD-CONTROL.md
+// status discipline, since foundation scope implements only the
+// shared platform and the landing page), so ACTIONABLE_TOOLS is an
+// empty array and this route generates ZERO pages in production.
+//
+// THAT IS CORRECT, NOT A BUG. Do not "fix" it by adding entries here,
+// by changing a tool's status, or by widening ACTIONABLE_STATUSES.
+// Flipping a tool to released before its own PRD is implemented is
+// exactly what 02-BUILD-CONTROL.md and registry.ts forbid; it would
+// also fail tests/check-links.sh once real navigation links to it.
+// A tool earns its route by shipping its own PRD, one at a time.
+//
+// In development, src/data/fixtures.ts merges two fixtures with
+// status "released" and "beta" into the registry, so this route
+// renders locally and can be verified with `bun astro dev`.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import { ACTIONABLE_TOOLS } from '../../data/registry';
+import type { ToolEntry } from '../../data/types';
+
+export function getStaticPaths() {
+  return ACTIONABLE_TOOLS.map((tool) => ({
+    params: { slug: tool.slug },
+    props: { tool },
+  }));
+}
+
+interface Props {
+  tool: ToolEntry;
+}
+
+const { tool } = Astro.props;
+---
+
+<ToolLayout tool={tool}>
+  <section class="scaffold-notice" aria-labelledby="scaffold-heading">
+    <h2 id="scaffold-heading" class="eyebrow">Module not yet registered</h2>
+    <p>
+      This route, and this tool's metadata, exist because the shared
+      platform requires every actionable registry entry to resolve to a
+      real page. The tool itself does not exist yet. This panel is
+      platform scaffolding, not a preview and not a placeholder tool: it
+      has no inputs, no controls, and no results, simulated or otherwise.
+    </p>
+    <p>
+      <span class="mono">{tool.name}</span> ships when
+      <code class="mono">{tool.prdId}</code> is implemented and accepted
+      under the build control protocol.
+    </p>
+    <p>
+      <a href="/">Back to the catalog</a>
+    </p>
+  </section>
+</ToolLayout>
+
+<style>
+  .scaffold-notice {
+    max-width: var(--measure);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+    background: var(--panel);
+  }
+
+  .scaffold-notice p {
+    color: var(--text-muted);
+  }
+
+  .scaffold-notice p:last-child {
+    margin-bottom: 0;
+  }
+
+  .scaffold-notice code {
+    font-family: var(--font-mono);
+    color: var(--accent);
+  }
+</style>

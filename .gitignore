@@ -21,3 +21,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Playwright MCP review artifacts, not part of the site
+.playwright-mcp/
+*.png
+*.jpeg

@@ -1,0 +1,121 @@
+---
+/**
+ * HelpNote. Inline teaching, folded away until asked for.
+ *
+ * 00-PRODUCT-VISION.md principle 5: "Tools should teach through use
+ * without becoming textbook chapters." So the explanation sits next to
+ * the control it explains, closed by default, and costs nothing to
+ * ignore.
+ *
+ * Native <details> and <summary>. No JavaScript, which means it works
+ * on a dead network, in a print view, and with scripting disabled.
+ */
+interface Props {
+  /** Summary line. Phrase it as the question the user is asking. */
+  title?: string;
+  /** Start expanded. Use sparingly; the default is out of the way. */
+  open?: boolean;
+}
+
+const { title = 'How this works', open = false } = Astro.props;
+---
+
+<details class="help" open={open}>
+  <summary class="help-summary">
+    <span class="help-tag">Note</span>
+    <span class="help-title">{title}</span>
+  </summary>
+  <div class="help-body">
+    <slot />
+  </div>
+</details>
+
+<style>
+  .help {
+    border-left: 1px solid var(--line-strong);
+    padding-left: var(--space-3);
+    margin: var(--space-3) 0;
+  }
+
+  .help-summary {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    cursor: pointer;
+    list-style: none;
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+  }
+
+  /* Safari still needs the WebKit pseudo element to drop the triangle. */
+  .help-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .help-tag {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  .help-title {
+    flex: 1 1 auto;
+  }
+
+  /* The open state is carried by a word, not by a rotating glyph, so it
+     survives high contrast mode and monochrome screens. */
+  .help-summary::after {
+    content: 'show';
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  .help[open] .help-summary::after {
+    content: 'hide';
+  }
+
+  .help-summary:hover {
+    color: var(--text);
+  }
+
+  .help-summary:hover::after {
+    color: var(--text-faint);
+  }
+
+  .help-body {
+    padding-top: var(--space-2);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    color: var(--text-faint);
+  }
+
+  /* Slotted prose is authored by the tool, so reach past the scope. */
+  .help-body :global(p) {
+    margin: 0 0 var(--space-2);
+    max-width: var(--measure);
+  }
+
+  .help-body :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .help-body :global(code) {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    color: var(--text-muted);
+  }
+
+  .help-body :global(ul),
+  .help-body :global(ol) {
+    margin: 0 0 var(--space-2);
+    padding-left: 1.2rem;
+    max-width: var(--measure);
+  }
+</style>

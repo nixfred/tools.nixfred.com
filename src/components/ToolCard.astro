@@ -1,0 +1,187 @@
+---
+// Tool card. The most reused object on the site.
+//
+// 04-LANDING-PAGE.md: "Each card displays name, one-sentence outcome,
+// category, status, and whether it runs locally. Cards use registry
+// data only." Nothing in this file knows the name of any specific tool,
+// which is what lets a new registry entry appear with no edit here.
+//
+// Two shapes, one markup tree:
+//   released | beta   the whole card is a link to tool.route
+//   coming-soon       an inert div, not focusable, not clickable, and
+//                     it says "Not yet available" in words
+import type { ToolEntry } from '../data/types';
+import { isActionable } from '../data/types';
+import CategoryDot from './CategoryDot.astro';
+import StatusBadge from './StatusBadge.astro';
+
+interface Props {
+  tool: ToolEntry;
+}
+
+const { tool } = Astro.props;
+
+const actionable = isActionable(tool);
+
+// Dynamic tag: an anchor when the tool can be opened, a plain div when
+// it cannot. Keeping one tree means the two states cannot drift apart.
+const Card = actionable ? 'a' : 'div';
+
+// The local processing claim is derived, never hand written per tool.
+// Every tool computes in the browser; inputSensitivity says whether the
+// Customer will be handing it text worth reassuring them about.
+const takesInput = tool.inputSensitivity !== 'none';
+const localLabel = takesInput ? 'Runs locally, input stays on device' : 'Runs locally';
+---
+
+<Card
+  class="card"
+  href={actionable ? tool.route : undefined}
+  aria-disabled={actionable ? undefined : 'true'}
+  data-slug={tool.slug}
+  data-status={tool.status}
+  data-category={tool.category}
+>
+  <div class="meta">
+    <CategoryDot category={tool.category} />
+    <StatusBadge status={tool.status} />
+  </div>
+
+  <h3 class="name">{tool.name}</h3>
+  <p class="desc">{tool.shortDescription}</p>
+
+  <div class="foot">
+    <span class="local">{localLabel}</span>
+    {
+      actionable ? (
+        <span class="cta mono" aria-hidden="true">
+          OPEN
+        </span>
+      ) : (
+        <span class="pending mono">Not yet available</span>
+      )
+    }
+  </div>
+</Card>
+
+<style>
+  .card {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    text-decoration: none;
+    color: inherit;
+    transition:
+      border-color var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out);
+  }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    min-height: 1.4em;
+  }
+
+  .name {
+    font-family: var(--font-display);
+    font-size: var(--text-lg);
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: var(--track-tight);
+    color: var(--text);
+    margin: var(--space-1) 0 0;
+  }
+
+  /* Takes the slack so a 40 character description and a 140 character
+     one still push the footer to the same place in a stretched grid
+     row. */
+  .desc {
+    flex: 1 1 auto;
+    margin: 0;
+    max-width: none;
+    font-size: var(--text-sm);
+    line-height: 1.55;
+    color: var(--text-muted);
+  }
+
+  .foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--line-faint);
+  }
+
+  .local {
+    font-size: var(--text-xs);
+    line-height: 1.3;
+    color: var(--text-dim);
+  }
+
+  .cta {
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    color: var(--accent);
+  }
+
+  /* ---- Actionable states -------------------------------------- */
+
+  a.card:hover {
+    border-color: var(--accent);
+    background: var(--panel-raised);
+  }
+
+  a.card:hover .name {
+    color: var(--accent);
+  }
+
+  a.card:focus-visible .name {
+    color: var(--accent);
+  }
+
+  /* ---- Coming soon --------------------------------------------
+     Distinct by structure, not by dimming alone: a quieter panel, a
+     faint border, and the words "Not yet available" in the footer. */
+
+  .card[aria-disabled='true'] {
+    background: var(--bg-alt);
+    border-color: var(--line-faint);
+    border-style: dashed;
+    cursor: default;
+  }
+
+  .card[aria-disabled='true'] .name {
+    color: var(--text-muted);
+  }
+
+  .card[aria-disabled='true'] .desc {
+    color: var(--text-faint);
+  }
+
+  .pending {
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  /* global.css gives coarse pointers a 44px floor on every anchor. A
+     card is already far taller than that, and the rule would otherwise
+     fight the flex column, so restate the intent here. */
+  @media (pointer: coarse) {
+    a.card {
+      min-height: 0;
+    }
+  }
+</style>

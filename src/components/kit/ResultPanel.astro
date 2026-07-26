@@ -1,0 +1,254 @@
+---
+/**
+ * ResultPanel. The inspectable result surface.
+ *
+ * 00-PRODUCT-VISION.md principle 2: "Inputs must produce an inspectable
+ * result, not generic prose." The panel is the frame that result lives
+ * in, so every tool presents its output the same way.
+ *
+ * Stale handling: a result produced from inputs that have since changed
+ * is a lie unless it is labeled. A tool flips data-result-status on this
+ * element to "stale" and the panel does the rest. The status word is
+ * real text kept in sync by a MutationObserver inside a polite live
+ * region, so the change is announced rather than only drawn.
+ *
+ * Carries data-surface="panel" so nested kit components inherit the
+ * raised surface tokens instead of the chassis tokens.
+ */
+export type ResultStatus = 'idle' | 'ready' | 'stale';
+
+interface Props {
+  /** Panel heading. Labels the section for assistive tech. */
+  title: string;
+  /** Lifecycle of the result currently rendered. */
+  status?: ResultStatus;
+  /** One line about what the panel shows. Optional. */
+  description?: string;
+  /** Override the generated id when a tool needs a stable handle. */
+  id?: string;
+  /** Heading level. Tools inside a page with an h1 usually want 2. */
+  headingLevel?: 2 | 3;
+}
+
+const {
+  title,
+  status = 'idle',
+  description,
+  id,
+  headingLevel = 2,
+} = Astro.props;
+
+const panelId = id ?? 'result-panel';
+const titleId = `${panelId}-title`;
+const Heading = `h${headingLevel}` as 'h2' | 'h3';
+
+const STATUS_TEXT: Record<ResultStatus, string> = {
+  idle: 'Idle',
+  ready: 'Ready',
+  stale: 'Stale',
+};
+
+const hasFooter = Astro.slots.has('footer');
+---
+
+<section
+  class="panel"
+  id={panelId}
+  data-surface="panel"
+  data-kit-result
+  data-result-status={status}
+  aria-labelledby={titleId}
+>
+  <header class="panel-head">
+    <div class="panel-heading">
+      <Heading class="panel-title" id={titleId}>{title}</Heading>
+      {description && <p class="panel-desc">{description}</p>}
+    </div>
+
+    <p class="panel-status" aria-live="polite">
+      <span class="status-mark" aria-hidden="true"></span>
+      <span class="status-text" data-result-status-text>{STATUS_TEXT[status]}</span>
+    </p>
+  </header>
+
+  <div class="panel-stale" data-result-stale>
+    <span class="stale-tag">Stale</span>
+    <span class="stale-text">
+      Inputs changed after this result was produced. Run it again to see
+      numbers that match what is on screen.
+    </span>
+  </div>
+
+  <div class="panel-body" data-result-body>
+    <slot />
+  </div>
+
+  {
+    hasFooter && (
+      <footer class="panel-foot">
+        <slot name="footer" />
+      </footer>
+    )
+  }
+</section>
+
+<script>
+  // Keep the status word honest when a tool flips the data attribute.
+  // With JS off, the server rendered word already matches the server
+  // rendered status, so nothing here is load bearing for correctness.
+  const LABELS: Record<string, string> = {
+    idle: 'Idle',
+    ready: 'Ready',
+    stale: 'Stale',
+  };
+
+  document.querySelectorAll<HTMLElement>('[data-kit-result]').forEach((panel) => {
+    const text = panel.querySelector<HTMLElement>('[data-result-status-text]');
+    if (!text) return;
+
+    const sync = () => {
+      const status = panel.dataset.resultStatus ?? 'idle';
+      const label = LABELS[status] ?? status;
+      if (text.textContent !== label) text.textContent = label;
+    };
+
+    new MutationObserver(sync).observe(panel, {
+      attributes: true,
+      attributeFilter: ['data-result-status'],
+    });
+    sync();
+  });
+</script>
+
+<style>
+  .panel {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    /* The panel reads as a machine housing: the head is a ruled strip,
+       the body is the readout. No shadows anywhere. */
+  }
+
+  .panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-3);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .panel-heading {
+    min-width: 0;
+  }
+
+  .panel-title {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .panel-desc {
+    margin: var(--space-1) 0 0;
+    max-width: var(--measure);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    color: var(--text-faint);
+  }
+
+  .panel-status {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0;
+    padding: 0.15rem 0.55rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  /* The mark is a shape cue that rides alongside the word, never
+     instead of it. */
+  .status-mark {
+    width: 7px;
+    height: 7px;
+    border-radius: var(--radius-pill);
+    background: var(--text-dim);
+  }
+
+  .panel[data-result-status='ready'] .status-mark {
+    background: var(--accent);
+  }
+
+  .panel[data-result-status='ready'] .panel-status {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  /* Stale gets a square mark as well as amber, so the state survives a
+     monochrome screen. */
+  .panel[data-result-status='stale'] .status-mark {
+    background: var(--status-beta);
+    border-radius: 0;
+  }
+
+  .panel[data-result-status='stale'] .panel-status {
+    color: var(--status-beta);
+    border-color: var(--status-beta);
+  }
+
+  .panel-stale {
+    display: none;
+    align-items: baseline;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--line);
+    border-left: 2px solid var(--status-beta);
+    background: var(--bg-alt);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+    color: var(--text-muted);
+  }
+
+  .panel[data-result-status='stale'] .panel-stale {
+    display: flex;
+  }
+
+  .stale-tag {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--status-beta);
+  }
+
+  .stale-text {
+    max-width: var(--measure);
+  }
+
+  .panel-body {
+    padding: var(--space-3);
+  }
+
+  .panel-foot {
+    padding: var(--space-3);
+    border-top: 1px solid var(--line);
+  }
+
+  @media (max-width: 34rem) {
+    .panel-head {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+  }
+</style>

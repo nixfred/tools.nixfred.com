@@ -1,0 +1,115 @@
+---
+/**
+ * WarningNote. The one place a tool says something is off.
+ *
+ * 03-SHARED-PLATFORM.md, Requirements: "Consistent input, result,
+ * assumption, help, warning, and export components."
+ *
+ * Severity is carried three ways at once: an uppercase word, a border
+ * weight, and a status token color. Anyone who cannot see the color
+ * still reads the word, which is the accessibility contract.
+ *
+ * Roles: info and warning are polite (role="status"), alert is assertive
+ * (role="alert"). Reach for alert only when the user must stop and read.
+ */
+export type NoteSeverity = 'info' | 'warning' | 'alert';
+
+interface Props {
+  severity?: NoteSeverity;
+  /** Optional bold line above the body. */
+  title?: string;
+}
+
+const { severity = 'info', title } = Astro.props;
+
+const TAG: Record<NoteSeverity, string> = {
+  info: 'Note',
+  warning: 'Warning',
+  alert: 'Alert',
+};
+
+const role = severity === 'alert' ? 'alert' : 'status';
+---
+
+<div class="note" data-severity={severity} role={role}>
+  <span class="note-tag">{TAG[severity]}</span>
+  <div class="note-body">
+    {title && <p class="note-title">{title}</p>}
+    <slot />
+  </div>
+</div>
+
+<style>
+  .note {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    margin: var(--space-3) 0;
+    background: var(--panel-raised);
+    border: 1px solid var(--line);
+    border-left-width: 2px;
+    border-radius: var(--radius);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    color: var(--text-muted);
+  }
+
+  .note-tag {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .note-body {
+    min-width: 0;
+    max-width: var(--measure);
+  }
+
+  .note-title {
+    margin: 0 0 var(--space-1);
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .note[data-severity='info'] {
+    border-left-color: var(--status-queued);
+  }
+
+  .note[data-severity='info'] .note-tag {
+    color: var(--status-queued);
+  }
+
+  .note[data-severity='warning'] {
+    border-left-color: var(--status-beta);
+  }
+
+  .note[data-severity='warning'] .note-tag {
+    color: var(--status-beta);
+  }
+
+  .note[data-severity='alert'] {
+    border-left-color: var(--status-alert);
+  }
+
+  .note[data-severity='alert'] .note-tag {
+    color: var(--status-alert);
+  }
+
+  /* Slotted prose belongs to the tool, so reach past the scope. */
+  .note-body :global(p) {
+    margin: 0 0 var(--space-2);
+  }
+
+  .note-body :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .note-body :global(code) {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    color: var(--text);
+  }
+</style>

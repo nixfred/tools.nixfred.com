@@ -1,0 +1,140 @@
+---
+// Error boundary.
+//
+// 03-SHARED-PLATFORM.md requires an error boundary in the shared shell.
+// Astro renders static HTML, so there is no component tree to catch a
+// render error in the React sense. What can actually break at runtime
+// is a tool's client side script, and when it does the honest failure
+// mode is a region that silently stops responding. That is the worst
+// possible outcome: the visitor cannot tell whether the tool is broken
+// or whether they used it wrong.
+//
+// So this boundary listens for errors originating inside its own
+// subtree and swaps in a readable failure panel that says plainly that
+// the tool failed and that their input was not sent anywhere. It also
+// catches unhandled promise rejections, which is where async tool code
+// usually dies.
+//
+// With JavaScript disabled, the slot renders normally and the panel
+// never appears, which is correct: nothing can throw.
+
+interface Props {
+  /** Named in the failure message so the visitor knows what broke. */
+  label?: string;
+}
+
+const { label = 'This tool' } = Astro.props;
+---
+
+<div class="boundary" data-error-boundary data-label={label}>
+  <div class="boundary-content">
+    <slot />
+  </div>
+
+  <div class="boundary-failure" hidden role="alert">
+    <p class="failure-title">{label} stopped responding.</p>
+    <p class="failure-body">
+      Something in this tool threw an error. Your input was not sent
+      anywhere, and nothing was saved. Reloading the page usually clears
+      it.
+    </p>
+    <p class="failure-detail mono" data-failure-detail hidden></p>
+    <button type="button" class="failure-reload" data-failure-reload>
+      Reload the page
+    </button>
+  </div>
+</div>
+
+<script>
+  // One listener per boundary. Errors report a source element only for
+  // real DOM errors, so attribute the failure by checking whether the
+  // event's path passes through this boundary's content.
+  document
+    .querySelectorAll<HTMLElement>('[data-error-boundary]')
+    .forEach((boundary) => {
+      const content = boundary.querySelector<HTMLElement>('.boundary-content');
+      const failure = boundary.querySelector<HTMLElement>('.boundary-failure');
+      const detail = boundary.querySelector<HTMLElement>('[data-failure-detail]');
+      const reload = boundary.querySelector<HTMLButtonElement>('[data-failure-reload]');
+      if (!content || !failure) return;
+
+      let tripped = false;
+
+      const trip = (messageText: string) => {
+        if (tripped) return;
+        tripped = true;
+        content.hidden = true;
+        failure.hidden = false;
+        // The message is developer text. Show it, because a visitor who
+        // reports "it broke" with a message is far more useful than one
+        // who reports "it broke", but keep it visually secondary.
+        if (detail && messageText) {
+          detail.textContent = messageText;
+          detail.hidden = false;
+        }
+      };
+
+      const originatesHere = (target: EventTarget | null): boolean => {
+        return target instanceof Node && content.contains(target);
+      };
+
+      window.addEventListener('error', (event) => {
+        if (event.target !== window && !originatesHere(event.target)) return;
+        trip(event.message ?? '');
+      });
+
+      window.addEventListener('unhandledrejection', (event) => {
+        const reason = event.reason;
+        const messageText =
+          reason instanceof Error ? reason.message : String(reason ?? '');
+        trip(messageText);
+      });
+
+      reload?.addEventListener('click', () => location.reload());
+    });
+</script>
+
+<style>
+  .boundary-failure {
+    max-width: var(--measure);
+    border: 1px solid var(--status-alert);
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+    background: var(--panel);
+  }
+
+  .failure-title {
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: var(--space-2);
+  }
+
+  .failure-body {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+  }
+
+  .failure-detail {
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    border-top: 1px solid var(--line);
+    padding-top: var(--space-2);
+    margin-top: var(--space-2);
+    overflow-wrap: anywhere;
+  }
+
+  .failure-reload {
+    font: 600 var(--text-sm) var(--font-sans);
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    margin-top: var(--space-3);
+    cursor: pointer;
+  }
+
+  .failure-reload:hover {
+    border-color: var(--accent);
+  }
+</style>

@@ -1,0 +1,61 @@
+# Push to main deploys to Cloudflare Pages.
+#
+# Fred's ruling (2026-07-25): "always push to github which will push to
+# cloudflare pages where cloudflare dns will point tools.nixfred.com to
+# the github and cloudflare pages."
+#
+# Why Actions and not a Git-connected Pages project: connecting a repo to
+# Pages natively requires an interactive GitHub OAuth grant in the
+# Cloudflare dashboard, which cannot be performed from a CLI. This
+# workflow produces the same behavior, a push to main ships the site,
+# and it is fully configurable from the terminal.
+#
+# Required repository secret:
+#   CLOUDFLARE_API_TOKEN   Account > Cloudflare Pages > Edit
+# Account id is not secret and is inlined below.
+
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two deploys at once. A queued push supersedes the one behind it.
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun astro build
+
+      # The gates are the release contract. A red gate must never ship.
+      - name: Link integrity gate
+        run: ./tests/check-links.sh
+
+      - name: Static safety gate
+        run: ./tests/check-safety.sh
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: b120e63874f8f8e9d75db4c1bf65a766
+          command: pages deploy dist --project-name=tools-nixfred-com --branch=main

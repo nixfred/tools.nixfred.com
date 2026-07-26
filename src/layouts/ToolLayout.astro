@@ -1,0 +1,133 @@
+---
+// Tool layout. The shell every released tool renders inside.
+//
+// 03-SHARED-PLATFORM.md requires a shared "tool layout" alongside the
+// header, footer, navigation, and error boundary. This is it.
+//
+// THIS FILE CONTAINS ZERO TOOL LOGIC, and it must stay that way. It
+// knows how to frame a tool: masthead, capabilities, privacy posture,
+// failure containment, and chrome. It knows nothing about what any
+// tool computes. A tool supplies its own body through the default
+// slot, and its own metadata through the registry entry.
+//
+// 02-BUILD-CONTROL.md: a tool PRD may not alter this shared contract.
+// If a tool needs something here, propose the change and stop.
+import Base from './Base.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import StatusBadge from '../components/StatusBadge.astro';
+import CategoryDot from '../components/CategoryDot.astro';
+import PrivacyNotice from '../components/kit/PrivacyNotice.astro';
+import ErrorBoundary from '../components/kit/ErrorBoundary.astro';
+import type { ToolEntry } from '../data/types';
+
+interface Props {
+  tool: ToolEntry;
+}
+
+const { tool } = Astro.props;
+
+// The privacy notice appears wherever a visitor might paste something.
+// `none` means the tool takes no user content at all, so a notice there
+// would be noise that trains people to ignore the real ones.
+const showPrivacyNotice = tool.inputSensitivity !== 'none';
+
+// Capabilities are declared by the registry, not guessed by the shell.
+const capabilities = [
+  tool.supportsSample ? 'Sample workflow' : null,
+  tool.supportsExport ? 'Exportable' : null,
+  'Runs in this browser',
+].filter((c): c is string => c !== null);
+---
+
+<Base title={`${tool.name} | Nixfred AI Systems Workbench`} description={tool.shortDescription}>
+  <SiteHeader />
+
+  <main id="main" class="tool-main">
+    <header class="masthead">
+      <p class="masthead-meta">
+        <CategoryDot category={tool.category} />
+        <StatusBadge status={tool.status} />
+        <span class="mono version">v{tool.version}</span>
+      </p>
+
+      <h1>{tool.name}</h1>
+      <p class="lede">{tool.shortDescription}</p>
+
+      <ul class="capabilities" aria-label="Tool capabilities">
+        {capabilities.map((c) => <li class="capability">{c}</li>)}
+      </ul>
+
+      {showPrivacyNotice && <PrivacyNotice sensitivity={tool.inputSensitivity} />}
+    </header>
+
+    {/* Everything a tool renders is contained. A thrown error inside a
+        tool degrades to a readable panel instead of blanking the page
+        and taking the header and footer down with it. */}
+    <ErrorBoundary label={tool.name}>
+      <slot />
+    </ErrorBoundary>
+  </main>
+
+  <SiteFooter />
+</Base>
+
+<style>
+  .tool-main {
+    max-width: var(--page-max);
+    margin: 0 auto;
+    padding: var(--space-5) var(--space-4) var(--space-6);
+  }
+
+  .masthead {
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-4);
+    margin-bottom: var(--space-5);
+  }
+
+  .masthead-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+  }
+
+  .version {
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    letter-spacing: var(--track-label);
+  }
+
+  h1 {
+    font-size: var(--text-3xl);
+    letter-spacing: var(--track-tight);
+    margin-bottom: var(--space-2);
+  }
+
+  .lede {
+    font-size: var(--text-lg);
+    color: var(--text-muted);
+    max-width: var(--measure);
+  }
+
+  .capabilities {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    list-style: none;
+    padding: 0;
+    margin: var(--space-3) 0 0;
+  }
+
+  .capability {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    padding: var(--space-1) var(--space-3);
+  }
+</style>

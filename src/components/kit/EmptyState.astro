@@ -1,0 +1,89 @@
+---
+// Empty state.
+//
+// 03-SHARED-PLATFORM.md, tool module contract: every released tool
+// supplies an "Empty state" and a "Sample state".
+//
+// 00-PRODUCT-VISION.md principle 7 is the reason this component
+// matters: "A tool must work with sample data and should not require an
+// API key for its core experience." A visitor who lands on a blank
+// instrument and has to invent input to see what it does will leave. So
+// the empty state's job is not decoration, it is to offer the sample in
+// one click.
+//
+// Loading a sample dispatches `workbench:load-sample`. This component
+// owns no state and knows no tool's data shape.
+
+interface Props {
+  title: string;
+  body: string;
+  /** Omit to hide the affordance for a tool with no sample. */
+  sampleLabel?: string;
+}
+
+const { title, body, sampleLabel } = Astro.props;
+---
+
+<div class="empty-state" data-empty-state>
+  <p class="label">Awaiting input</p>
+  <h2 class="empty-title">{title}</h2>
+  <p class="empty-body">{body}</p>
+
+  {
+    sampleLabel && (
+      <button type="button" class="sample-btn" data-load-sample>
+        {sampleLabel}
+      </button>
+    )
+  }
+</div>
+
+<style>
+  .empty-state {
+    max-width: var(--measure);
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--radius-lg);
+    padding: var(--space-5) var(--space-4);
+    text-align: left;
+  }
+
+  .empty-title {
+    font-size: var(--text-xl);
+    margin: var(--space-2) 0 var(--space-2);
+  }
+
+  .empty-body {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    margin-bottom: var(--space-4);
+  }
+
+  .sample-btn {
+    font: 600 var(--text-sm) var(--font-sans);
+    color: var(--bg);
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-4);
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out);
+  }
+
+  .sample-btn:hover {
+    background: var(--accent-strong);
+    border-color: var(--accent-strong);
+  }
+</style>
+
+<script>
+  document.querySelectorAll<HTMLElement>('[data-empty-state]').forEach((empty) => {
+    empty.querySelector<HTMLButtonElement>('[data-load-sample]')?.addEventListener(
+      'click',
+      () => {
+        empty.dispatchEvent(
+          new CustomEvent('workbench:load-sample', { bubbles: true }),
+        );
+      },
+    );
+  });
+</script>

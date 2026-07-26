@@ -1,0 +1,68 @@
+---
+// Category marker. A small identifying dot plus the category name in
+// text. The dot is decorative and hidden from assistive technology;
+// the name is the actual information, so nothing here is conveyed by
+// color alone.
+//
+// 01-INFORMATION-ARCHITECTURE.md: categories are metadata, never page
+// sections.
+import type { Category } from '../data/types';
+
+interface Props {
+  category: Category;
+}
+
+const { category } = Astro.props;
+
+// Lowercase key so the CSS attribute selectors stay stable if a
+// display name is ever recased.
+const key = category.toLowerCase();
+---
+
+<span class="cat" data-category={key}>
+  <span class="dot" aria-hidden="true"></span>
+  <span class="name">{category}</span>
+</span>
+
+<style>
+  .cat {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5em;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--radius-pill);
+    background: var(--line-strong);
+    flex: none;
+  }
+
+  .cat[data-category='design'] .dot {
+    background: var(--cat-design);
+  }
+
+  .cat[data-category='build'] .dot {
+    background: var(--cat-build);
+  }
+
+  .cat[data-category='evaluate'] .dot {
+    background: var(--cat-evaluate);
+  }
+
+  .cat[data-category='operate'] .dot {
+    background: var(--cat-operate);
+  }
+
+  .cat[data-category='understand'] .dot {
+    background: var(--cat-understand);
+  }
+</style>

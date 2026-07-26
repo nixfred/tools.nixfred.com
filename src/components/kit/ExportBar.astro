@@ -1,0 +1,207 @@
+---
+// Export bar.
+//
+// 03-SHARED-PLATFORM.md, tool module contract: "Optional export
+// adapter". 00-PRODUCT-VISION.md principle 4: results should be
+// exportable or shareable where useful.
+//
+// THIS COMPONENT SERIALIZES NOTHING. It cannot: it has no access to a
+// tool's state and no knowledge of its shape. It dispatches an intent
+// and the tool's own export adapter answers it. Keeping serialization
+// on the tool side is what lets the platform stay free of tool logic,
+// per 02-BUILD-CONTROL.md.
+//
+// The contract, both directions:
+// 1. This component dispatches `workbench:export` on itself, bubbling,
+//    with detail { format, filename }.
+// 2. The tool listens, serializes, and calls back through
+//    `detail.resolve(text)`. The bar then triggers the download or the
+//    clipboard write. A tool that never resolves gets a reset button
+//    rather than a spinner that lies.
+//
+// Copy to clipboard uses navigator.clipboard, which is a local API and
+// not a network call, so it does not violate the static safety gate.
+export type ExportFormat = 'json' | 'csv' | 'markdown';
+
+interface Props {
+  formats: ExportFormat[];
+  /** Base filename without extension. */
+  filename: string;
+  disabled?: boolean;
+}
+
+const { formats, filename, disabled = false } = Astro.props;
+
+const LABELS: Record<ExportFormat, string> = {
+  json: 'JSON',
+  csv: 'CSV',
+  markdown: 'Markdown',
+};
+
+const EXTENSIONS: Record<ExportFormat, string> = {
+  json: 'json',
+  csv: 'csv',
+  markdown: 'md',
+};
+---
+
+<div
+  class="export-bar"
+  data-export-bar
+  data-filename={filename}
+  role="group"
+  aria-label="Export results"
+>
+  <span class="label export-label">Export</span>
+
+  {
+    formats.map((format) => (
+      <button
+        type="button"
+        class="export-btn"
+        data-export-format={format}
+        data-export-extension={EXTENSIONS[format]}
+        disabled={disabled}
+      >
+        {LABELS[format]}
+      </button>
+    ))
+  }
+
+  <button type="button" class="export-btn" data-export-copy disabled={disabled}>
+    Copy
+  </button>
+
+  {/* aria-live so a screen reader learns the export happened. The
+      download itself is silent. */}
+  <span class="export-status mono" data-export-status role="status" aria-live="polite"></span>
+</div>
+
+<style>
+  .export-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    border-top: 1px solid var(--line);
+    padding-top: var(--space-3);
+    margin-top: var(--space-4);
+  }
+
+  .export-label {
+    margin-right: var(--space-1);
+  }
+
+  .export-btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out);
+  }
+
+  .export-btn:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .export-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .export-status {
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+  }
+</style>
+
+<script>
+  document.querySelectorAll<HTMLElement>('[data-export-bar]').forEach((bar) => {
+    const status = bar.querySelector<HTMLElement>('[data-export-status]');
+    const filename = bar.dataset.filename || 'export';
+
+    const say = (message: string) => {
+      if (!status) return;
+      status.textContent = message;
+      window.setTimeout(() => {
+        if (status.textContent === message) status.textContent = '';
+      }, 4000);
+    };
+
+    // Ask the tool for serialized output. Resolves with null when no
+    // tool is listening, which is the foundation-scope case: the shared
+    // platform ships this component before any tool exists to answer.
+    const requestSerialization = (format: string): Promise<string | null> =>
+      new Promise((resolve) => {
+        let answered = false;
+        const settle = (value: string | null) => {
+          if (answered) return;
+          answered = true;
+          resolve(value);
+        };
+
+        bar.dispatchEvent(
+          new CustomEvent('workbench:export', {
+            bubbles: true,
+            detail: { format, filename, resolve: settle },
+          }),
+        );
+
+        // A tool that does not answer must not leave the UI hanging.
+        window.setTimeout(() => settle(null), 250);
+      });
+
+    const download = (text: string, extension: string) => {
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${filename}.${extension}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    };
+
+    bar
+      .querySelectorAll<HTMLButtonElement>('[data-export-format]')
+      .forEach((button) => {
+        button.addEventListener('click', async () => {
+          const format = button.dataset.exportFormat || 'json';
+          const extension = button.dataset.exportExtension || 'txt';
+          const text = await requestSerialization(format);
+          if (text === null) {
+            say('No exportable result yet');
+            return;
+          }
+          download(text, extension);
+          say(`Downloaded .${extension}`);
+        });
+      });
+
+    bar
+      .querySelector<HTMLButtonElement>('[data-export-copy]')
+      ?.addEventListener('click', async () => {
+        const text = await requestSerialization('json');
+        if (text === null) {
+          say('No exportable result yet');
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(text);
+          say('Copied to clipboard');
+        } catch {
+          // Clipboard access is permission gated and refuses outside a
+          // secure context. Failing loudly beats a button that lies.
+          say('Clipboard blocked by the browser');
+        }
+      });
+  });
+</script>

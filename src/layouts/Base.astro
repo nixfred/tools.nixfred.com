@@ -1,15 +1,22 @@
 ---
-// Base layout. Every page passes through here. Add fontsource imports
-// in Stage 2 once the pack's typography is chosen (self hosted, no CDN).
+// Base layout. Every page passes through here.
+//
+// Fonts are self hosted through fontsource and bundled into the static
+// output. No CDN, no external stylesheet, nothing to block first paint
+// or leak a request off this device.
+import '@fontsource-variable/inter';
+import '@fontsource-variable/jetbrains-mono';
 import '../styles/global.css';
 
 interface Props {
   title: string;
   description: string;
-  surface?: 'editorial' | 'crisis';
+  /** Matches the surface blocks in tokens.css. `chassis` is the page
+   *  ground; `panel` is the raised interior surface. */
+  surface?: 'chassis' | 'panel';
 }
 
-const { title, description, surface = 'editorial' } = Astro.props;
+const { title, description, surface = 'chassis' } = Astro.props;
 const canonical = new URL(Astro.url.pathname, Astro.site);
 ---
 
@@ -18,11 +25,17 @@ const canonical = new URL(Astro.url.pathname, Astro.site);
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#081426" />
+    <!-- Hardcoded ONLY here: a meta tag cannot read a CSS custom
+         property. This value mirrors --chassis-950 in tokens.css. If
+         that token changes, change this with it. -->
+    <meta name="theme-color" content="#06080c" />
     <meta name="color-scheme" content="dark" />
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
+    {/* SVG favicon, self hosted like everything else. Without this the
+        browser requests /favicon.ico on every page and logs a 404. */}
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
