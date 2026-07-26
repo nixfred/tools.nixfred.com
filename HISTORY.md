@@ -210,3 +210,77 @@ reads 0. That number is the honest one, and it will move one PRD at a
 time.
 
 ---
+
+## Chapter 6: Fourteen tools, and the audit that caught me
+### 2026-07-26
+
+Fred set a goal: build all fourteen tools, triple check them with
+receipts, and text him as each one landed.
+
+The build itself went the way the factory says it should. The type
+contract was already written and proven, so thirteen agents went out at
+once, each owning three files and nothing else, each handed the
+prompt-lab implementation as the house pattern. Zero collisions. Every
+schema validated. The parallel machine worked exactly as designed.
+
+Then the drift-monitor agent sent a message saying, in effect, I built
+what you asked for and I think what you asked for is wrong.
+
+It was right. Its PRD specifies a snapshot differ that compares two
+system configurations and treats permission expansion as the headline
+finding. The brief I wrote described a statistical significance
+instrument, built around one of the several inputs the PRD happens to
+list. The agent built to my brief, documented the mismatch in a comment
+at the top of its own file, and told me rather than letting it ship
+quietly.
+
+That triggered an audit of all fourteen PRDs against what had actually
+been built, and the result was not comfortable. Ten tools were off
+spec to some degree. Two were badly wrong. Signal Tester was supposed
+to verify whether a claim is supported by its evidence, and had been
+built as a metrics validity tool. Evaluation Workbench was supposed to
+be a working scoring workbench whose central idea is that an aggregate
+score must never hide a failed critical case, and had been built as an
+advisor that explains how to design one.
+
+The root cause is worth writing down precisely, because it is a lesson
+about a lesson. The factory's hardest won rule is that a contract
+quoted verbatim in every producer prompt yields zero failures. That
+rule was followed for the TYPE contract, and the type contract held
+perfectly across thirteen agents with not one schema violation. It was
+not followed for the PRODUCT definition. The briefs described the tools
+in my own words, confidently and at length, and confident paraphrase is
+exactly how scope drifts. The schema was quoted and survived. The
+acceptance criteria were paraphrased and did not.
+
+All ten were corrected, this time with the PRD text pasted in verbatim.
+None of the good work was discarded. Where a PRD lists evaluation
+results as one input among several, the rigorous statistics engines
+built for them survive as secondary panels, which is where they always
+belonged.
+
+The gates had a hard day too, and earned their place. Three defects
+were found in them and each fix was validated with a negative control,
+which is how the worst one surfaced: a fix intended to stop the copy
+gate flagging arithmetic accidentally made it stop flagging prose
+dashes entirely, because the comment marker slash slash contains a
+forward slash and so every comment line looked like arithmetic. The
+gate went quiet rather than loud. A gate that silently passes
+everything is worse than no gate at all, and only a deliberate test
+against known bad input catches that.
+
+One gate turned out to be in genuine conflict with the pack it exists
+to enforce. The no hardcoded slug rule fired on Workflow Decomposer for
+naming Agent Designer, but that tool's PRD explicitly requires
+promoting a workflow into Agent Designer. Read closely, the criterion
+permits an explicit export and forbids hidden coupling, so the fix was
+a documented allowlist paired with a new check that the allowlisted
+file may name the other tool but may not import it. The allowance
+widens may mention, never may depend on.
+
+Every tool is live. Every gate is green. The landing page reads
+REGISTERED 14 and AVAILABLE NOW 14, and it was never edited once
+across the entire build, because the registry drives it. That was the
+whole point of the foundation.
+
+---

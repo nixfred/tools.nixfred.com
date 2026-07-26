@@ -8,7 +8,10 @@
 
 ## Current phase
 
-Foundation scope COMPLETE and LIVE at https://tools.nixfred.com.
+ALL FOURTEEN TOOLS COMPLETE AND LIVE at https://tools.nixfred.com.
+Foundation plus every tool PRD in the pack. Every registry entry is
+released, every one has a real page, and every one has a logic gate
+behind it.
 Verified 2026-07-26: HTTP 200, valid TLS, correct title and canonical,
 zero unsubstituted placeholders, all four routes serving. Push to main
 deploys automatically through GitHub Actions, confirmed end to end.
@@ -16,13 +19,16 @@ deploys automatically through GitHub Actions, confirmed end to end.
 ## Scope of this execution
 
 Per tools-nixfred-prds/02-BUILD-CONTROL.md, one execution covers named
-PRDs only. Fred named these two, and only these two:
+PRDs only. Fred, as operator, named the two foundation PRDs first and
+later named all fourteen tool PRDs. Both are recorded in
+docs/decisions/0003-build-control-adherence.md, including why an
+operator widening scope is compliant while an agent inferring the same
+scope would not be.
 
-1. tools-nixfred-prds/03-SHARED-PLATFORM.md
-2. tools-nixfred-prds/04-LANDING-PAGE.md
-
-ZERO tool PRDs were implemented. That is deliberate and enforced, not
-an oversight. See docs/decisions/0003-build-control-adherence.md.
+A SCOPE AUDIT ON 2026-07-26 found that ten tools had been briefed from
+a reading of the PRD rather than its literal text, and all ten were
+corrected. The lesson is recorded in 0005. Quote the acceptance
+criteria verbatim, not only the schema.
 
 ## URLs
 
