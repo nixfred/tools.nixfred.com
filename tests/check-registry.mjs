@@ -263,13 +263,28 @@ let landingFilesScanned = 0;
 for (const dir of LANDING_DIRS) {
   for (const file of walk(join(ROOT, dir))) {
     if (!/\.(astro|ts|tsx|js|mjs|css)$/.test(file)) continue;
+
+    // SCOPE FIX 2026-07-26. A tool's OWN page must name its own slug,
+    // because that is how it looks itself up: getTool('prompt-lab').
+    // That is not a hardcoded landing grid, it is a tool identifying
+    // itself, and flagging it made the gate fire on correct code.
+    //
+    // The rule this assertion actually protects is that DISCOVERY
+    // surfaces, the catalog and the shared chrome, must render from the
+    // registry alone. So src/pages/tools/<slug>.astro is allowed to
+    // name exactly one slug, its own, and nothing else.
+    const rel = relative(ROOT, file);
+    const ownPageMatch = rel.match(/^src\/pages\/tools\/([a-z0-9-]+)\.astro$/);
+    const ownSlug = ownPageMatch ? ownPageMatch[1] : null;
+
     landingFilesScanned += 1;
     const text = readFileSync(file, 'utf8');
     for (const slug of allSlugs) {
+      if (slug === ownSlug) continue;
       if (text.includes(slug)) {
         fail(
           'hardcoded slug',
-          `${relative(ROOT, file)} names the tool slug "${slug}". Landing surfaces must render from the registry only.`,
+          `${rel} names the tool slug "${slug}". Discovery surfaces must render from the registry only, and a tool page may name only its own slug.`,
         );
       }
     }
@@ -285,20 +300,50 @@ for (const dir of LANDING_DIRS) {
    the actionable set must be EMPTY. A released entry with no tool
    module behind it is a dead route.
 
-   READ THIS BEFORE YOU EDIT: this assertion is expected to change.
-   The first tool PRD that lands will make its own slug actionable,
-   and at that point this check must be loosened DELIBERATELY, for
-   example to "every actionable tool has a route file under
-   src/pages/tools/". Do not delete it, and do not weaken it by
-   accident to make a red build go green.
+   UPDATED 2026-07-26, DELIBERATELY, exactly as the previous version of
+   this comment instructed. Fred authorized building all 14 tool PRDs,
+   so the actionable set is no longer empty and an emptiness check would
+   now be wrong. It has been replaced with the successor the old comment
+   named: every actionable tool must have a real route file under
+   src/pages/tools/.
+
+   This is STRICTER than what it replaced, not weaker. The old check
+   only held while zero tools existed. This one holds forever, and it
+   catches the actual failure mode the old one was guarding against: a
+   status flipped to released with no implementation behind it, which
+   is a dead route.
+
+   Do not weaken this to make a red build go green. A red build here
+   means a tool is advertised as usable and has no page.
    ================================================================== */
+const toolPagesDir = new URL('../src/pages/tools/', import.meta.url);
+const toolPageFiles = new Set(
+  readdirSync(toolPagesDir)
+    .filter((f) => f.endsWith('.astro') && f !== '[slug].astro')
+    .map((f) => f.replace(/\.astro$/, '')),
+);
+
 const productionActionable = BASE.filter(isActionable);
+const advertisedWithoutPage = productionActionable.filter(
+  (t) => !toolPageFiles.has(t.slug),
+);
 expect(
-  'foundation scope',
-  productionActionable.length === 0,
-  `production actionable set is not empty: ${productionActionable
+  'actionable tools have a page',
+  advertisedWithoutPage.length === 0,
+  `these tools are actionable but have no file at src/pages/tools/<slug>.astro: ${advertisedWithoutPage
     .map((t) => `${t.slug} (${t.status})`)
-    .join(', ')}. Either a tool PRD shipped, in which case update assertion 8 in this file on purpose, or a status was flipped without an implementation, which is a dead route.`,
+    .join(', ')}. Either implement the tool or set its status back to coming-soon.`,
+);
+
+// The converse: a page file with no released registry entry behind it
+// is an orphan route that nothing links to.
+const orphanPages = [...toolPageFiles].filter(
+  (slug) => !BASE.some((t) => t.slug === slug && isActionable(t)),
+);
+expect(
+  'no orphan tool pages',
+  orphanPages.length === 0,
+  `these page files have no actionable registry entry: ${orphanPages.join(', ')}. Flip the status or remove the page.`,
 );
 
 /* ---- Report ------------------------------------------------------ */

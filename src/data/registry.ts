@@ -29,7 +29,7 @@ const BASE_TOOLS: ToolEntry[] = [
       'See why a small wording change flips model behavior, by comparing prompt structures side by side.',
     category: 'Build',
     tags: ['prompt', 'instructions', 'diff', 'ambiguity', 'system prompt'],
-    status: 'coming-soon',
+    status: 'released',
     version: '0.1.0',
     iconKey: 'flask',
     inputSensitivity: 'medium',

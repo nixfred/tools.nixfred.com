@@ -1,0 +1,699 @@
+---
+// Prompt Laboratory.
+// PRD: tools-nixfred-prds/tools/01-PROMPT-LAB.md
+//
+// All analysis is local and deterministic. Nothing here calls a model,
+// and the UI states that plainly wherever a result appears, because the
+// PRD forbids presenting simulated output as model output.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import ResultPanel from '../../components/kit/ResultPanel.astro';
+import HelpNote from '../../components/kit/HelpNote.astro';
+import WarningNote from '../../components/kit/WarningNote.astro';
+import ExportBar from '../../components/kit/ExportBar.astro';
+import { getTool } from '../../data/registry';
+import { SAMPLES, SEGMENT_KEYS, SEGMENT_LABELS } from '../../lib/tools/prompt-lab';
+
+const tool = getTool('prompt-lab')!;
+
+const segmentHints: Record<string, string> = {
+  system: 'Who the model is and how it behaves across every turn.',
+  task: 'The single thing you want done this time.',
+  context: 'Facts the model needs but should not treat as instructions.',
+  constraints: 'Limits, format, and how you will judge the answer.',
+};
+---
+
+<ToolLayout tool={tool}>
+  <div class="lab" data-lab>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <label class="label" for="sample">Sample scenario</label>
+        <select id="sample" data-sample-select>
+          {SAMPLES.map((s) => <option value={s.id}>{s.name}</option>)}
+        </select>
+        <button type="button" class="btn btn-primary" data-load-sample>
+          Load sample
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <button type="button" class="btn" data-copy-improved>
+          Copy improved draft
+        </button>
+        <button type="button" class="btn" data-reset>Reset</button>
+      </div>
+    </div>
+
+    <p class="teaches" data-teaches role="status" aria-live="polite"></p>
+
+    <div class="editors">
+      {
+        (['a', 'b'] as const).map((version) => (
+          <section class="editor" data-version={version}>
+            <h2 class="editor-title">
+              Version {version.toUpperCase()}
+              <span class="mono editor-tokens" data-tokens={version}>0 tokens</span>
+            </h2>
+            {SEGMENT_KEYS.map((key) => (
+              <div class="field">
+                <label class="label" for={`${version}-${key}`}>
+                  {SEGMENT_LABELS[key]}
+                </label>
+                <textarea
+                  id={`${version}-${key}`}
+                  data-input={version}
+                  data-segment={key}
+                  rows={key === 'system' || key === 'task' ? 3 : 2}
+                  placeholder={segmentHints[key]}
+                  spellcheck="false"
+                />
+              </div>
+            ))}
+          </section>
+        ))
+      }
+    </div>
+
+    <ResultPanel
+      title="Findings"
+      id="findings-panel"
+      description="Detected by local pattern analysis. Select a finding to highlight the exact text it refers to."
+    >
+      <div class="counts mono" data-counts role="status" aria-live="polite"></div>
+      <div data-findings></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Prompt anatomy"
+      id="anatomy-panel"
+      description="Where the prompt spends its budget."
+    >
+      <div data-anatomy></div>
+      <p class="method mono" data-method></p>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Side by side diff"
+      id="diff-panel"
+      description="Word level difference from version A to version B."
+    >
+      <div data-diff></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Improved draft"
+      id="improved-panel"
+      description="A rule based rewrite of version A. Every change is listed with its reason."
+    >
+      <WarningNote severity="info" title="This is not a model rewrite">
+        These edits come from the same local rules that produced the
+        findings above. Where a fix needs your judgment, the draft
+        inserts a bracketed marker rather than inventing a requirement
+        you never stated.
+      </WarningNote>
+      <div data-improved></div>
+    </ResultPanel>
+
+    <ExportBar formats={['json', 'markdown']} filename="prompt-lab-report" />
+
+    <HelpNote title="Why does a small wording change alter behavior?">
+      <p>
+        A prompt is not read as prose. Every clause either narrows the
+        space of acceptable answers or leaves it open. A word like
+        appropriate does not narrow anything, so the model fills the gap
+        from its own priors, and those priors shift between versions,
+        temperatures, and even reorderings of your text.
+      </p>
+      <p>
+        The findings above are the places where your prompt leaves the
+        decision open without saying so. That is usually where behavior
+        moves when you did not expect it to.
+      </p>
+    </HelpNote>
+  </div>
+</ToolLayout>
+
+<style>
+  .lab {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-3);
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    font: inherit;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .teaches {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: 0;
+    min-height: 1.5em;
+  }
+
+  .editors {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: var(--space-4);
+  }
+
+  .editor {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    background: var(--panel);
+  }
+
+  .editor-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--space-2);
+    font-size: var(--text-lg);
+    margin-bottom: var(--space-3);
+  }
+
+  .editor-tokens {
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    letter-spacing: var(--track-label);
+  }
+
+  .field {
+    margin-bottom: var(--space-3);
+  }
+
+  textarea {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2);
+    font-family: var(--font-mono);
+    line-height: 1.5;
+    resize: vertical;
+  }
+
+  textarea:focus-visible {
+    border-color: var(--accent);
+  }
+
+  .counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: var(--space-3);
+  }
+
+  .method {
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+    margin: var(--space-3) 0 0;
+  }
+</style>
+
+{/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
+    class the script creates is styled with :global here. */}
+<style is:global>
+  .finding {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    background: transparent;
+    color: inherit;
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+    cursor: pointer;
+    font: inherit;
+  }
+
+  .finding:hover {
+    border-color: var(--signal-edge);
+  }
+
+  .finding[data-severity='critical'] {
+    border-left-color: var(--status-alert);
+  }
+
+  .finding[data-severity='warning'] {
+    border-left-color: var(--status-beta);
+  }
+
+  .finding[data-severity='info'] {
+    border-left-color: var(--readout-700);
+  }
+
+  .finding-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: baseline;
+    margin-bottom: var(--space-1);
+  }
+
+  .finding-kind {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text);
+  }
+
+  .finding-where {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+  }
+
+  .finding-excerpt {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--accent);
+    display: block;
+    margin-bottom: var(--space-1);
+    overflow-wrap: anywhere;
+  }
+
+  .finding-message {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0 0 var(--space-1);
+    max-width: none;
+  }
+
+  .finding-suggestion {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    margin: 0;
+    max-width: none;
+  }
+
+  .clean-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+
+  .anatomy-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) 2fr auto;
+    gap: var(--space-3);
+    align-items: center;
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--line-faint);
+  }
+
+  .anatomy-label {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .anatomy-bar {
+    height: 6px;
+    background: var(--chassis-700);
+    border-radius: var(--radius-pill);
+    overflow: hidden;
+  }
+
+  .anatomy-fill {
+    height: 100%;
+    background: var(--accent-deep);
+    display: block;
+  }
+
+  .anatomy-num {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .diff-segment {
+    margin-bottom: var(--space-3);
+  }
+
+  .diff-title {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: var(--space-1);
+  }
+
+  .diff-body {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    line-height: 1.7;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    background: var(--bg);
+    overflow-wrap: anywhere;
+  }
+
+  .diff-added {
+    background: var(--signal-wash-strong);
+    color: var(--accent-strong);
+  }
+
+  .diff-removed {
+    color: var(--text-dim);
+    text-decoration: line-through;
+  }
+
+  .diff-unchanged-note {
+    font-size: var(--text-sm);
+    color: var(--text-dim);
+  }
+
+  .change {
+    border-left: 2px solid var(--accent-deep);
+    padding-left: var(--space-3);
+    margin-bottom: var(--space-3);
+  }
+
+  .change-reason {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0 0 var(--space-1);
+    max-width: none;
+  }
+
+  .change-where {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .improved-draft {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    white-space: pre-wrap;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    background: var(--bg);
+    margin-top: var(--space-3);
+    overflow-wrap: anywhere;
+  }
+</style>
+
+<script>
+  import {
+    analyzePrompt,
+    diffDrafts,
+    improvePrompt,
+    sampleState,
+    emptyState,
+    getSample,
+    serialize,
+    SAMPLES,
+    SEGMENT_KEYS,
+    SEGMENT_LABELS,
+    FINDING_KIND_LABELS,
+    TOKEN_ESTIMATE_METHOD,
+    type PromptDraft,
+    type PromptState,
+    type SegmentKey,
+  } from '../../lib/tools/prompt-lab';
+
+  const root = document.querySelector<HTMLElement>('[data-lab]');
+  if (root) {
+    const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+
+    const inputs = Array.from(
+      root.querySelectorAll<HTMLTextAreaElement>('[data-input]'),
+    );
+
+    const readDraft = (version: 'a' | 'b'): PromptDraft => {
+      const draft = { system: '', task: '', context: '', constraints: '' } as PromptDraft;
+      for (const key of SEGMENT_KEYS) {
+        const field = root.querySelector<HTMLTextAreaElement>(
+          `[data-input="${version}"][data-segment="${key}"]`,
+        );
+        draft[key] = field?.value ?? '';
+      }
+      return draft;
+    };
+
+    const readState = (): PromptState => ({
+      a: readDraft('a'),
+      b: readDraft('b'),
+      scenarioId: el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id,
+    });
+
+    const writeState = (state: PromptState) => {
+      for (const version of ['a', 'b'] as const) {
+        for (const key of SEGMENT_KEYS) {
+          const field = root.querySelector<HTMLTextAreaElement>(
+            `[data-input="${version}"][data-segment="${key}"]`,
+          );
+          if (field) field.value = state[version][key];
+        }
+      }
+    };
+
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    function renderFindings(state: PromptState) {
+      const analysis = analyzePrompt(state.a);
+      const counts = el('[data-counts]');
+      const list = el('[data-findings]');
+      if (!counts || !list) return;
+
+      const parts = Object.entries(analysis.findingCounts).map(
+        ([kind, n]) =>
+          `<span>${esc(FINDING_KIND_LABELS[kind as keyof typeof FINDING_KIND_LABELS])}: ${n}</span>`,
+      );
+      counts.innerHTML = parts.join('');
+
+      if (!analysis.findings.length) {
+        list.innerHTML =
+          '<p class="clean-note">No findings in version A. That means these specific patterns did not match, not that the prompt is correct.</p>';
+        return;
+      }
+
+      list.innerHTML = analysis.findings
+        .map(
+          (f, i) => `
+        <button type="button" class="finding" data-severity="${f.severity}"
+                data-jump-segment="${f.segment}" data-jump-start="${f.start}"
+                data-jump-end="${f.end}" data-finding-index="${i}">
+          <span class="finding-head">
+            <span class="finding-kind">${esc(FINDING_KIND_LABELS[f.kind])}</span>
+            <span class="finding-where">${esc(SEGMENT_LABELS[f.segment])}, characters ${f.start} to ${f.end}, ${esc(f.severity)}</span>
+          </span>
+          <code class="finding-excerpt">${esc(f.excerpt)}</code>
+          <p class="finding-message">${esc(f.message)}</p>
+          <p class="finding-suggestion">${esc(f.suggestion)}</p>
+        </button>`,
+        )
+        .join('');
+    }
+
+    function renderAnatomy(state: PromptState) {
+      const analysis = analyzePrompt(state.a);
+      const target = el('[data-anatomy]');
+      const method = el('[data-method]');
+      if (!target) return;
+      target.innerHTML = analysis.segments
+        .map(
+          (s) => `
+        <div class="anatomy-row">
+          <span class="anatomy-label">${esc(s.label)}</span>
+          <span class="anatomy-bar"><span class="anatomy-fill" style="width:${(s.share * 100).toFixed(1)}%"></span></span>
+          <span class="anatomy-num">${s.tokens} tok, ${s.words} words, ${s.directives} directives</span>
+        </div>`,
+        )
+        .join('');
+      if (method) {
+        method.textContent = `Total ${analysis.totalTokens} tokens across ${analysis.totalCharacters} characters. ${TOKEN_ESTIMATE_METHOD}`;
+      }
+    }
+
+    function renderDiff(state: PromptState) {
+      const target = el('[data-diff]');
+      if (!target) return;
+      const diffs = diffDrafts(state.a, state.b);
+      const changed = diffs.filter((d) => d.changed);
+      if (!changed.length) {
+        target.innerHTML =
+          '<p class="diff-unchanged-note">Version A and version B are identical. Edit version B to compare them.</p>';
+        return;
+      }
+      target.innerHTML = changed
+        .map(
+          (d) => `
+        <div class="diff-segment">
+          <p class="diff-title">${esc(d.label)}</p>
+          <div class="diff-body">${d.tokens
+            .map((t) =>
+              t.op === 'same'
+                ? esc(t.value)
+                : `<span class="diff-${t.op}">${esc(t.value)}</span>`,
+            )
+            .join('')}</div>
+        </div>`,
+        )
+        .join('');
+    }
+
+    function renderImproved(state: PromptState) {
+      const target = el('[data-improved]');
+      if (!target) return;
+      const { draft, changes } = improvePrompt(state.a);
+      const changeHtml = changes.length
+        ? changes
+            .map(
+              (c) => `
+          <div class="change">
+            <p class="change-where">${esc(SEGMENT_LABELS[c.segment])}</p>
+            <p class="change-reason">${esc(c.reason)}</p>
+          </div>`,
+            )
+            .join('')
+        : '<p class="clean-note">No rule based improvement to offer for version A.</p>';
+
+      const draftText = SEGMENT_KEYS.map(
+        (k) => `${SEGMENT_LABELS[k]}:\n${draft[k] || '(empty)'}`,
+      ).join('\n\n');
+
+      target.innerHTML = `${changeHtml}<pre class="improved-draft" data-improved-text>${esc(draftText)}</pre>`;
+    }
+
+    function renderAll() {
+      const state = readState();
+      for (const version of ['a', 'b'] as const) {
+        const analysis = analyzePrompt(state[version]);
+        const badge = root.querySelector(`[data-tokens="${version}"]`);
+        if (badge) badge.textContent = `${analysis.totalTokens} tokens`;
+      }
+      renderFindings(state);
+      renderAnatomy(state);
+      renderDiff(state);
+      renderImproved(state);
+    }
+
+    // Jump from a finding to the exact characters it refers to. This is
+    // the PRD requirement that findings link to exact prompt segments.
+    root.addEventListener('click', (event) => {
+      const btn = (event.target as HTMLElement)?.closest<HTMLElement>('[data-jump-segment]');
+      if (!btn) return;
+      const segment = btn.dataset.jumpSegment as SegmentKey;
+      const start = Number(btn.dataset.jumpStart ?? 0);
+      const end = Number(btn.dataset.jumpEnd ?? 0);
+      const field = root.querySelector<HTMLTextAreaElement>(
+        `[data-input="a"][data-segment="${segment}"]`,
+      );
+      if (!field) return;
+      field.focus();
+      field.setSelectionRange(start, end);
+    });
+
+    inputs.forEach((input) => input.addEventListener('input', renderAll));
+
+    el('[data-load-sample]')?.addEventListener('click', () => {
+      const id = el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id;
+      writeState(sampleState(id));
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = getSample(id)?.teaches ?? '';
+      renderAll();
+    });
+
+    el('[data-reset]')?.addEventListener('click', () => {
+      writeState(emptyState());
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = '';
+      renderAll();
+    });
+
+    el('[data-copy-improved]')?.addEventListener('click', async () => {
+      const pre = el('[data-improved-text]');
+      if (!pre?.textContent) return;
+      try {
+        await navigator.clipboard.writeText(pre.textContent);
+        const teaches = el('[data-teaches]');
+        if (teaches) teaches.textContent = 'Improved draft copied to the clipboard.';
+      } catch {
+        const teaches = el('[data-teaches]');
+        if (teaches) teaches.textContent = 'The browser blocked clipboard access.';
+      }
+    });
+
+    // ExportBar asks; the tool answers. See src/components/kit/ExportBar.astro.
+    root.addEventListener('workbench:export', ((event: CustomEvent) => {
+      const { format, resolve } = event.detail ?? {};
+      if (typeof resolve !== 'function') return;
+      const fmt = format === 'markdown' ? 'markdown' : 'json';
+      resolve(serialize(readState(), fmt));
+    }) as EventListener);
+
+    root.addEventListener('workbench:load-sample', () => {
+      writeState(sampleState());
+      renderAll();
+    });
+
+    renderAll();
+  }
+</script>

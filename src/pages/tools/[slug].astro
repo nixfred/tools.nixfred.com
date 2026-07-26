@@ -27,10 +27,27 @@ import { ACTIONABLE_TOOLS } from '../../data/registry';
 import type { ToolEntry } from '../../data/types';
 
 export function getStaticPaths() {
-  return ACTIONABLE_TOOLS.map((tool) => ({
-    params: { slug: tool.slug },
-    props: { tool },
-  }));
+  // A tool that has shipped gets its own page file in this directory,
+  // and that file owns its route. This dynamic route covers only
+  // actionable entries that do NOT yet have one, so it never collides
+  // with a real tool page and never needs a hand maintained exclusion
+  // list. import.meta.glob is resolved at build time by Vite.
+  //
+  // The glob lives INSIDE this function on purpose: Astro executes
+  // getStaticPaths in an isolated scope, so relying on a module level
+  // const here is a known way to get burned.
+  const dedicatedPages = new Set(
+    Object.keys(import.meta.glob('./*.astro'))
+      .map((path) => path.match(/^\.\/(.+)\.astro$/)?.[1])
+      .filter((name): name is string => Boolean(name) && name !== '[slug]'),
+  );
+
+  return ACTIONABLE_TOOLS.filter((tool) => !dedicatedPages.has(tool.slug)).map(
+    (tool) => ({
+      params: { slug: tool.slug },
+      props: { tool },
+    }),
+  );
 }
 
 interface Props {
