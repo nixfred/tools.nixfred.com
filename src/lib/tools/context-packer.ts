@@ -149,7 +149,8 @@ export function moveBlock(
 ): ContextBlock[] {
   const index = blocks.findIndex((b) => b.id === id);
   if (index === -1) return blocks;
-  const swapWith = direction === 'up' ? index - 1 : index + 1;
+  const isUp = direction === 'up';
+  const swapWith = isUp ? index - 1 : index + 1;
   if (swapWith < 0 || swapWith >= blocks.length) return blocks;
   const next = blocks.slice();
   const tmp = next[index];
@@ -244,10 +245,18 @@ function densityOf(view: BlockView, totalCount: number): number {
 type Comparator = (a: BlockView, b: BlockView, totalCount: number) => number;
 
 const STRATEGY_COMPARATORS: Record<Strategy, Comparator> = {
-  'priority-order': (a, b) => a.rank - b.rank,
-  'largest-first': (a, b) => b.tokens - a.tokens || a.rank - b.rank,
-  'smallest-first': (a, b) => a.tokens - b.tokens || a.rank - b.rank,
-  'value-density': (a, b, total) => densityOf(b, total) - densityOf(a, total) || a.rank - b.rank,
+  'priority-order': (a, b) => {
+    return a.rank - b.rank;
+  },
+  'largest-first': (a, b) => {
+    return b.tokens - a.tokens || a.rank - b.rank;
+  },
+  'smallest-first': (a, b) => {
+    return a.tokens - b.tokens || a.rank - b.rank;
+  },
+  'value-density': (a, b, total) => {
+    return densityOf(b, total) - densityOf(a, total) || a.rank - b.rank;
+  },
 };
 
 function explainInclusion(

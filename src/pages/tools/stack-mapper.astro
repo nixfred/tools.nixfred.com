@@ -1,0 +1,1042 @@
+---
+// AI Stack Mapper.
+// PRD: tools-nixfred-prds/tools/14-STACK-MAPPER.md
+//
+// Everything below is local and deterministic. Nothing here reaches a
+// network, reads a real system, or provisions anything. The PRD says so
+// plainly: "This is a design and explanation tool, not infrastructure
+// provisioning." The UI states that wherever a result appears.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import ResultPanel from '../../components/kit/ResultPanel.astro';
+import WarningNote from '../../components/kit/WarningNote.astro';
+import ExportBar from '../../components/kit/ExportBar.astro';
+import EmptyState from '../../components/kit/EmptyState.astro';
+import Field from '../../components/kit/Field.astro';
+import { getTool } from '../../data/registry';
+import { SAMPLES, COMPONENT_KINDS, CATALOG } from '../../lib/tools/stack-mapper';
+
+const tool = getTool('stack-mapper')!;
+---
+
+<ToolLayout tool={tool}>
+  <div class="mapper" data-mapper>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <Field
+          type="select"
+          id="sample-select"
+          name="sample"
+          label="Sample stack"
+          options={SAMPLES.map((s) => ({ value: s.id, label: s.name }))}
+        />
+        <button type="button" class="btn btn-primary" data-load-sample>
+          Load sample
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <Field
+          type="select"
+          id="add-kind-select"
+          name="add-kind"
+          label="Add component"
+          options={COMPONENT_KINDS.map((k) => ({ value: k, label: CATALOG[k].label }))}
+        />
+        <button type="button" class="btn btn-primary" data-add-component>
+          Add
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <button type="button" class="btn" data-reset>Reset</button>
+      </div>
+    </div>
+
+    <p class="status" data-status role="status" aria-live="polite"></p>
+
+    <div data-validation></div>
+
+    <div data-empty-wrap>
+      <EmptyState
+        title="No stack composed yet"
+        body="Add a component from the list above, or load a sample stack to see a full request path with a diagram, a step by step trace, and a data flow analysis."
+        sampleLabel="Load a sample stack"
+      />
+    </div>
+
+    <div data-builder hidden>
+      <h2 class="section-heading">Composed stack</h2>
+      <p class="section-hint">
+        Order is the request path. Move a component up or down to change where
+        it sits in that path.
+      </p>
+      <ol class="rows" data-rows></ol>
+
+      <ResultPanel
+        title="Architecture diagram"
+        id="diagram-panel"
+        description="The request path, top to bottom. An amber stripe marks a third party hop. A red outline marks a flagged component."
+      >
+        <div data-diagram></div>
+
+        <h3 class="path-heading">Path in words</h3>
+        <p class="path-lede">
+          The same path the diagram draws, stated as an ordered list of plain
+          sentences. Everything the picture shows is stated here too.
+        </p>
+        <ol class="path-list" data-path-list></ol>
+
+        <button
+          type="button"
+          class="btn"
+          slot="footer"
+          data-download-svg
+        >
+          Download diagram, SVG
+        </button>
+      </ResultPanel>
+
+      <ResultPanel
+        title="Inside the request"
+        id="trace-panel"
+        description="Step by step through the path: what data is present, what is added, what is stripped, and what could fail at each hop."
+      >
+        <div data-trace></div>
+      </ResultPanel>
+
+      <ResultPanel
+        title="Data flow analysis"
+        id="dataflow-panel"
+        description="The questions someone trusting this system actually asks: who sees raw input, where it crosses a trust boundary, where it reaches a third party, and where it comes to rest."
+      >
+        <div data-dataflow></div>
+      </ResultPanel>
+
+      <ResultPanel
+        title="Structural flags"
+        id="flags-panel"
+        description="Failure modes surfaced by the shape of the stack itself: a missing timeout, a single point of failure, a misplaced guardrail, or raw data reaching a third party."
+      >
+        <div class="counts mono" data-flag-counts role="status" aria-live="polite"></div>
+        <div data-flags></div>
+      </ResultPanel>
+
+      <ExportBar formats={['json', 'markdown']} filename="stack-mapper-report" />
+    </div>
+
+    <details class="help" data-help>
+      <summary class="help-summary">
+        <span class="help-tag">Note</span>
+        <span class="help-title">Why a path instead of a free form diagram?</span>
+      </summary>
+      <div class="help-body">
+        <p>
+          Real architectures branch and loop. This tool models the composed
+          stack as the ORDER a single request visits its components, because
+          that is exactly what a trace needs and exactly what keeps the
+          diagram readable, deterministic, and reorderable with a keyboard
+          instead of a drag and drop canvas.
+        </p>
+        <p>
+          A guardrail still knows what it is meant to guard. If that
+          component runs earlier in the path than the guardrail does, the
+          guardrail is flagged as misplaced, because it cannot protect a step
+          that already ran.
+        </p>
+      </div>
+    </details>
+  </div>
+</ToolLayout>
+
+<style>
+  .mapper {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-3);
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  /* Field ships its own bottom margin for stacked form layouts. Inside a
+     horizontal toolbar that margin just needs to go away. */
+  .toolbar-group :global(.field) {
+    margin-bottom: 0;
+    min-width: 12rem;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .status {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: 0;
+    min-height: 1.5em;
+  }
+
+  .section-heading {
+    font-size: var(--text-lg);
+    margin-bottom: var(--space-1);
+  }
+
+  .section-hint {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    max-width: var(--measure);
+    margin-bottom: var(--space-3);
+  }
+
+  .rows {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: 0;
+    margin: 0 0 var(--space-4);
+    list-style: none;
+    counter-reset: none;
+  }
+
+  .path-heading {
+    font-size: var(--text-sm);
+    text-transform: uppercase;
+    letter-spacing: var(--track-label);
+    color: var(--text-muted);
+    margin: var(--space-4) 0 var(--space-1);
+  }
+
+  .path-lede {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    margin-bottom: var(--space-2);
+  }
+
+  /* The ol itself is static, present at build time, so a scoped rule
+     reaches it. Its li children are added at runtime and are styled in
+     the is:global block below instead. */
+  .path-list {
+    margin: 0;
+    padding-left: 1.3rem;
+  }
+
+  .counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: var(--space-3);
+  }
+
+  .help {
+    border-left: 1px solid var(--line-strong);
+    padding-left: var(--space-3);
+  }
+
+  .help-summary {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    cursor: pointer;
+    list-style: none;
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+  }
+
+  .help-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .help-tag {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  .help-body {
+    padding-top: var(--space-2);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    color: var(--text-faint);
+    max-width: var(--measure);
+  }
+</style>
+
+{/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
+    class the script creates below is styled with :global here. */}
+<style is:global>
+  .row {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--panel);
+    padding: var(--space-3);
+  }
+
+  .row-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-3);
+    padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--line-faint);
+  }
+
+  .row-index {
+    flex: none;
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+  }
+
+  .row-kind {
+    flex: 1 1 auto;
+  }
+
+  .row-actions {
+    display: flex;
+    gap: var(--space-1);
+    flex: none;
+  }
+
+  .row-actions button {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-1) var(--space-2);
+    cursor: pointer;
+  }
+
+  .row-actions button:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .row-actions button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .row-body {
+    display: grid;
+    grid-template-columns: minmax(200px, 1fr) minmax(240px, 1.4fr) minmax(180px, 1fr);
+    gap: var(--space-3);
+    align-items: start;
+  }
+
+  .row-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .row-field .field-label {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .row-field .control {
+    width: 100%;
+    font-family: var(--font-mono);
+    color: var(--text);
+    background: var(--bg-alt);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.6rem;
+  }
+
+  .row-field .control:focus {
+    border-color: var(--accent);
+  }
+
+  .row-toggles {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    border: 0;
+    padding: 0;
+    margin: 0;
+  }
+
+  .toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  @media (max-width: 48rem) {
+    .row-body {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* ---- Trace hops ------------------------------------------------- */
+  .hop {
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+  }
+
+  .hop[data-has-flags='true'] {
+    border-left-color: var(--status-alert);
+  }
+
+  .hop[data-has-flags='false'] {
+    border-left-color: var(--line-strong);
+  }
+
+  .hop-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: baseline;
+    margin-bottom: var(--space-1);
+  }
+
+  .hop-index {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+  }
+
+  .hop-label {
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .hop-kind {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .hop-row {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0 0 var(--space-1);
+    max-width: none;
+  }
+
+  .hop-row strong {
+    color: var(--text-faint);
+    font-weight: 600;
+  }
+
+  .hop-flag {
+    font-size: var(--text-sm);
+    color: var(--status-alert);
+    margin: var(--space-1) 0 0;
+    max-width: none;
+  }
+
+  /* ---- Data flow analysis ------------------------------------------ */
+  .flow-block {
+    margin-bottom: var(--space-3);
+  }
+
+  .flow-title {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: var(--space-1);
+  }
+
+  .flow-list {
+    margin: 0;
+    padding-left: 1.1rem;
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  /* Used both inside .flow-list (data flow analysis) and inside the
+     static .path-list ol (path in words), so it is named for what it
+     is rather than for either one parent. */
+  .flow-list-item {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin-bottom: var(--space-1);
+  }
+
+  .flow-empty {
+    font-size: var(--text-sm);
+    color: var(--text-dim);
+  }
+
+  /* ---- Structural flags -------------------------------------------- */
+  .flag {
+    display: block;
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    background: transparent;
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+  }
+
+  .flag[data-severity='critical'] {
+    border-left-color: var(--status-alert);
+  }
+
+  .flag[data-severity='warning'] {
+    border-left-color: var(--status-beta);
+  }
+
+  .flag-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: baseline;
+    margin-bottom: var(--space-1);
+  }
+
+  .flag-kind {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text);
+  }
+
+  .flag-severity {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+  }
+
+  .flag-message {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0;
+    max-width: none;
+  }
+
+  .clean-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+
+  /* ---- Validation, WarningNote's visual language reproduced for a
+     runtime rendered list. Severity is a word and a border color
+     together, never color alone. ---- */
+  .validation-item {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    margin: 0 0 var(--space-2);
+    background: var(--panel-raised);
+    border: 1px solid var(--line);
+    border-left-width: 2px;
+    border-radius: var(--radius);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .validation-item[data-severity='alert'] {
+    border-left-color: var(--status-alert);
+  }
+
+  .validation-item[data-severity='warning'] {
+    border-left-color: var(--status-beta);
+  }
+
+  .validation-tag {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .validation-item[data-severity='alert'] .validation-tag {
+    color: var(--status-alert);
+  }
+
+  .validation-item[data-severity='warning'] .validation-tag {
+    color: var(--status-beta);
+  }
+
+  .validation-message {
+    max-width: var(--measure);
+  }
+</style>
+
+<script>
+  import {
+    COMPONENT_KINDS,
+    CATALOG,
+    SAMPLES,
+    DATA_TAG_LABELS,
+    createComponent,
+    addComponent,
+    removeComponent,
+    moveComponent,
+    emptyState,
+    sampleState,
+    reset,
+    validate,
+    analyzeStack,
+    buildDiagram,
+    describePath,
+    serialize,
+    getSample,
+    type StackComponent,
+    type StackMapperState,
+    type ComponentKind,
+    type FailureMode,
+  } from '../../lib/tools/stack-mapper';
+
+  const root = document.querySelector<HTMLElement>('[data-mapper]');
+  if (root) {
+    const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    /* ---------------------------------------------------------------
+     * The DOM is the state. Field level edits, the checkboxes and
+     * selects inside a row, are read live from their own controls.
+     * Structural changes, add, remove, move, sample, reset, rebuild
+     * the row list from a freshly computed array. This mirrors
+     * the reference tool page readDraft and writeState split and, the same as there,
+     * it means typing in a field never disturbs focus: only the
+     * read-only analysis panels re-render on every input event.
+     * ------------------------------------------------------------- */
+
+    function readState(): StackMapperState {
+      const rows = Array.from(root!.querySelectorAll<HTMLLIElement>('[data-row]'));
+      const components: StackComponent[] = rows.map((row) => {
+        const id = row.dataset.id ?? '';
+        const kind = (row.dataset.kind ?? 'client') as ComponentKind;
+        const field = <T extends HTMLElement>(name: string) =>
+          row.querySelector<T>(`[data-field="${name}"]`);
+
+        const labelInput = field<HTMLInputElement>('label');
+        const failureSelect = field<HTMLSelectElement>('failureMode');
+        const guardsSelect = field<HTMLSelectElement>('guards');
+
+        const component: StackComponent = {
+          id,
+          kind,
+          label: labelInput?.value.trim() || CATALOG[kind].label,
+          seesRawUserData: field<HTMLInputElement>('seesRawUserData')?.checked ?? false,
+          thirdParty: field<HTMLInputElement>('thirdParty')?.checked ?? false,
+          persists: field<HTMLInputElement>('persists')?.checked ?? false,
+          hasTimeout: field<HTMLInputElement>('hasTimeout')?.checked ?? false,
+          hasFallback: field<HTMLInputElement>('hasFallback')?.checked ?? false,
+          failureMode: (failureSelect?.value as FailureMode) ?? 'fails-closed',
+        };
+        if (kind === 'guardrail') {
+          component.guards = (guardsSelect?.value as ComponentKind) ?? 'model-provider';
+        }
+        return component;
+      });
+
+      const sampleId = el<HTMLSelectElement>('#sample-select')?.value ?? SAMPLES[0].id;
+      return { components, sampleId };
+    }
+
+    function renderRow(c: StackComponent, index: number, total: number): string {
+      const guardsBlock =
+        c.kind === 'guardrail'
+          ? `
+        <div class="row-field">
+          <label class="field-label" for="${esc(c.id)}-guards">Guards</label>
+          <select id="${esc(c.id)}-guards" class="control control-select" data-field="guards">
+            ${COMPONENT_KINDS.map(
+              (k) =>
+                `<option value="${k}" ${c.guards === k ? 'selected' : ''}>${esc(CATALOG[k].label)}</option>`,
+            ).join('')}
+          </select>
+        </div>`
+          : '';
+
+      return `
+      <li class="row" data-row data-id="${esc(c.id)}" data-kind="${c.kind}">
+        <div class="row-head">
+          <span class="row-index mono" aria-hidden="true">${index + 1}</span>
+          <span class="row-kind label">${esc(CATALOG[c.kind].label)}</span>
+          <span class="row-actions">
+            <button type="button" data-move-up aria-label="Move ${esc(c.label)} up" ${index === 0 ? 'disabled' : ''}>Up</button>
+            <button type="button" data-move-down aria-label="Move ${esc(c.label)} down" ${index === total - 1 ? 'disabled' : ''}>Down</button>
+            <button type="button" data-remove aria-label="Remove ${esc(c.label)}">Remove</button>
+          </span>
+        </div>
+        <div class="row-body">
+          <div class="row-field">
+            <label class="field-label" for="${esc(c.id)}-label">Name</label>
+            <input class="control" id="${esc(c.id)}-label" type="text" data-field="label"
+                   value="${esc(c.label)}" spellcheck="false" autocomplete="off" />
+          </div>
+          <fieldset class="row-toggles">
+            <legend class="visually-hidden">Properties for ${esc(c.label)}</legend>
+            <label class="toggle">
+              <input type="checkbox" data-field="seesRawUserData" ${c.seesRawUserData ? 'checked' : ''} />
+              Sees raw user data
+            </label>
+            <label class="toggle">
+              <input type="checkbox" data-field="thirdParty" ${c.thirdParty ? 'checked' : ''} />
+              Third party
+            </label>
+            <label class="toggle">
+              <input type="checkbox" data-field="persists" ${c.persists ? 'checked' : ''} />
+              Persists data
+            </label>
+            <label class="toggle">
+              <input type="checkbox" data-field="hasTimeout" ${c.hasTimeout ? 'checked' : ''} />
+              Has timeout
+            </label>
+            <label class="toggle">
+              <input type="checkbox" data-field="hasFallback" ${c.hasFallback ? 'checked' : ''} />
+              Has fallback
+            </label>
+          </fieldset>
+          <div class="row-field">
+            <label class="field-label" for="${esc(c.id)}-failure">On failure</label>
+            <select id="${esc(c.id)}-failure" class="control control-select" data-field="failureMode">
+              <option value="fails-closed" ${c.failureMode === 'fails-closed' ? 'selected' : ''}>Fails closed, blocks the request</option>
+              <option value="fails-open" ${c.failureMode === 'fails-open' ? 'selected' : ''}>Fails open, lets the request continue</option>
+            </select>
+          </div>
+          ${guardsBlock}
+        </div>
+      </li>`;
+    }
+
+    function renderRows(components: StackComponent[]) {
+      const list = el<HTMLOListElement>('[data-rows]');
+      if (!list) return;
+      list.innerHTML = components.map((c, i) => renderRow(c, i, components.length)).join('');
+    }
+
+    function refreshVisibility(components: StackComponent[]) {
+      const emptyWrap = el<HTMLElement>('[data-empty-wrap]');
+      const builder = el<HTMLElement>('[data-builder]');
+      if (emptyWrap) emptyWrap.hidden = components.length > 0;
+      if (builder) builder.hidden = components.length === 0;
+    }
+
+    // Built matching WarningNote's own markup shape by hand, since a
+    // runtime template string cannot instantiate an Astro component.
+    // Severity is carried by both the tag word and a border color,
+    // never color alone, styled through .validation-item below.
+    function renderValidation(state: StackMapperState) {
+      const target = el('[data-validation]');
+      if (!target) return;
+      const issues = validate(state);
+      if (!issues.length) {
+        target.innerHTML = '';
+        return;
+      }
+      target.innerHTML = issues
+        .map((issue) => {
+          const severity = issue.severity === 'error' ? 'alert' : 'warning';
+          const tag = issue.severity === 'error' ? 'Alert' : 'Warning';
+          const role = issue.severity === 'error' ? 'alert' : 'status';
+          return `
+        <div class="validation-item" data-severity="${severity}" role="${role}">
+          <span class="validation-tag">${tag}</span>
+          <span class="validation-message">${esc(issue.message)}</span>
+        </div>`;
+        })
+        .join('');
+    }
+
+    function renderDiagram(state: StackMapperState) {
+      const target = el('[data-diagram]');
+      if (!target) return;
+      target.innerHTML = buildDiagram(state).svg;
+    }
+
+    function renderPathList(state: StackMapperState) {
+      const target = el<HTMLOListElement>('[data-path-list]');
+      if (!target) return;
+      const lines = describePath(state);
+      target.innerHTML = lines.length
+        ? lines.map((line) => `<li class="flow-list-item">${esc(line)}</li>`).join('')
+        : '<li class="clean-note">Nothing composed yet.</li>';
+    }
+
+    function renderTrace(state: StackMapperState) {
+      const target = el('[data-trace]');
+      if (!target) return;
+      const analysis = analyzeStack(state);
+      if (!analysis.trace.length) {
+        target.innerHTML = '<p class="clean-note">Compose a stack to trace a request through it.</p>';
+        return;
+      }
+      target.innerHTML = analysis.trace
+        .map((hop) => {
+          const before = hop.before.length
+            ? hop.before.map((t) => DATA_TAG_LABELS[t]).join(', ')
+            : 'nothing yet';
+          const added = hop.added.length ? hop.added.map((t) => DATA_TAG_LABELS[t]).join(', ') : 'nothing';
+          const stripped = hop.stripped.length
+            ? hop.stripped.map((t) => DATA_TAG_LABELS[t]).join(', ')
+            : 'nothing';
+          const flagLines = hop.flags.map((f) => `<p class="hop-flag">Flag: ${esc(f.message)}</p>`).join('');
+          return `
+        <div class="hop" data-has-flags="${hop.flags.length > 0}">
+          <div class="hop-head">
+            <span class="hop-index mono">Hop ${hop.index + 1}</span>
+            <span class="hop-label">${esc(hop.componentLabel)}</span>
+            <span class="hop-kind">${esc(hop.kindLabel)}</span>
+          </div>
+          <p class="hop-row"><strong>Present before this hop:</strong> ${esc(before)}</p>
+          <p class="hop-row"><strong>Added here:</strong> ${esc(added)}</p>
+          <p class="hop-row"><strong>Stripped here:</strong> ${esc(stripped)}</p>
+          <p class="hop-row"><strong>Could fail:</strong> ${esc(hop.couldFail)}</p>
+          <p class="hop-row"><strong>On failure:</strong> ${esc(hop.failureBehavior)}</p>
+          ${flagLines}
+        </div>`;
+        })
+        .join('');
+    }
+
+    function renderDataFlow(state: StackMapperState) {
+      const target = el('[data-dataflow]');
+      if (!target) return;
+      const { dataFlow } = analyzeStack(state);
+      const labelFor = (id: string) =>
+        esc(state.components.find((c) => c.id === id)?.label ?? id);
+
+      const block = (title: string, items: string[], emptyText: string) => `
+        <div class="flow-block">
+          <p class="flow-title">${esc(title)}</p>
+          ${
+            items.length
+              ? `<ol class="flow-list">${items.map((i) => `<li class="flow-list-item">${i}</li>`).join('')}</ol>`
+              : `<p class="flow-empty">${esc(emptyText)}</p>`
+          }
+        </div>`;
+
+      target.innerHTML = [
+        block(
+          'Sees raw user input',
+          dataFlow.rawInputSeenBy.map((id) => labelFor(id)),
+          'No component is marked as seeing raw user input.',
+        ),
+        block(
+          'Crosses a trust boundary, to a third party',
+          dataFlow.trustBoundaryCrossings.map(
+            (b) => `${esc(b.label)}, right after ${esc(b.precededBy ?? 'the start of the path')}`,
+          ),
+          'The request never leaves your infrastructure.',
+        ),
+        block(
+          'Comes to rest in storage',
+          dataFlow.storagePoints.map((id) => labelFor(id)),
+          'Nothing in this stack persists data.',
+        ),
+      ].join('');
+    }
+
+    function renderFlags(state: StackMapperState) {
+      const counts = el('[data-flag-counts]');
+      const target = el('[data-flags]');
+      if (!counts || !target) return;
+      const { riskFlags } = analyzeStack(state);
+
+      const byKind: Record<string, number> = {};
+      for (const f of riskFlags) byKind[f.kind] = (byKind[f.kind] ?? 0) + 1;
+      counts.innerHTML = Object.entries(byKind)
+        .map(([kind, n]) => `<span>${esc(kind)}: ${n}</span>`)
+        .join('') || '<span>0 flags</span>';
+
+      target.innerHTML = riskFlags.length
+        ? riskFlags
+            .map(
+              (f) => `
+        <div class="flag" data-severity="${f.severity}">
+          <div class="flag-head">
+            <span class="flag-kind">${esc(f.kind)}</span>
+            <span class="flag-severity">${esc(f.componentLabel)}, ${esc(f.severity)}</span>
+          </div>
+          <p class="flag-message">${esc(f.message)}</p>
+        </div>`,
+            )
+            .join('')
+        : '<p class="clean-note">No structural flags raised on this stack.</p>';
+    }
+
+    function renderStatus(message: string) {
+      const status = el('[data-status]');
+      if (status) status.textContent = message;
+    }
+
+    function renderAll() {
+      const state = readState();
+      const panel = el<HTMLElement>('#diagram-panel');
+      if (panel) panel.dataset.resultStatus = state.components.length ? 'ready' : 'idle';
+
+      renderValidation(state);
+      renderDiagram(state);
+      renderPathList(state);
+      renderTrace(state);
+      renderDataFlow(state);
+      renderFlags(state);
+      refreshVisibility(state.components);
+    }
+
+    function loadFullState(state: StackMapperState) {
+      renderRows(state.components);
+      const sampleSelect = el<HTMLSelectElement>('#sample-select');
+      if (sampleSelect) sampleSelect.value = state.sampleId;
+      renderAll();
+    }
+
+    /* ---- Structural actions: add, remove, move ---------------------- */
+
+    el('[data-add-component]')?.addEventListener('click', () => {
+      const kind = (el<HTMLSelectElement>('#add-kind-select')?.value ?? 'client') as ComponentKind;
+      const next = addComponent(readState(), kind);
+      renderRows(next.components);
+      renderAll();
+      renderStatus(`Added ${CATALOG[kind].label}.`);
+    });
+
+    root.addEventListener('click', (event) => {
+      const target = event.target as HTMLElement;
+      const row = target.closest<HTMLElement>('[data-row]');
+      if (!row) return;
+      const id = row.dataset.id ?? '';
+
+      if (target.closest('[data-remove]')) {
+        const label = row.querySelector<HTMLInputElement>('[data-field="label"]')?.value ?? id;
+        const next = removeComponent(readState(), id);
+        renderRows(next.components);
+        renderAll();
+        renderStatus(`Removed ${label}.`);
+        return;
+      }
+      if (target.closest('[data-move-up]')) {
+        const next = moveComponent(readState(), id, 'up');
+        renderRows(next.components);
+        renderAll();
+        return;
+      }
+      if (target.closest('[data-move-down]')) {
+        const next = moveComponent(readState(), id, 'down');
+        renderRows(next.components);
+        renderAll();
+        return;
+      }
+    });
+
+    // Field level edits never touch row structure, so only the derived
+    // analysis panels re-render. This is what keeps typing in the name
+    // field, or flipping a checkbox, from ever stealing focus.
+    root.addEventListener('input', (event) => {
+      if ((event.target as HTMLElement)?.closest('[data-row]')) renderAll();
+    });
+    root.addEventListener('change', (event) => {
+      if ((event.target as HTMLElement)?.closest('[data-row]')) renderAll();
+    });
+
+    /* ---- Sample, reset, load-sample bridge from EmptyState ----------- */
+
+    el('[data-load-sample]')?.addEventListener('click', () => {
+      const id = el<HTMLSelectElement>('#sample-select')?.value ?? SAMPLES[0].id;
+      loadFullState(sampleState(id));
+      renderStatus(`Loaded sample: ${getSample(id)?.name ?? id}.`);
+    });
+
+    el('[data-reset]')?.addEventListener('click', () => {
+      loadFullState(reset());
+      renderStatus('Cleared. Add a component or load a sample to begin.');
+    });
+
+    // EmptyState's own button dispatches this generic event.
+    root.addEventListener('workbench:load-sample', () => {
+      loadFullState(sampleState());
+      renderStatus(`Loaded sample: ${getSample(SAMPLES[0].id)?.name ?? SAMPLES[0].id}.`);
+    });
+
+    /* ---- Export -------------------------------------------------------
+     * ExportBar's format union is json, csv, markdown, with no slot for
+     * an SVG file, so the diagram gets its own direct download button
+     * using the same Blob and object URL pattern ExportBar itself uses
+     * for a static, network free download. */
+    root.addEventListener('workbench:export', ((event: CustomEvent) => {
+      const { format, resolve } = event.detail ?? {};
+      if (typeof resolve !== 'function') return;
+      const fmt = format === 'markdown' ? 'markdown' : 'json';
+      resolve(serialize(readState(), fmt));
+    }) as EventListener);
+
+    el('[data-download-svg]')?.addEventListener('click', () => {
+      const { svg } = buildDiagram(readState());
+      const blob = new Blob([svg], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'stack-mapper-diagram.svg';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      renderStatus('Diagram downloaded as SVG.');
+    });
+
+    // Start empty, matching the reference tool convention of requiring an
+    // explicit "Load sample" action rather than opening pre-filled.
+    loadFullState(emptyState());
+  }
+</script>

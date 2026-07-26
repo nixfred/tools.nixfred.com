@@ -1,0 +1,791 @@
+---
+// Failure Investigator.
+// PRD: tools-nixfred-prds/tools/11-FAILURE-INVESTIGATOR.md
+//
+// CONSOLIDATION (01-INFORMATION-ARCHITECTURE.md): AI Failure Atlas and
+// AI Incident Room become this one tool. The walkthrough above answers
+// "what mechanism produced this", the catalog below answers "what do
+// we already know about failure mechanisms in general", and they share
+// one engine so the two never disagree with each other.
+//
+// HONESTY, the hard boundary from the PRD: nothing on this page states
+// a cause as proven. Every hypothesis carries the evidence that
+// produced its score and a next diagnostic that could still kill it.
+// See src/lib/tools/failure-investigator.ts for the scoring engine.
+//
+// PRIVACY, inputSensitivity is "high", the only entry in the registry
+// at that tier, because this tool exists for pasting production output
+// and logs. Nothing pasted here is transmitted, logged, or stored
+// unless the visitor explicitly exports it to their own device through
+// the export bar below. There is no fetch anywhere in this file.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import ResultPanel from '../../components/kit/ResultPanel.astro';
+import Field from '../../components/kit/Field.astro';
+import HelpNote from '../../components/kit/HelpNote.astro';
+import WarningNote from '../../components/kit/WarningNote.astro';
+import ExportBar from '../../components/kit/ExportBar.astro';
+import PrivacyNotice from '../../components/kit/PrivacyNotice.astro';
+import { getTool } from '../../data/registry';
+import {
+  SAMPLES,
+  QUESTIONS,
+  SYMPTOM_CATEGORIES,
+  SYMPTOM_CATEGORY_LABELS,
+  SYMPTOM_CATEGORY_HINTS,
+  MECHANISM_CATEGORIES,
+  MECHANISM_CATEGORY_LABELS,
+} from '../../lib/tools/failure-investigator';
+
+const tool = getTool('failure-investigator')!;
+
+const symptomOptions = [
+  { value: '', label: 'Choose the closest match' },
+  ...SYMPTOM_CATEGORIES.map((c) => ({ value: c, label: SYMPTOM_CATEGORY_LABELS[c] })),
+];
+
+const catalogCategoryOptions = [
+  { value: 'all', label: 'All categories' },
+  ...MECHANISM_CATEGORIES.map((c) => ({ value: c, label: MECHANISM_CATEGORY_LABELS[c] })),
+];
+---
+
+<ToolLayout tool={tool}>
+  <div class="investigator" data-investigator>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <label class="label" for="sample-select">Sample investigation</label>
+        <select id="sample-select" data-sample-select>
+          {SAMPLES.map((s) => <option value={s.id}>{s.name}</option>)}
+        </select>
+        <button type="button" class="btn btn-primary" data-load-sample>
+          Load sample
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <button type="button" class="btn" data-reset>Reset</button>
+      </div>
+    </div>
+
+    <p class="teaches" data-teaches role="status" aria-live="polite"></p>
+
+    <div data-investigation-fields>
+      <section class="intake">
+        <h2>Describe what happened</h2>
+
+        <Field
+          label="Incident category"
+          name="symptomCategory"
+          type="select"
+          options={symptomOptions}
+          hint="This orients the walkthrough. It does not filter which mechanisms can rank."
+        />
+        <p class="category-hint" data-category-hint></p>
+
+        <Field
+          label="What happened"
+          name="description"
+          type="textarea"
+          rows={3}
+          placeholder="Plain description of the bad output, when it happened, and what you expected instead."
+        />
+
+        <PrivacyNotice
+          sensitivity="high"
+          message="Nothing you paste below leaves this browser tab. It is never transmitted, logged, or stored anywhere unless you explicitly export it to this device with the export bar further down."
+        />
+
+        <Field
+          label="Paste an example"
+          name="example"
+          type="textarea"
+          rows={6}
+          placeholder="The actual output, a log line, or a transcript excerpt. Stays on this device."
+        />
+      </section>
+
+      <section class="questions">
+        <h2>Answer what you know</h2>
+        <p class="questions-hint">
+          Answer as many as you can, in any order. A skipped question
+          simply carries no weight. Answering more narrows the ranked
+          list below, question by question, rather than all at once.
+        </p>
+        <div class="questions-grid">
+          {
+            QUESTIONS.map((q) => (
+              <Field
+                label={q.prompt}
+                name={`q-${q.id}`}
+                type="select"
+                hint={q.hint}
+                options={[{ value: '', label: 'Not answered' }, ...q.options]}
+              />
+            ))
+          }
+        </div>
+      </section>
+    </div>
+
+    <ResultPanel
+      title="Ranked hypotheses"
+      id="hypotheses-panel"
+      description="Scored against the answers above. Select a hypothesis to draft the postmortem around it."
+    >
+      <div data-hypotheses></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Postmortem draft"
+      id="postmortem-panel"
+      description="Symptom, mechanism, evidence, fix, and the regression test that would catch it next time."
+    >
+      <WarningNote severity="info" title="This tool never executes anything">
+        Every containment step and every fix below is a recommendation
+        for a person to carry out. Nothing on this page runs a
+        remediation, calls a tool, or changes any system on its own.
+      </WarningNote>
+
+      <div data-postmortem></div>
+
+      <Field
+        label="Regression test"
+        name="regressionTest"
+        type="textarea"
+        rows={3}
+        hint="Prefilled with a suggested test for the selected mechanism. Edit it to match your own test suite."
+      />
+
+      <Field
+        label="Incident notes"
+        name="incidentNotes"
+        type="textarea"
+        rows={3}
+        hint="Your own running notes. Carried into the export as written."
+      />
+    </ResultPanel>
+
+    <ExportBar formats={['json', 'markdown']} filename="failure-investigator-postmortem" />
+
+    <ResultPanel
+      title="Failure mechanism catalog"
+      id="catalog-panel"
+      description="Every mechanism this tool knows about, browsable on its own, independent of the investigation above."
+    >
+      <div class="catalog-controls">
+        <Field label="Search" name="catalogSearch" type="text" placeholder="temperature, cache, refusal" />
+        <Field label="Category" name="catalogCategory" type="select" options={catalogCategoryOptions} />
+      </div>
+      <div data-catalog></div>
+    </ResultPanel>
+
+    <HelpNote title="Why will this not just tell me the cause?">
+      <p>
+        A questionnaire is evidence, not a debugger attached to your
+        system. Two mechanisms often produce the same visible symptom,
+        a stale index and a stale cache both read as a confident wrong
+        answer, and the only way to fully tell them apart is the check
+        named in the next diagnostic field, not another multiple choice
+        question.
+      </p>
+      <p>
+        So this tool ranks instead of concludes. A hypothesis with
+        strong evidence and no contradiction still carries a next
+        diagnostic, because a ranking built from a handful of answers is
+        exactly that, a ranking, and treating it as certainty is how a
+        team fixes the wrong thing and ships the same incident again.
+      </p>
+    </HelpNote>
+  </div>
+</ToolLayout>
+
+<style>
+  .investigator {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-3);
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    font: inherit;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .teaches {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: 0;
+    min-height: 1.5em;
+  }
+
+  .intake h2,
+  .questions h2 {
+    font-size: var(--text-lg);
+    margin-bottom: var(--space-2);
+  }
+
+  .category-hint {
+    margin: calc(var(--space-3) * -1) 0 var(--space-3);
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    min-height: 1.2em;
+  }
+
+  .questions-hint {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    max-width: var(--measure);
+  }
+
+  .questions-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 0 var(--space-4);
+  }
+
+  .catalog-controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0 var(--space-4);
+    margin-bottom: var(--space-2);
+  }
+</style>
+
+{/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
+    class the script creates below is styled with :global here. */}
+<style is:global>
+  .hypothesis {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    background: transparent;
+    color: inherit;
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+    cursor: pointer;
+    font: inherit;
+  }
+
+  .hypothesis:hover {
+    border-color: var(--signal-edge);
+  }
+
+  .hypothesis[aria-pressed='true'] {
+    background: var(--signal-wash);
+    border-color: var(--accent);
+  }
+
+  .hypothesis[data-confidence='high'] {
+    border-left-color: var(--accent);
+  }
+
+  .hypothesis[data-confidence='moderate'] {
+    border-left-color: var(--status-beta);
+  }
+
+  .hypothesis[data-confidence='low'] {
+    border-left-color: var(--text-dim);
+  }
+
+  .hypothesis-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+  }
+
+  .hypothesis-rank {
+    color: var(--text-dim);
+    font-size: var(--text-xs);
+  }
+
+  .hypothesis-name {
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .hypothesis-category {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .hypothesis-confidence {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    padding: 0.1rem 0.55rem;
+    color: var(--text-faint);
+  }
+
+  .hypothesis[data-confidence='high'] .hypothesis-confidence {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .hypothesis[data-confidence='moderate'] .hypothesis-confidence {
+    color: var(--status-beta);
+    border-color: var(--status-beta);
+  }
+
+  .hypothesis-score {
+    margin-left: auto;
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+  }
+
+  .hypothesis-evidence {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-bottom: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .hypothesis-evidence strong {
+    color: var(--text);
+  }
+
+  .hypothesis-next,
+  .hypothesis-containment {
+    display: block;
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    margin: 0;
+  }
+
+  .hypothesis-next strong,
+  .hypothesis-containment strong {
+    color: var(--text-muted);
+  }
+
+  .clean-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    max-width: var(--measure);
+  }
+
+  .postmortem-grid {
+    display: grid;
+    gap: var(--space-2) 0;
+    margin: 0 0 var(--space-4);
+  }
+
+  .postmortem-grid > div {
+    display: grid;
+    grid-template-columns: minmax(140px, 200px) 1fr;
+    gap: var(--space-3);
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--line-faint);
+    align-items: baseline;
+  }
+
+  .postmortem-grid dt {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .postmortem-grid dd {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    max-width: none;
+  }
+
+  .postmortem-grid dd[data-confidence-tag='high'] {
+    color: var(--accent);
+  }
+
+  .postmortem-grid dd[data-confidence-tag='moderate'] {
+    color: var(--status-beta);
+  }
+
+  @media (max-width: 40rem) {
+    .postmortem-grid > div {
+      grid-template-columns: 1fr;
+      gap: var(--space-1);
+    }
+  }
+
+  .catalog-entry {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    margin-bottom: var(--space-2);
+    background: var(--bg-alt);
+  }
+
+  .catalog-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-3);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .catalog-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .catalog-summary::after {
+    content: 'show';
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  .catalog-entry[open] .catalog-summary::after {
+    content: 'hide';
+  }
+
+  .catalog-name {
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .catalog-category {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .catalog-body {
+    padding-top: var(--space-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .catalog-body p {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    max-width: none;
+  }
+
+  .catalog-body p strong {
+    color: var(--text);
+  }
+</style>
+
+<script>
+  import {
+    QUESTIONS,
+    SAMPLES,
+    MECHANISM_CATEGORY_LABELS,
+    diagnose,
+    answeredCount,
+    buildPostmortem,
+    getMechanism,
+    getSample,
+    searchMechanisms,
+    sampleState,
+    emptyState,
+    serialize,
+    type InvestigationState,
+    type Answers,
+  } from '../../lib/tools/failure-investigator';
+
+  const root = document.querySelector<HTMLElement>('[data-investigator]');
+  if (root) {
+    const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+
+    const getInput = (id: string) =>
+      document.getElementById(id) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
+
+    const val = (id: string): string => getInput(id)?.value ?? '';
+
+    const setVal = (id: string, value: string) => {
+      const field = getInput(id);
+      if (field) field.value = value;
+    };
+
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const readState = (): InvestigationState => {
+      const answers: Answers = {};
+      for (const q of QUESTIONS) {
+        const v = val(`field-q-${q.id}`);
+        if (v) answers[q.id] = v;
+      }
+      return {
+        symptomCategory: val('field-symptomCategory') as InvestigationState['symptomCategory'],
+        description: val('field-description'),
+        example: val('field-example'),
+        answers,
+        selectedMechanismId: root.dataset.selected ?? '',
+        regressionTest: val('field-regressionTest'),
+        incidentNotes: val('field-incidentNotes'),
+      };
+    };
+
+    const writeState = (state: InvestigationState) => {
+      setVal('field-symptomCategory', state.symptomCategory);
+      setVal('field-description', state.description);
+      setVal('field-example', state.example);
+      for (const q of QUESTIONS) setVal(`field-q-${q.id}`, state.answers[q.id] ?? '');
+      setVal('field-regressionTest', state.regressionTest);
+      setVal('field-incidentNotes', state.incidentNotes);
+      root.dataset.selected = state.selectedMechanismId;
+    };
+
+    function renderCategoryHint() {
+      const hintEl = el('[data-category-hint]');
+      if (!hintEl) return;
+      const category = val('field-symptomCategory');
+      const hints: Record<string, string> = {
+        hallucination: 'A confident answer states something false or invented.',
+        retrieval: 'A real fact exists somewhere but the answer misses it or gets it wrong.',
+        permission: 'The system did something unauthorized, or refused something it should not have.',
+        tool: 'A tool, function, or external call is part of the story.',
+        latency: 'The response is correct but arrives too slowly.',
+        loop: 'The system gets stuck repeating itself instead of finishing.',
+        cost: 'The same task is costing more than it should.',
+      };
+      hintEl.textContent = hints[category] ?? '';
+    }
+
+    function renderHypotheses(state: InvestigationState) {
+      const target = el('[data-hypotheses]');
+      if (!target) return;
+
+      if (answeredCount(state.answers) === 0) {
+        target.innerHTML =
+          '<p class="clean-note">No discriminating questions answered yet. Answer at least one above, or load a sample, to see ranked hypotheses. Nothing here is ranked without visible evidence behind it.</p>';
+        return;
+      }
+
+      const ranked = diagnose(state.answers);
+      target.innerHTML = ranked
+        .map((h, i) => {
+          const forText = h.evidenceFor.length ? esc(h.evidenceFor.join(' ')) : 'No evidence gathered yet.';
+          const againstText = h.evidenceAgainst.length
+            ? esc(h.evidenceAgainst.join(' '))
+            : 'No evidence gathered yet.';
+          return `
+        <button type="button" class="hypothesis" data-confidence="${h.confidence}"
+                data-select-mechanism="${h.mechanismId}"
+                aria-pressed="${h.mechanismId === state.selectedMechanismId}">
+          <span class="hypothesis-head">
+            <span class="hypothesis-rank mono">#${i + 1}</span>
+            <span class="hypothesis-name">${esc(h.name)}</span>
+            <span class="hypothesis-category">${esc(MECHANISM_CATEGORY_LABELS[h.category])}</span>
+            <span class="hypothesis-confidence">${esc(h.confidence)} confidence</span>
+            <span class="hypothesis-score mono">score ${h.score}</span>
+          </span>
+          <span class="hypothesis-evidence">
+            <span><strong>For.</strong> ${forText}</span>
+            <span><strong>Against.</strong> ${againstText}</span>
+          </span>
+          <span class="hypothesis-next"><strong>Next diagnostic.</strong> ${esc(h.nextDiagnostic)}</span>
+          <span class="hypothesis-containment"><strong>Containment.</strong> ${esc(h.containmentAction)}</span>
+        </button>`;
+        })
+        .join('');
+    }
+
+    function renderPostmortem(state: InvestigationState) {
+      const target = el('[data-postmortem]');
+      if (!target) return;
+      const postmortem = buildPostmortem(state);
+      const rows: Array<[string, string, string?]> = [
+        ['Symptom', postmortem.symptom],
+        ['Mechanism', postmortem.mechanism],
+        ['Confidence', postmortem.confidence, postmortem.confidence],
+        [
+          'Evidence for',
+          postmortem.evidenceFor.length ? postmortem.evidenceFor.join(' ') : 'None gathered yet.',
+        ],
+        [
+          'Evidence against',
+          postmortem.evidenceAgainst.length ? postmortem.evidenceAgainst.join(' ') : 'None gathered yet.',
+        ],
+        ['Next diagnostic', postmortem.nextDiagnostic],
+        ['Containment action', postmortem.containmentAction],
+        ['Durable fix', postmortem.fix],
+      ];
+      target.innerHTML = `<dl class="postmortem-grid">${rows
+        .map(
+          ([label, value, tag]) =>
+            `<div><dt>${esc(label)}</dt><dd${tag ? ` data-confidence-tag="${tag}"` : ''}>${esc(value)}</dd></div>`,
+        )
+        .join('')}</dl>`;
+    }
+
+    function renderCatalog() {
+      const target = el('[data-catalog]');
+      if (!target) return;
+      const query = val('field-catalogSearch');
+      const category = (val('field-catalogCategory') || 'all') as Parameters<typeof searchMechanisms>[1];
+      const results = searchMechanisms(query, category);
+
+      if (!results.length) {
+        target.innerHTML = '<p class="clean-note">No catalog entries match that search.</p>';
+        return;
+      }
+
+      target.innerHTML = results
+        .map(
+          (m) => `
+        <details class="catalog-entry">
+          <summary class="catalog-summary">
+            <span class="catalog-name">${esc(m.name)}</span>
+            <span class="catalog-category">${esc(MECHANISM_CATEGORY_LABELS[m.category])}</span>
+          </summary>
+          <div class="catalog-body">
+            <p><strong>Presents as.</strong> ${esc(m.presentsAs)}</p>
+            <p><strong>Underlying reason.</strong> ${esc(m.underlyingReason)}</p>
+            <p><strong>How to confirm.</strong> ${esc(m.howToConfirm)}</p>
+            <p><strong>Containment action.</strong> ${esc(m.containmentAction)}</p>
+            <p><strong>Durable fix.</strong> ${esc(m.durableFix)}</p>
+            <p><strong>Regression test.</strong> ${esc(m.suggestedRegressionTest)}</p>
+          </div>
+        </details>`,
+        )
+        .join('');
+    }
+
+    function renderAll() {
+      const state = readState();
+      renderCategoryHint();
+      renderHypotheses(state);
+      renderPostmortem(state);
+    }
+
+    // Selecting a hypothesis both drives the postmortem draft and
+    // refills the regression test field with that mechanism's
+    // suggestion, since switching hypotheses usually means the prior
+    // suggested test no longer applies. A visitor's own edits survive
+    // right up until they pick a different hypothesis on purpose.
+    root.addEventListener('click', (event) => {
+      const btn = (event.target as HTMLElement)?.closest<HTMLElement>('[data-select-mechanism]');
+      if (!btn) return;
+      const id = btn.dataset.selectMechanism ?? '';
+      root.dataset.selected = id;
+      const mechanism = getMechanism(id);
+      if (mechanism) setVal('field-regressionTest', mechanism.suggestedRegressionTest);
+      renderAll();
+    });
+
+    el('[data-investigation-fields]')
+      ?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, select, textarea')
+      .forEach((field) => {
+        field.addEventListener('input', renderAll);
+        field.addEventListener('change', renderAll);
+      });
+
+    document.getElementById('field-regressionTest')?.addEventListener('input', renderAll);
+    document.getElementById('field-incidentNotes')?.addEventListener('input', renderAll);
+
+    el('[data-load-sample]')?.addEventListener('click', () => {
+      const id = el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id;
+      const state = sampleState(id);
+      const mechanism = getMechanism(state.selectedMechanismId);
+      state.regressionTest = mechanism?.suggestedRegressionTest ?? '';
+      writeState(state);
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = getSample(id)?.teaches ?? '';
+      renderAll();
+    });
+
+    el('[data-reset]')?.addEventListener('click', () => {
+      writeState(emptyState());
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = '';
+      renderAll();
+    });
+
+    // Catalog search and category filter are independent of the
+    // investigation above, so they get their own listeners rather than
+    // running through renderAll.
+    document.getElementById('field-catalogSearch')?.addEventListener('input', renderCatalog);
+    document.getElementById('field-catalogCategory')?.addEventListener('change', renderCatalog);
+
+    // ExportBar asks; the tool answers. See src/components/kit/ExportBar.astro.
+    root.addEventListener('workbench:export', ((event: CustomEvent) => {
+      const { format, resolve } = event.detail ?? {};
+      if (typeof resolve !== 'function') return;
+      const fmt = format === 'markdown' ? 'markdown' : 'json';
+      resolve(serialize(readState(), fmt));
+    }) as EventListener);
+
+    root.addEventListener('workbench:load-sample', () => {
+      const state = sampleState();
+      const mechanism = getMechanism(state.selectedMechanismId);
+      state.regressionTest = mechanism?.suggestedRegressionTest ?? '';
+      writeState(state);
+      renderAll();
+    });
+
+    renderAll();
+    renderCatalog();
+  }
+</script>

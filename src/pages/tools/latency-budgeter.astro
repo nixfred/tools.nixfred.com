@@ -1,0 +1,924 @@
+---
+// Latency Budgeter.
+// PRD: tools-nixfred-prds/tools/10-LATENCY-BUDGETER.md
+//
+// Every number here is a planning estimate produced by a local
+// statistical model. Nothing measures a real network or a real model,
+// and the page says so next to every composed result, because the PRD
+// draws that boundary explicitly: "The tool does not perform live
+// network tests in its first release."
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import ResultPanel from '../../components/kit/ResultPanel.astro';
+import AssumptionList from '../../components/kit/AssumptionList.astro';
+import HelpNote from '../../components/kit/HelpNote.astro';
+import WarningNote from '../../components/kit/WarningNote.astro';
+import ExportBar from '../../components/kit/ExportBar.astro';
+import EmptyState from '../../components/kit/EmptyState.astro';
+import Field from '../../components/kit/Field.astro';
+import { getTool } from '../../data/registry';
+import {
+  STAGE_KINDS,
+  STAGE_KIND_LABELS,
+  MAX_RETRY_ATTEMPTS,
+  SAMPLE_BUDGET_MS,
+  COMPOSITION_METHOD,
+  INDEPENDENCE_CAVEAT,
+} from '../../lib/tools/latency-budgeter';
+
+const tool = getTool('latency-budgeter')!;
+
+const assumptionItems = [
+  { label: 'Percentile shape fit to every stage', value: 'Lognormal, from p50 and p99', editable: false, source: 'method' },
+  { label: 'Series stages combine by', value: 'Summing means and variances, then a refit', editable: false, source: 'method' },
+  { label: 'Parallel stages combine by', value: 'The distribution of the maximum, solved directly', editable: false, source: 'method' },
+  { label: 'Retry attempts allowed per stage', value: `1 to ${MAX_RETRY_ATTEMPTS}`, editable: false, source: 'method' },
+  { label: 'Default user facing budget', value: `${SAMPLE_BUDGET_MS} ms`, editable: true, source: 'your input' },
+  { label: 'Independence between stages', value: 'Assumed. See the warning below.', editable: false, source: 'method' },
+];
+---
+
+<ToolLayout tool={tool}>
+  <div class="budgeter" data-tool>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <button type="button" class="btn btn-primary" data-load-sample>Load sample</button>
+        <button type="button" class="btn" data-reset>Reset</button>
+      </div>
+      <div class="toolbar-group">
+        <Field
+          label="User facing budget, milliseconds"
+          name="budget"
+          type="number"
+          id="budget"
+          min={1}
+          step={10}
+          value={SAMPLE_BUDGET_MS}
+          hint="Compared against total time to last token and, when a stage streams, time to first token, at both p50 and p99."
+        />
+      </div>
+    </div>
+
+    <p class="teaches" data-teaches role="status" aria-live="polite"></p>
+
+    <section class="builders">
+      {
+        (['baseline', 'proposed'] as const).map((key) => (
+          <div class="builder" data-builder={key}>
+            <div class="builder-head">
+              <h2 class="builder-title">{key === 'baseline' ? 'Baseline pipeline' : 'Proposed pipeline'}</h2>
+              <div class="builder-add">
+                <select data-add-kind={key} aria-label={`Stage kind to add to the ${key} pipeline`}>
+                  {STAGE_KINDS.map((k) => <option value={k}>{STAGE_KIND_LABELS[k]}</option>)}
+                </select>
+                <button type="button" class="btn" data-add-stage={key}>
+                  Add stage
+                </button>
+              </div>
+            </div>
+            <div class="stage-list" data-stage-list={key}></div>
+          </div>
+        ))
+      }
+    </section>
+
+    <div data-empty-wrap>
+      <EmptyState
+        title="No pipeline yet"
+        body="Describe the stages a request passes through, from client to reply, or load the sample RAG pipeline to see the tool work end to end."
+        sampleLabel="Load the sample pipeline"
+      />
+    </div>
+
+    <div data-results-wrap hidden>
+      <ResultPanel
+        id="totals-panel"
+        title="Composed total versus the naive sum"
+        headingLevel={2}
+        description="The naive sum adds every stage's own p99 together, the common mistake this tool exists to correct. The composed total is the honest figure."
+      >
+        <div class="cmp-table mono" data-totals></div>
+      </ResultPanel>
+
+      <ResultPanel
+        id="streaming-panel"
+        title="Time to first token versus time to last token"
+        headingLevel={2}
+        description="Only differs when a stage in the pipeline streams. A streaming UI changes perceived latency completely."
+      >
+        <div class="cmp-table mono" data-streaming></div>
+      </ResultPanel>
+
+      <ResultPanel
+        id="critical-path-panel"
+        title="Critical path"
+        headingLevel={2}
+        description="Every stage in order. A parallel group is priced at its slowest member, marked as the critical stage; the others in that group carry slack."
+      >
+        <div data-critical-path></div>
+      </ResultPanel>
+
+      <ResultPanel
+        id="dominant-panel"
+        title="Dominant stage and the halving test"
+        headingLevel={2}
+        description="The stage contributing the most to the total, and what happens to the total if its latency were cut in half. Amdahl reasoning: a stage sharing a parallel group with a similarly slow neighbor cannot be helped past that neighbor."
+      >
+        <div class="cmp-table mono" data-dominant></div>
+      </ResultPanel>
+
+      <ResultPanel
+        id="budget-panel"
+        title="Budget verdict"
+        headingLevel={2}
+        description="Whether each pipeline fits the stated user facing budget, at p50 and at p99, for the full reply and, when it applies, for the first token."
+      >
+        <div class="cmp-table mono" data-budget></div>
+      </ResultPanel>
+
+      <ExportBar formats={['json', 'markdown']} filename="latency-budgeter-report" />
+    </div>
+
+    <AssumptionList title="Modeling assumptions" items={assumptionItems} />
+
+    <WarningNote severity="warning" title="The independence assumption is the one most likely to be false">
+      <p>{INDEPENDENCE_CAVEAT}</p>
+    </WarningNote>
+
+    <HelpNote title="Why do not p99 latencies just add up?">
+      <p>{COMPOSITION_METHOD}</p>
+      <p>
+        This tool never samples a random number to answer that question.
+        Every composed figure comes from closed form curve fitting and,
+        for parallel groups, bisection against the curves' own CDFs.
+        The same pipeline always produces the same numbers.
+      </p>
+    </HelpNote>
+  </div>
+</ToolLayout>
+
+<style>
+  .budgeter {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-3);
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .toolbar-group :global(.field) {
+    margin-bottom: 0;
+    min-width: 16rem;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .teaches {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: 0;
+    min-height: 1.5em;
+  }
+
+  .builders {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: var(--space-4);
+  }
+
+  .builder {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    background: var(--panel);
+  }
+
+  .builder-head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-3);
+  }
+
+  .builder-title {
+    font-size: var(--text-lg);
+    margin: 0;
+  }
+
+  .builder-add {
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+  }
+
+  .builder-add select {
+    background: var(--bg-alt);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-1) var(--space-2);
+    font: inherit;
+  }
+
+  [data-results-wrap][hidden],
+  [data-empty-wrap][hidden] {
+    display: none;
+  }
+</style>
+
+{/* Runtime injected markup is not reached by Astro's scoped CSS, so
+    every class the script below creates is styled globally here. */}
+<style is:global>
+  .stage-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .builder-empty-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    margin: 0;
+  }
+
+  .stage-row {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    background: var(--bg-alt);
+  }
+
+  .stage-row[data-group-start='true'] {
+    border-top: 2px solid var(--line-strong);
+  }
+
+  .stage-row-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: var(--space-2) var(--space-3);
+    align-items: end;
+  }
+
+  .row-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .row-field input,
+  .row-field select {
+    font: var(--text-sm) var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 0.4rem 0.5rem;
+  }
+
+  .row-field input:focus-visible,
+  .row-field select:focus-visible,
+  .stage-row button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .row-check {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .stage-row-tail {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+  }
+
+  .stage-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    padding: 0.1rem 0.5rem;
+  }
+
+  .badge[data-tone='critical'] {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .remove-btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--status-alert);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-1) var(--space-2);
+    cursor: pointer;
+  }
+
+  .remove-btn:hover {
+    border-color: var(--status-alert);
+  }
+
+  .stage-stream-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: var(--space-2) var(--space-3);
+    margin-top: var(--space-2);
+    padding-top: var(--space-2);
+    border-top: 1px dashed var(--line);
+  }
+
+  .cmp-table {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .cmp-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-3);
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--line-faint);
+    align-items: baseline;
+  }
+
+  .cmp-row:last-child {
+    border-bottom: 0;
+  }
+
+  .cmp-row.cmp-head {
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .cmp-label {
+    font-family: var(--font-sans);
+    text-transform: none;
+    letter-spacing: normal;
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .cmp-value {
+    font-size: var(--text-sm);
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+
+  .cmp-value[data-tone='no'] {
+    color: var(--status-alert);
+  }
+
+  .cmp-value[data-tone='yes'] {
+    color: var(--status-live);
+  }
+
+  .cp-pipeline-title {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: var(--space-3) 0 var(--space-2);
+  }
+
+  .cp-pipeline-title:first-child {
+    margin-top: 0;
+  }
+
+  .cp-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) auto;
+    gap: var(--space-3);
+    align-items: baseline;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    margin-bottom: var(--space-2);
+    background: var(--bg);
+  }
+
+  .cp-row[data-critical='true'] {
+    border-left: 2px solid var(--accent);
+  }
+
+  .cp-name {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .cp-kind {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+    display: block;
+  }
+
+  .cp-numbers {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+
+<script>
+  import {
+    STAGE_KINDS,
+    STAGE_KIND_LABELS,
+    MAX_RETRY_ATTEMPTS,
+    createStage,
+    emptyState,
+    sampleState,
+    analyzePipeline,
+    serialize,
+    SAMPLE_TEACHES,
+    type Stage,
+    type StageKind,
+    type StageRelation,
+    type LatencyState,
+    type PipelineResult,
+  } from '../../lib/tools/latency-budgeter';
+
+  const root = document.querySelector<HTMLElement>('[data-tool]');
+  if (root) {
+    const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+    const esc = (s: unknown) =>
+      String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const fmt = (n: number) => Math.round(n).toLocaleString('en-US');
+
+    let state: LatencyState = emptyState();
+
+    /* ---- Stage row markup, generated at runtime -------------------- */
+
+    function kindOptions(selected: StageKind): string {
+      return STAGE_KINDS.map(
+        (k) => `<option value="${k}" ${k === selected ? 'selected' : ''}>${esc(STAGE_KIND_LABELS[k])}</option>`,
+      ).join('');
+    }
+
+    function renderStageRow(stage: Stage, isFirst: boolean): string {
+      const relationField = isFirst
+        ? `<div class="row-field">First stage
+             <select data-field="relation" disabled>
+               <option value="series" selected>Starts the pipeline</option>
+             </select>
+           </div>`
+        : `<div class="row-field">Runs
+             <select data-field="relation">
+               <option value="series" ${stage.relation === 'series' ? 'selected' : ''}>In series, after previous</option>
+               <option value="parallel" ${stage.relation === 'parallel' ? 'selected' : ''}>In parallel, with previous</option>
+             </select>
+           </div>`;
+
+      const streamFields = `
+        <div class="stage-stream-fields" data-stream-fields ${stage.streaming ? '' : 'hidden'}>
+          <div class="row-field">First token p50 ms
+            <input type="number" min="0" step="1" data-field="firstTokenP50" value="${stage.firstTokenP50}" />
+          </div>
+          <div class="row-field">First token p99 ms
+            <input type="number" min="0" step="1" data-field="firstTokenP99" value="${stage.firstTokenP99}" />
+          </div>
+        </div>`;
+
+      return `
+        <div class="stage-row" data-stage-row data-stage-id="${esc(stage.id)}">
+          <div class="stage-row-grid">
+            <div class="row-field">Label
+              <input type="text" data-field="label" value="${esc(stage.label)}" />
+            </div>
+            <div class="row-field">Kind
+              <select data-field="kind">${kindOptions(stage.kind)}</select>
+            </div>
+            ${relationField}
+            <div class="row-field">p50 ms
+              <input type="number" min="0" step="1" data-field="p50" value="${stage.p50}" />
+            </div>
+            <div class="row-field">p99 ms
+              <input type="number" min="0" step="1" data-field="p99" value="${stage.p99}" />
+            </div>
+            <div class="row-field">Retry attempts
+              <input type="number" min="1" max="${MAX_RETRY_ATTEMPTS}" step="1" data-field="retryAttempts" value="${stage.retryAttempts}" />
+            </div>
+            <div class="row-field">Retry failure percent
+              <input type="number" min="0" max="95" step="1" data-field="retryFailurePercent" value="${Math.round(stage.retryFailureRate * 100)}" />
+            </div>
+            <label class="row-check">
+              <input type="checkbox" data-field="streaming" ${stage.streaming ? 'checked' : ''} />
+              Streams
+            </label>
+          </div>
+          ${streamFields}
+          <div class="stage-row-tail">
+            <button type="button" class="remove-btn" data-remove-stage aria-label="Remove ${esc(stage.label)}">
+              Remove stage
+            </button>
+          </div>
+        </div>`;
+    }
+
+    function renderBuilder(key: 'baseline' | 'proposed') {
+      const container = el<HTMLDivElement>(`[data-stage-list="${key}"]`);
+      if (!container) return;
+      const stages = state[key].stages;
+      container.innerHTML = stages.length
+        ? stages.map((s, i) => renderStageRow(s, i === 0)).join('')
+        : '<p class="builder-empty-note">No stages yet. Add one above or load the sample.</p>';
+    }
+
+    function findStage(key: 'baseline' | 'proposed', id: string): Stage | undefined {
+      return state[key].stages.find((s) => s.id === id);
+    }
+
+    function applyField(stage: Stage, field: string, target: HTMLInputElement | HTMLSelectElement) {
+      switch (field) {
+        case 'label':
+          stage.label = target.value;
+          break;
+        case 'kind':
+          stage.kind = target.value as StageKind;
+          break;
+        case 'relation':
+          stage.relation = target.value as StageRelation;
+          break;
+        case 'p50':
+          stage.p50 = Number(target.value) || 0;
+          break;
+        case 'p99':
+          stage.p99 = Number(target.value) || 0;
+          break;
+        case 'retryAttempts':
+          stage.retryAttempts = Math.round(Number(target.value)) || 1;
+          break;
+        case 'retryFailurePercent':
+          stage.retryFailureRate = Math.min(Math.max(Number(target.value) || 0, 0), 99) / 100;
+          break;
+        case 'streaming':
+          stage.streaming = (target as HTMLInputElement).checked;
+          break;
+        case 'firstTokenP50':
+          stage.firstTokenP50 = Number(target.value) || 0;
+          break;
+        case 'firstTokenP99':
+          stage.firstTokenP99 = Number(target.value) || 0;
+          break;
+      }
+    }
+
+    function wireBuilder(key: 'baseline' | 'proposed') {
+      const container = el<HTMLDivElement>(`[data-stage-list="${key}"]`);
+      if (!container) return;
+
+      // Typing in a number or text field must not rebuild the row, or
+      // focus and the cursor position would be lost mid keystroke. Only
+      // the results re-render on every keystroke.
+      container.addEventListener('input', (event) => {
+        const target = event.target as HTMLInputElement;
+        const row = target.closest<HTMLElement>('[data-stage-row]');
+        const field = target.dataset.field;
+        if (!row || !field) return;
+        const stage = findStage(key, row.dataset.stageId ?? '');
+        if (!stage) return;
+        applyField(stage, field, target);
+        renderResults();
+      });
+
+      // A select or checkbox is a discrete action, not continuous
+      // typing, so a full rebuild here (to show or hide the first
+      // token fields, for instance) costs nothing perceptible.
+      container.addEventListener('change', (event) => {
+        const target = event.target as HTMLInputElement | HTMLSelectElement;
+        const row = target.closest<HTMLElement>('[data-stage-row]');
+        const field = target.dataset.field;
+        if (!row || !field) return;
+        const stage = findStage(key, row.dataset.stageId ?? '');
+        if (!stage) return;
+        applyField(stage, field, target);
+        renderBuilder(key);
+        renderResults();
+      });
+
+      container.addEventListener('click', (event) => {
+        const button = (event.target as HTMLElement).closest<HTMLElement>('[data-remove-stage]');
+        const row = button?.closest<HTMLElement>('[data-stage-row]');
+        if (!row) return;
+        state[key].stages = state[key].stages.filter((s) => s.id !== row.dataset.stageId);
+        renderBuilder(key);
+        renderResults();
+      });
+    }
+
+    function wireAddButton(key: 'baseline' | 'proposed') {
+      el<HTMLButtonElement>(`[data-add-stage="${key}"]`)?.addEventListener('click', () => {
+        const kindSelect = el<HTMLSelectElement>(`[data-add-kind="${key}"]`);
+        const kind = (kindSelect?.value as StageKind) || 'network';
+        state[key].stages.push(createStage(kind, 'series'));
+        renderBuilder(key);
+        renderResults();
+      });
+    }
+
+    function syncBudgetField() {
+      const budgetInput = el<HTMLInputElement>('#budget');
+      if (budgetInput) budgetInput.value = String(state.budgetMs);
+    }
+
+    /* ---- Results ----------------------------------------------------- */
+
+    function renderTotals(baseline: PipelineResult, proposed: PipelineResult | null) {
+      const target = el('[data-totals]');
+      if (!target) return;
+      const rows = [
+        {
+          label: 'Naive sum of every stage p99 (the mistake)',
+          b: `${fmt(baseline.naiveSumP99)} ms`,
+          p: proposed ? `${fmt(proposed.naiveSumP99)} ms` : null,
+        },
+        {
+          label: 'Composed total p99 (honest figure)',
+          b: `${fmt(baseline.totalP99)} ms`,
+          p: proposed ? `${fmt(proposed.totalP99)} ms` : null,
+        },
+        {
+          label: 'Composed total p50',
+          b: `${fmt(baseline.totalP50)} ms`,
+          p: proposed ? `${fmt(proposed.totalP50)} ms` : null,
+        },
+      ];
+      target.innerHTML = comparisonTable(rows);
+    }
+
+    function renderStreaming(baseline: PipelineResult, proposed: PipelineResult | null) {
+      const target = el('[data-streaming]');
+      if (!target) return;
+      if (!baseline.hasStreaming && !(proposed?.hasStreaming)) {
+        target.innerHTML = '<p class="builder-empty-note">No stage streams in either pipeline, so time to first token equals time to last token.</p>';
+        return;
+      }
+      const rows = [
+        {
+          label: 'Time to first token, p50',
+          b: `${fmt(baseline.ttftP50)} ms`,
+          p: proposed ? `${fmt(proposed.ttftP50)} ms` : null,
+        },
+        {
+          label: 'Time to first token, p99',
+          b: `${fmt(baseline.ttftP99)} ms`,
+          p: proposed ? `${fmt(proposed.ttftP99)} ms` : null,
+        },
+        {
+          label: 'Time to last token, p50',
+          b: `${fmt(baseline.totalP50)} ms`,
+          p: proposed ? `${fmt(proposed.totalP50)} ms` : null,
+        },
+        {
+          label: 'Time to last token, p99',
+          b: `${fmt(baseline.totalP99)} ms`,
+          p: proposed ? `${fmt(proposed.totalP99)} ms` : null,
+        },
+      ];
+      target.innerHTML = comparisonTable(rows);
+    }
+
+    function renderDominant(baseline: PipelineResult, proposed: PipelineResult | null) {
+      const target = el('[data-dominant]');
+      if (!target) return;
+      const baselineStage = state.baseline.stages[baseline.dominantIndex];
+      const proposedStage = proposed ? state.proposed.stages[proposed.dominantIndex] : null;
+      const rows = [
+        {
+          label: 'Dominant stage',
+          b: baselineStage ? baselineStage.label : 'none',
+          p: proposed ? (proposedStage ? proposedStage.label : 'none') : null,
+        },
+        {
+          label: 'Its contribution at p50',
+          b: `${fmt(baseline.stages[baseline.dominantIndex]?.effectiveP50 ?? 0)} ms`,
+          p: proposed ? `${fmt(proposed.stages[proposed.dominantIndex]?.effectiveP50 ?? 0)} ms` : null,
+        },
+        {
+          label: 'Total p50 if it were halved',
+          b: `${fmt(baseline.halved.totalP50)} ms`,
+          p: proposed ? `${fmt(proposed.halved.totalP50)} ms` : null,
+        },
+        {
+          label: 'Reduction from halving',
+          b: `${fmt(baseline.halved.reductionP50)} ms (${baseline.halved.reductionPercent.toFixed(1)} percent)${baseline.halved.saturated ? ', saturated' : ''}`,
+          p: proposed
+            ? `${fmt(proposed.halved.reductionP50)} ms (${proposed.halved.reductionPercent.toFixed(1)} percent)${proposed.halved.saturated ? ', saturated' : ''}`
+            : null,
+        },
+      ];
+      target.innerHTML = comparisonTable(rows);
+    }
+
+    function renderBudget(baseline: PipelineResult, proposed: PipelineResult | null) {
+      const target = el('[data-budget]');
+      if (!target) return;
+      const verdict = (fits: boolean) => `<span data-tone="${fits ? 'yes' : 'no'}">${fits ? 'Fits' : 'Misses'}</span>`;
+      const rows = [
+        { label: 'Full reply fits budget at p50', b: verdict(baseline.budget.fitsTotalP50), p: proposed ? verdict(proposed.budget.fitsTotalP50) : null },
+        { label: 'Full reply fits budget at p99', b: verdict(baseline.budget.fitsTotalP99), p: proposed ? verdict(proposed.budget.fitsTotalP99) : null },
+        { label: 'First token fits budget at p50', b: verdict(baseline.budget.fitsTtftP50), p: proposed ? verdict(proposed.budget.fitsTtftP50) : null },
+        { label: 'First token fits budget at p99', b: verdict(baseline.budget.fitsTtftP99), p: proposed ? verdict(proposed.budget.fitsTtftP99) : null },
+      ];
+      target.innerHTML = comparisonTable(rows, true);
+    }
+
+    function comparisonTable(rows: Array<{ label: string; b: string; p: string | null }>, rawValues = false): string {
+      const showProposed = rows.some((r) => r.p !== null);
+      const head = `<div class="cmp-row cmp-head"><span></span><span>Baseline</span>${showProposed ? '<span>Proposed</span>' : ''}</div>`;
+      const body = rows
+        .map(
+          (r) => `
+        <div class="cmp-row">
+          <span class="cmp-label">${esc(r.label)}</span>
+          <span class="cmp-value">${rawValues ? r.b : esc(r.b)}</span>
+          ${showProposed ? `<span class="cmp-value">${r.p === null ? 'not loaded' : rawValues ? r.p : esc(r.p)}</span>` : ''}
+        </div>`,
+        )
+        .join('');
+      return head + body;
+    }
+
+    function renderPipelineCriticalPath(label: string, pipeline: { stages: Stage[] }, result: PipelineResult): string {
+      if (!result.stages.length) return `<p class="cp-pipeline-title">${esc(label)}</p><p class="builder-empty-note">No stages.</p>`;
+      const rows = result.stages
+        .map((sc) => {
+          const group = result.groups[sc.groupIndex];
+          const slack = group.p50 - sc.effectiveP50;
+          const groupNote =
+            group.memberIndices.length > 1
+              ? sc.onCriticalPath
+                ? `Critical member of a ${group.memberIndices.length} stage parallel group`
+                : `Off critical path, parallel group, slack ${fmt(slack)} ms`
+              : 'In series';
+          const retryNote = sc.retryTaxP99 > 0 ? `, retry tax +${fmt(sc.retryTaxP99)} ms at p99` : '';
+          return `
+            <div class="cp-row" data-critical="${sc.onCriticalPath}">
+              <span>
+                <span class="cp-name">${esc(sc.stage.label)}</span>
+                <span class="cp-kind">${esc(groupNote)}${retryNote}</span>
+              </span>
+              <span class="cp-numbers">p50 ${fmt(sc.effectiveP50)} ms, p99 ${fmt(sc.effectiveP99)} ms</span>
+              <span class="badge" data-tone="${sc.onCriticalPath ? 'critical' : ''}">${sc.onCriticalPath ? 'Critical path' : 'Parallel'}</span>
+            </div>`;
+        })
+        .join('');
+      return `<p class="cp-pipeline-title">${esc(label)}</p>${rows}`;
+    }
+
+    function renderCriticalPath(baseline: PipelineResult, proposed: PipelineResult | null) {
+      const target = el('[data-critical-path]');
+      if (!target) return;
+      let html = renderPipelineCriticalPath('Baseline', state.baseline, baseline);
+      if (proposed && state.proposed.stages.length) {
+        html += renderPipelineCriticalPath('Proposed', state.proposed, proposed);
+      }
+      target.innerHTML = html;
+    }
+
+    function renderResults() {
+      const emptyWrap = el<HTMLElement>('[data-empty-wrap]');
+      const resultsWrap = el<HTMLElement>('[data-results-wrap]');
+      const isEmpty = state.baseline.stages.length === 0;
+      if (emptyWrap) emptyWrap.hidden = !isEmpty;
+      if (resultsWrap) resultsWrap.hidden = isEmpty;
+      if (isEmpty) return;
+
+      const baseline = analyzePipeline(state.baseline, state.budgetMs);
+      const proposed = state.proposed.stages.length ? analyzePipeline(state.proposed, state.budgetMs) : null;
+
+      renderTotals(baseline, proposed);
+      renderStreaming(baseline, proposed);
+      renderCriticalPath(baseline, proposed);
+      renderDominant(baseline, proposed);
+      renderBudget(baseline, proposed);
+
+      root.querySelectorAll<HTMLElement>('[data-kit-result]').forEach((panel) => {
+        panel.dataset.resultStatus = 'ready';
+      });
+    }
+
+    /* ---- Wiring ------------------------------------------------------- */
+
+    wireBuilder('baseline');
+    wireBuilder('proposed');
+    wireAddButton('baseline');
+    wireAddButton('proposed');
+
+    el<HTMLInputElement>('#budget')?.addEventListener('input', (event) => {
+      state.budgetMs = Number((event.target as HTMLInputElement).value) || 0;
+      renderResults();
+    });
+
+    function loadSample() {
+      state = sampleState();
+      syncBudgetField();
+      renderBuilder('baseline');
+      renderBuilder('proposed');
+      renderResults();
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = SAMPLE_TEACHES;
+    }
+
+    el('[data-load-sample]')?.addEventListener('click', loadSample);
+
+    el('[data-reset]')?.addEventListener('click', () => {
+      state = emptyState();
+      syncBudgetField();
+      renderBuilder('baseline');
+      renderBuilder('proposed');
+      renderResults();
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = '';
+    });
+
+    // EmptyState's own sample button dispatches this bubbling event.
+    root.addEventListener('workbench:load-sample', loadSample);
+
+    // ExportBar asks; the tool answers.
+    root.addEventListener('workbench:export', ((event: CustomEvent) => {
+      const { format, resolve } = event.detail ?? {};
+      if (typeof resolve !== 'function') return;
+      const fmtName = format === 'markdown' ? 'markdown' : 'json';
+      resolve(serialize(state, fmtName));
+    }) as EventListener);
+
+    renderBuilder('baseline');
+    renderBuilder('proposed');
+    renderResults();
+  }
+</script>

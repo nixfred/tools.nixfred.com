@@ -1,0 +1,605 @@
+---
+// Signal Tester.
+// PRD: tools-nixfred-prds/tools/13-SIGNAL-TESTER.md
+//
+// Checks whether an evaluation signal, the proxy, measures the thing
+// the user actually cares about, the outcome, or something adjacent to
+// it. Everything below is local, deterministic analysis. Nothing here
+// scores a model, checks a fact, or leaves the browser, and nothing
+// here ever reports a proxy as fully valid. Validity is relative to a
+// use; this tool states what the evidence supports and what it does
+// not, per the PRD boundary and the shared platform privacy principle.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import ResultPanel from '../../components/kit/ResultPanel.astro';
+import Field from '../../components/kit/Field.astro';
+import HelpNote from '../../components/kit/HelpNote.astro';
+import WarningNote from '../../components/kit/WarningNote.astro';
+import ExportBar from '../../components/kit/ExportBar.astro';
+import { getTool } from '../../data/registry';
+import { GAMEABILITY_CATALOG, GAP_QUESTIONS, PROXY_KIND_OPTIONS, SAMPLES } from '../../lib/tools/signal-tester';
+
+const tool = getTool('signal-tester')!;
+---
+
+<ToolLayout tool={tool}>
+  <div class="lab" data-lab>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <label class="label" for="sample">Sample scenario</label>
+        <select id="sample" data-sample-select>
+          {SAMPLES.map((s) => <option value={s.id}>{s.name}</option>)}
+        </select>
+        <button type="button" class="btn btn-primary" data-load-sample>
+          Load sample
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <button type="button" class="btn" data-reset>Reset</button>
+      </div>
+    </div>
+
+    <p class="teaches" data-teaches role="status" aria-live="polite"></p>
+
+    <section class="editor">
+      <Field
+        label="Outcome you actually care about"
+        name="outcome"
+        type="textarea"
+        rows={2}
+        placeholder="For example: the reply resolves the Customer's problem without a follow up message."
+        hint="Plain words. What would actually have to be true for this to count as a win."
+      />
+      <Field
+        label="Proxy you are measuring instead"
+        name="proxy"
+        type="textarea"
+        rows={2}
+        placeholder="For example: reply length in words, or the user clicked thumbs up."
+        hint="What you can cheaply check, that you are hoping stands in for the outcome above."
+      />
+      <Field
+        label="How the proxy and outcome are recorded"
+        name="proxyKind"
+        type="select"
+        options={PROXY_KIND_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+        hint="Drives which statistic the paired data below is scored with: Cohen's kappa for labels, correlation for numbers."
+      />
+    </section>
+
+    <section class="editor">
+      <h2 class="section-title">The two questions that matter most</h2>
+      <Field
+        label={GAP_QUESTIONS.proxySucceedsOutcomeFails}
+        name="gapProxySucceeds"
+        type="textarea"
+        rows={3}
+        placeholder="Describe one concrete case, not a general worry."
+      />
+      <Field
+        label={GAP_QUESTIONS.outcomeHoldsProxyFails}
+        name="gapOutcomeHolds"
+        type="textarea"
+        rows={3}
+        placeholder="Describe one concrete case, not a general worry."
+      />
+    </section>
+
+    <fieldset class="catalog">
+      <legend class="section-title">Known ways an evaluation signal gets gamed</legend>
+      <p class="catalog-note">
+        Goodhart's law made concrete. Check a box only when you believe the pattern actually
+        applies to your proxy, not because the wording matched.
+      </p>
+      {
+        GAMEABILITY_CATALOG.map((entry) => (
+          <div class="catalog-entry" data-catalog-entry={entry.id}>
+            <label class="catalog-check">
+              <input type="checkbox" data-failure-mode value={entry.id} />
+              <span class="catalog-label">{entry.label}</span>
+              <span class="detected-badge" data-detected-badge hidden>
+                Matches your wording, review it
+              </span>
+            </label>
+            <p class="catalog-summary">
+              Proxy: {entry.proxy} Outcome: {entry.outcome}
+            </p>
+            <HelpNote title="What gaming this looks like">
+              <p>{entry.gameMove}</p>
+              <p>{entry.whyItFails}</p>
+            </HelpNote>
+          </div>
+        ))
+      }
+      <Field
+        label="A gameable path not covered above, if you see one"
+        name="customFailureMode"
+        type="textarea"
+        rows={2}
+        placeholder="Optional. State the move a system could make to satisfy the proxy without the outcome."
+      />
+    </fieldset>
+
+    <section class="editor">
+      <Field
+        label="Paired evidence, optional"
+        name="pairedData"
+        type="textarea"
+        rows={8}
+        placeholder={'yes, yes\nyes, no\nno, yes\nno, no'}
+        hint={'One pair per line: proxy reading, outcome reading. For categorical data use the SAME two labels on both sides, for example yes and no, so agreement can be scored. Blank lines and lines starting with # are ignored. Labels are case sensitive, keep them consistent.'}
+      />
+    </section>
+
+    <ResultPanel
+      title="Validity assessment"
+      id="assessment-panel"
+      description="What the evidence above supports concluding about this proxy, and what it does not."
+    >
+      <p class="headline" data-headline role="status" aria-live="polite"></p>
+      <div data-assessment></div>
+    </ResultPanel>
+
+    <ResultPanel
+      title="Agreement statistics"
+      id="statistics-panel"
+      description="Real numbers from the paired evidence, not a description of what they probably show."
+    >
+      <div data-statistics></div>
+    </ResultPanel>
+
+    <WarningNote severity="warning" title="This tool never certifies a proxy as valid">
+      Validity is relative to a use. The panels above state what the evidence supports and what it
+      does not. A documented failure mode stays listed even when the statistics look good.
+    </WarningNote>
+
+    <ExportBar formats={['json', 'markdown']} filename="signal-tester-report" />
+
+    <HelpNote title="Why isn't strong agreement the same as a valid proxy?">
+      <p>
+        A proxy is a stand in for an outcome you cannot cheaply measure directly. Agreement on a
+        sample tells you the stand in worked for the cases you happened to check. It does not tell
+        you the stand in cannot be satisfied on purpose without the outcome, which is exactly what
+        happens once anyone, human or system, is optimized against the proxy instead of merely
+        observed by it. That gap is Goodhart's law, and it does not shrink because the kappa on
+        your current sample is high.
+      </p>
+      <p>
+        The two questions above exist because they are the fastest way to find the gap: can the
+        proxy be satisfied while the outcome fails, and can the outcome hold while the proxy
+        fails. Answering either with a real example is worth more than any statistic on this page.
+      </p>
+    </HelpNote>
+  </div>
+</ToolLayout>
+
+<style>
+  .lab {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-3);
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    font: inherit;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .teaches {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: 0;
+    min-height: 1.5em;
+  }
+
+  .editor {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    background: var(--panel);
+  }
+
+  .section-title {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 0 var(--space-3);
+  }
+
+  .catalog {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    background: var(--panel);
+  }
+
+  .catalog-note {
+    margin: calc(var(--space-3) * -1) 0 0;
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+
+  .catalog-entry {
+    border-top: 1px solid var(--line-faint);
+    padding-top: var(--space-3);
+  }
+
+  .catalog-check {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    cursor: pointer;
+  }
+
+  .catalog-label {
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .detected-badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid var(--signal-edge);
+    border-radius: var(--radius-pill);
+    padding: 0.1rem 0.5rem;
+  }
+
+  .catalog-summary {
+    margin: var(--space-2) 0 0;
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    max-width: var(--measure);
+  }
+
+  .headline {
+    font-size: var(--text-base);
+    color: var(--text);
+    margin: 0 0 var(--space-3);
+    max-width: var(--measure);
+  }
+</style>
+
+{/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
+    class the script creates below is styled with :global here. */}
+<style is:global>
+  .assessment-block {
+    margin-bottom: var(--space-4);
+  }
+
+  .assessment-block:last-child {
+    margin-bottom: 0;
+  }
+
+  .assessment-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 0 0 var(--space-2);
+  }
+
+  .assessment-list {
+    margin: 0;
+    padding-left: 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .assessment-list li {
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    color: var(--text-muted);
+    max-width: var(--measure);
+  }
+
+  .stat-summary {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0 0 var(--space-3);
+    max-width: var(--measure);
+  }
+
+  .stat-numbers {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4);
+    margin-bottom: var(--space-3);
+  }
+
+  .stat-figure {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .stat-figure-label {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .stat-figure-value {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--text-xl);
+    color: var(--accent);
+  }
+
+  .confusion-wrap {
+    overflow-x: auto;
+  }
+
+  table.confusion {
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    margin-top: var(--space-2);
+  }
+
+  table.confusion caption {
+    text-align: left;
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+    margin-bottom: var(--space-2);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+  }
+
+  table.confusion th,
+  table.confusion td {
+    border: 1px solid var(--line);
+    padding: var(--space-2) var(--space-3);
+    text-align: right;
+  }
+
+  table.confusion th {
+    color: var(--text-faint);
+    font-weight: 500;
+    text-align: left;
+  }
+
+  table.confusion td {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .clean-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+</style>
+
+<script>
+  import {
+    analyzeSignal,
+    emptyState,
+    sampleState,
+    getSample,
+    serialize,
+    SAMPLES,
+    type SignalState,
+    type ProxyKind,
+  } from '../../lib/tools/signal-tester';
+
+  const root = document.querySelector<HTMLElement>('[data-lab]');
+  if (root) {
+    const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+    const val = (id: string) => (document.getElementById(id) as HTMLTextAreaElement | HTMLInputElement | null)?.value ?? '';
+    const setVal = (id: string, v: string) => {
+      const field = document.getElementById(id) as HTMLTextAreaElement | HTMLInputElement | null;
+      if (field) field.value = v;
+    };
+
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const readState = (): SignalState => ({
+      outcome: val('field-outcome'),
+      proxy: val('field-proxy'),
+      proxyKind: (val('field-proxyKind') || 'categorical') as ProxyKind,
+      proxySucceedsOutcomeFails: val('field-gapProxySucceeds'),
+      outcomeHoldsProxyFails: val('field-gapOutcomeHolds'),
+      selectedFailureModes: Array.from(
+        root.querySelectorAll<HTMLInputElement>('[data-failure-mode]:checked'),
+      ).map((cb) => cb.value),
+      customFailureMode: val('field-customFailureMode'),
+      pairedDataRaw: val('field-pairedData'),
+    });
+
+    const writeState = (state: SignalState) => {
+      setVal('field-outcome', state.outcome);
+      setVal('field-proxy', state.proxy);
+      setVal('field-proxyKind', state.proxyKind);
+      setVal('field-gapProxySucceeds', state.proxySucceedsOutcomeFails);
+      setVal('field-gapOutcomeHolds', state.outcomeHoldsProxyFails);
+      setVal('field-customFailureMode', state.customFailureMode);
+      setVal('field-pairedData', state.pairedDataRaw);
+      root.querySelectorAll<HTMLInputElement>('[data-failure-mode]').forEach((cb) => {
+        cb.checked = state.selectedFailureModes.includes(cb.value);
+      });
+    };
+
+    function renderDetectedBadges(state: SignalState, detected: string[]) {
+      root!.querySelectorAll<HTMLElement>('[data-catalog-entry]').forEach((entry) => {
+        const id = entry.dataset.catalogEntry ?? '';
+        const badge = entry.querySelector<HTMLElement>('[data-detected-badge]');
+        if (badge) badge.hidden = !detected.includes(id);
+      });
+    }
+
+    function renderAssessment(state: SignalState) {
+      const analysis = analyzeSignal(state);
+      const headline = el('[data-headline]');
+      const target = el('[data-assessment]');
+      if (headline) headline.textContent = analysis.assessment.headline;
+      if (target) {
+        const block = (label: string, items: string[]) => `
+          <div class="assessment-block">
+            <p class="assessment-label">${esc(label)}</p>
+            <ul class="assessment-list">${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>
+          </div>`;
+        target.innerHTML =
+          block('Supports concluding', analysis.assessment.supports) +
+          block('Does not support', analysis.assessment.doesNotSupport) +
+          block('Cases to add', analysis.assessment.casesToAdd);
+      }
+      renderDetectedBadges(state, analysis.detectedFailureModeIds);
+    }
+
+    function renderStatistics(state: SignalState) {
+      const analysis = analyzeSignal(state);
+      const target = el('[data-statistics]');
+      if (!target) return;
+      const stats = analysis.statistics;
+
+      if (stats.kind === 'none') {
+        target.innerHTML = `<p class="clean-note">${esc(stats.reason)}</p>`;
+        return;
+      }
+
+      if (stats.kind === 'categorical') {
+        const k = stats.kappa;
+        const rows = k.categories
+          .map(
+            (rowCat, i) => `
+          <tr><th>proxy: ${esc(rowCat)}</th>${k.confusionMatrix[i].map((v) => `<td>${v}</td>`).join('')}</tr>`,
+          )
+          .join('');
+        const header = `<tr><th></th>${k.categories.map((c) => `<th>outcome: ${esc(c)}</th>`).join('')}</tr>`;
+        target.innerHTML = `
+          <p class="stat-summary">${stats.n} paired cases read as categorical labels, ${stats.skipped} line${stats.skipped === 1 ? '' : 's'} skipped.</p>
+          <div class="stat-numbers">
+            <div class="stat-figure">
+              <span class="stat-figure-label">Raw agreement</span>
+              <span class="stat-figure-value">${(k.observedAgreement * 100).toFixed(1)}%</span>
+            </div>
+            <div class="stat-figure">
+              <span class="stat-figure-label">Chance agreement</span>
+              <span class="stat-figure-value">${(k.chanceAgreement * 100).toFixed(1)}%</span>
+            </div>
+            <div class="stat-figure">
+              <span class="stat-figure-label">Cohen's kappa</span>
+              <span class="stat-figure-value">${k.kappa.toFixed(2)}</span>
+            </div>
+          </div>
+          <p class="stat-summary">${esc(stats.interpretation)}</p>
+          <div class="confusion-wrap">
+            <table class="confusion">
+              <caption>Confusion matrix, proxy rows by outcome columns, n = ${k.n}</caption>
+              <thead>${header}</thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>`;
+        return;
+      }
+
+      // continuous
+      const c = stats.correlation;
+      target.innerHTML = `
+        <p class="stat-summary">${stats.n} paired cases read as numbers, ${stats.skipped} line${stats.skipped === 1 ? '' : 's'} skipped.</p>
+        <div class="stat-numbers">
+          <div class="stat-figure">
+            <span class="stat-figure-label">Pearson r</span>
+            <span class="stat-figure-value">${c.r === null ? 'undefined' : c.r.toFixed(2)}</span>
+          </div>
+        </div>
+        <p class="stat-summary">${esc(stats.interpretation)}</p>`;
+    }
+
+    function renderAll() {
+      const state = readState();
+      renderAssessment(state);
+      renderStatistics(state);
+    }
+
+    root.addEventListener('input', renderAll);
+    root.addEventListener('change', renderAll);
+
+    el('[data-load-sample]')?.addEventListener('click', () => {
+      const id = el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id;
+      writeState(sampleState(id));
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = getSample(id)?.teaches ?? '';
+      renderAll();
+    });
+
+    el('[data-reset]')?.addEventListener('click', () => {
+      writeState(emptyState());
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = '';
+      renderAll();
+    });
+
+    // ExportBar asks; the tool answers. See src/components/kit/ExportBar.astro.
+    root.addEventListener('workbench:export', ((event: CustomEvent) => {
+      const { format, resolve } = event.detail ?? {};
+      if (typeof resolve !== 'function') return;
+      const fmt = format === 'markdown' ? 'markdown' : 'json';
+      resolve(serialize(readState(), fmt));
+    }) as EventListener);
+
+    renderAll();
+  }
+</script>

@@ -1,0 +1,814 @@
+---
+// Permission Planner.
+// PRD: tools-nixfred-prds/tools/09-PERMISSION-PLANNER.md
+//
+// HONESTY, stated once here because it governs every string this page
+// writes: nothing on this page ever calls a grant safe. A finding
+// states what a capability allows and what remains possible after the
+// grant is narrowed. Least privilege is a direction, not a state the
+// tool can certify.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import ResultPanel from '../../components/kit/ResultPanel.astro';
+import HelpNote from '../../components/kit/HelpNote.astro';
+import WarningNote from '../../components/kit/WarningNote.astro';
+import ExportBar from '../../components/kit/ExportBar.astro';
+import EmptyState from '../../components/kit/EmptyState.astro';
+import Field from '../../components/kit/Field.astro';
+import { getTool } from '../../data/registry';
+import { CAPABILITIES, CAPABILITY_IDS, SAMPLES } from '../../lib/tools/permission-planner';
+
+const tool = getTool('permission-planner')!;
+---
+
+<ToolLayout tool={tool}>
+  <div class="planner" data-planner>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <label class="label" for="sample">Sample scenario</label>
+        <select id="sample" data-sample-select>
+          {SAMPLES.map((s) => <option value={s.id}>{s.name}</option>)}
+        </select>
+        <button type="button" class="btn btn-primary" data-load-sample>
+          Load sample
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <button type="button" class="btn" data-reset>Reset</button>
+      </div>
+    </div>
+
+    <p class="teaches" data-teaches role="status" aria-live="polite"></p>
+
+    <Field
+      label="What must the agent accomplish"
+      name="mission"
+      type="textarea"
+      rows={2}
+      placeholder="State the task in one or two sentences. Blast radius is easier to judge against a stated goal than against a blank one."
+    />
+
+    <fieldset class="capabilities" data-capabilities>
+      <legend class="label">Capabilities the agent would need</legend>
+      {
+        CAPABILITY_IDS.map((id) => {
+          const trait = CAPABILITIES[id];
+          return (
+            <div class="capability" data-capability={id}>
+              <div class="capability-head">
+                <label class="capability-select">
+                  <input type="checkbox" data-cap-selected data-cap-id={id} />
+                  <span class="capability-label">{trait.label}</span>
+                </label>
+                <span class="capability-summary">{trait.summary}</span>
+              </div>
+
+              <div class="capability-config" data-cap-config={id} hidden>
+                <div class="config-grid">
+                  <Field
+                    label="Scope"
+                    name={`${id}-scope`}
+                    hint={`Name the exact ${trait.targetNoun} this task needs. Empty or "*" reads as wildcard access.`}
+                    placeholder="e.g. src/reports/** only"
+                  />
+                  <Field
+                    label="Rate or amount ceiling"
+                    name={`${id}-ceiling`}
+                    hint="Leave empty only if this capability truly has no meaningful volume limit."
+                    placeholder="e.g. 20 per hour, or $50 per transaction"
+                  />
+                </div>
+                <div class="config-toggles">
+                  <label class="toggle">
+                    <input type="checkbox" data-cap-confirm data-cap-id={id} />
+                    Requires confirmation before it fires
+                  </label>
+                  {trait.supportsDryRun && (
+                    <label class="toggle">
+                      <input type="checkbox" data-cap-dryrun data-cap-id={id} />
+                      Requires a dry run first
+                    </label>
+                  )}
+                  {trait.canBeMadeReversible && (
+                    <label class="toggle">
+                      <input type="checkbox" data-cap-reversible data-cap-id={id} />
+                      Made reversible: {trait.reversibleApproach}
+                    </label>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })
+      }
+    </fieldset>
+
+    <div data-results>
+      <WarningNote severity="info" title="Design guidance, not certification">
+        Nothing below is a claim that a grant is safe. Each row states
+        what a capability allows and what remains possible once the
+        grant is narrowed. Least privilege is a direction, not a
+        finished state.
+      </WarningNote>
+
+      <ResultPanel
+        title="Permission matrix"
+        id="matrix-panel"
+        description="Every selected capability, sorted worst blast radius first. A human should be able to implement this table directly."
+        headingLevel={2}
+      >
+        <div class="counts mono" data-counts role="status" aria-live="polite"></div>
+        <div class="table-scroll" data-matrix></div>
+      </ResultPanel>
+
+      <ResultPanel
+        title="Findings and recommendations"
+        id="findings-panel"
+        description="What each grant allows, the narrowest version that still works, and what remains possible either way."
+        headingLevel={2}
+      >
+        <div data-findings></div>
+      </ResultPanel>
+
+      <ResultPanel
+        title="Dangerous combinations"
+        id="combos-panel"
+        description="Compound risks, named explicitly, because the combination is the real finding, not the individual capability."
+        headingLevel={2}
+      >
+        <div data-combos></div>
+      </ResultPanel>
+
+      <ResultPanel
+        title="Audit and alerting"
+        id="audit-panel"
+        description="What to log and what to alert on for every grant that survives review."
+        headingLevel={2}
+      >
+        <div data-audit></div>
+      </ResultPanel>
+
+      <ExportBar formats={['json', 'markdown']} filename="permission-planner-report" />
+    </div>
+
+    <div data-empty>
+      <EmptyState
+        title="No capabilities selected yet"
+        body="Select at least one capability above, or load a sample to see a full permission matrix, the dangerous combinations it produces, and what a narrower grant would look like."
+        sampleLabel="Load the email and calendar assistant sample"
+      />
+    </div>
+
+    <HelpNote title="Why does nothing here get marked safe">
+      <p>
+        A permission grant is a bet, not a guarantee. Scoping a
+        capability to an allow list, a ceiling, a confirmation step,
+        and a reversibility mechanism narrows how often the worst case
+        happens and how bad it is when it does. None of that removes
+        the worst case from the space of possible outcomes, it only
+        makes it less likely and easier to contain.
+      </p>
+      <p>
+        That is why every finding on this page states two things
+        separately: the narrowest grant that still lets the agent do
+        its job, and what remains possible even after that grant is
+        applied. Reading only the first half is how a reviewer ends up
+        calling a scoped grant safe when it is only smaller.
+      </p>
+    </HelpNote>
+  </div>
+</ToolLayout>
+
+<style>
+  .planner {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-3);
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  select {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    font: inherit;
+  }
+
+  .btn {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .btn:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  .btn-primary {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .btn-primary:hover {
+    background: var(--accent-strong);
+    color: var(--bg);
+  }
+
+  .teaches {
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+    margin: 0;
+    min-height: 1.5em;
+  }
+
+  .label {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .capabilities {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: var(--space-3);
+    border: 0;
+    padding: 0;
+    margin: 0;
+  }
+
+  .capabilities > .label {
+    grid-column: 1 / -1;
+  }
+
+  .capability {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    background: var(--panel);
+  }
+
+  .capability-head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .capability-select {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    cursor: pointer;
+  }
+
+  .capability-label {
+    font-weight: 600;
+  }
+
+  .capability-summary {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    padding-left: 1.6rem;
+  }
+
+  .capability-config {
+    margin-top: var(--space-3);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--line-faint);
+  }
+
+  .config-grid {
+    display: grid;
+    gap: var(--space-2);
+  }
+
+  .config-toggles {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+  }
+
+  .toggle {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: var(--space-3);
+  }
+
+  .table-scroll {
+    overflow-x: auto;
+  }
+</style>
+
+{/* Runtime injected markup is NOT reached by Astro scoped CSS, so every
+    class the script creates is styled with :global here. */}
+<style is:global>
+  .matrix-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+  }
+
+  .matrix-table th,
+  .matrix-table td {
+    text-align: left;
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--line-faint);
+    white-space: nowrap;
+  }
+
+  .matrix-table th {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .severity-tag {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+  }
+
+  .severity-tag[data-severity='low'] {
+    color: var(--status-queued);
+    border-color: var(--status-queued);
+  }
+
+  .severity-tag[data-severity='medium'] {
+    color: var(--status-beta);
+    border-color: var(--status-beta);
+  }
+
+  .severity-tag[data-severity='high'] {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+  }
+
+  .severity-tag[data-severity='critical'] {
+    color: var(--status-alert);
+    border-color: var(--status-alert);
+    border-width: 2px;
+    font-weight: 700;
+  }
+
+  .wildcard-tag {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--status-alert);
+  }
+
+  .finding-card {
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
+  }
+
+  .finding-card[data-severity='low'] {
+    border-left-color: var(--status-queued);
+  }
+
+  .finding-card[data-severity='medium'] {
+    border-left-color: var(--status-beta);
+  }
+
+  .finding-card[data-severity='high'],
+  .finding-card[data-severity='critical'] {
+    border-left-color: var(--status-alert);
+  }
+
+  .finding-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+  }
+
+  .finding-title {
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .finding-facts {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+    margin: 0 0 var(--space-2);
+  }
+
+  .finding-outcome,
+  .finding-containment,
+  .finding-remains {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0 0 var(--space-2);
+    max-width: none;
+  }
+
+  .finding-remains {
+    color: var(--text-faint);
+    font-style: italic;
+  }
+
+  .warning-line {
+    display: block;
+    font-size: var(--text-sm);
+    padding: var(--space-2);
+    margin-bottom: var(--space-2);
+    border-left: 2px solid var(--status-alert);
+    background: var(--panel-raised);
+    color: var(--text-muted);
+  }
+
+  .warning-line[data-severity='warning'] {
+    border-left-color: var(--status-beta);
+  }
+
+  .rec-list {
+    margin: 0;
+    padding-left: 1.2rem;
+  }
+
+  .rec-list li {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin-bottom: var(--space-2);
+  }
+
+  .rec-reason {
+    display: block;
+    color: var(--text-faint);
+    font-size: var(--text-sm);
+  }
+
+  .combo-card {
+    border: 1px solid var(--status-alert);
+    border-left-width: 3px;
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
+  }
+
+  .combo-name {
+    font-weight: 700;
+    color: var(--status-alert);
+    margin: 0 0 var(--space-1);
+  }
+
+  .combo-involves {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+    margin: 0 0 var(--space-2);
+  }
+
+  .clean-note {
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+  }
+
+  .audit-block {
+    margin-bottom: var(--space-3);
+  }
+
+  .audit-title {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 0 0 var(--space-1);
+  }
+
+  .audit-list {
+    margin: 0;
+    padding-left: 1.2rem;
+  }
+
+  .audit-list li {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+</style>
+
+<script>
+  import {
+    CAPABILITIES,
+    CAPABILITY_IDS,
+    SAMPLES,
+    SEVERITY_LABELS,
+    SEVERITY_ORDER,
+    analyze,
+    sampleState,
+    emptyState,
+    getSample,
+    serialize,
+    type CapabilityId,
+    type CapabilityConfig,
+    type PlannerState,
+    type PlannerAnalysis,
+  } from '../../lib/tools/permission-planner';
+
+  const root = document.querySelector<HTMLElement>('[data-planner]');
+  if (root) {
+    const el = <T extends Element>(sel: string) => root.querySelector<T>(sel);
+
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const readConfig = (id: CapabilityId): CapabilityConfig => {
+      const scope = el<HTMLInputElement>(`[name="${id}-scope"]`)?.value ?? '';
+      const ceiling = el<HTMLInputElement>(`[name="${id}-ceiling"]`)?.value ?? '';
+      const requiresConfirmation =
+        el<HTMLInputElement>(`[data-cap-confirm][data-cap-id="${id}"]`)?.checked ?? false;
+      const dryRunFirst =
+        el<HTMLInputElement>(`[data-cap-dryrun][data-cap-id="${id}"]`)?.checked ?? false;
+      const reversibleOverride =
+        el<HTMLInputElement>(`[data-cap-reversible][data-cap-id="${id}"]`)?.checked ?? false;
+      return { scope, ceiling, requiresConfirmation, dryRunFirst, reversibleOverride };
+    };
+
+    const readState = (): PlannerState => {
+      const mission = el<HTMLTextAreaElement>('[name="mission"]')?.value ?? '';
+      const selected = {} as Record<CapabilityId, boolean>;
+      const configs = {} as Record<CapabilityId, CapabilityConfig>;
+      for (const id of CAPABILITY_IDS) {
+        selected[id] =
+          el<HTMLInputElement>(`[data-cap-selected][data-cap-id="${id}"]`)?.checked ?? false;
+        configs[id] = readConfig(id);
+      }
+      return {
+        mission,
+        selected,
+        configs,
+        scenarioId: el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id,
+      };
+    };
+
+    const writeState = (state: PlannerState) => {
+      const mission = el<HTMLTextAreaElement>('[name="mission"]');
+      if (mission) mission.value = state.mission;
+      for (const id of CAPABILITY_IDS) {
+        const config = state.configs[id];
+        const selectedBox = el<HTMLInputElement>(`[data-cap-selected][data-cap-id="${id}"]`);
+        if (selectedBox) selectedBox.checked = state.selected[id];
+
+        const scope = el<HTMLInputElement>(`[name="${id}-scope"]`);
+        if (scope) scope.value = config.scope;
+        const ceiling = el<HTMLInputElement>(`[name="${id}-ceiling"]`);
+        if (ceiling) ceiling.value = config.ceiling;
+        const confirmBox = el<HTMLInputElement>(`[data-cap-confirm][data-cap-id="${id}"]`);
+        if (confirmBox) confirmBox.checked = config.requiresConfirmation;
+        const dryRunBox = el<HTMLInputElement>(`[data-cap-dryrun][data-cap-id="${id}"]`);
+        if (dryRunBox) dryRunBox.checked = config.dryRunFirst;
+        const reversibleBox = el<HTMLInputElement>(`[data-cap-reversible][data-cap-id="${id}"]`);
+        if (reversibleBox) reversibleBox.checked = config.reversibleOverride;
+
+        const configBlock = el<HTMLElement>(`[data-cap-config="${id}"]`);
+        if (configBlock) configBlock.hidden = !state.selected[id];
+      }
+    };
+
+    function renderMatrix(analysis: PlannerAnalysis) {
+      const counts = el('[data-counts]');
+      const target = el('[data-matrix]');
+      if (!counts || !target) return;
+
+      const bySeverity: Record<string, number> = { low: 0, medium: 0, high: 0, critical: 0 };
+      for (const f of analysis.findings) bySeverity[f.blast.severity] += 1;
+      counts.innerHTML = SEVERITY_ORDER.map(
+        (s) => `<span>${esc(SEVERITY_LABELS[s])}: ${bySeverity[s] ?? 0}</span>`,
+      ).join('');
+
+      const rank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+      const sorted = [...analysis.findings].sort(
+        (a, b) => rank[a.blast.severity] - rank[b.blast.severity],
+      );
+
+      const rows = sorted
+        .map(
+          (f) => `
+        <tr>
+          <td>${esc(f.label)}</td>
+          <td><span class="severity-tag" data-severity="${f.blast.severity}">${esc(SEVERITY_LABELS[f.blast.severity])}</span></td>
+          <td>${esc(f.blast.reversibility)}</td>
+          <td>${esc(f.blast.detectability)}</td>
+          <td>${f.wildcard ? '<span class="wildcard-tag">wildcard</span>' : esc(f.config.scope.trim() || '(unscoped)')}</td>
+          <td>${f.config.requiresConfirmation ? 'yes' : 'no'}</td>
+        </tr>`,
+        )
+        .join('');
+
+      target.innerHTML = `
+        <table class="matrix-table">
+          <thead>
+            <tr>
+              <th>Capability</th><th>Severity</th><th>Reversibility</th>
+              <th>Detectability</th><th>Scope</th><th>Confirmation</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    function renderFindings(analysis: PlannerAnalysis) {
+      const target = el('[data-findings]');
+      if (!target) return;
+      if (!analysis.findings.length) {
+        target.innerHTML = '<p class="clean-note">No capability selected.</p>';
+        return;
+      }
+
+      target.innerHTML = analysis.findings
+        .map((f) => {
+          const warnings = f.warnings
+            .map(
+              (w) => `<span class="warning-line" data-severity="${w.severity}">${esc(w.message)}</span>`,
+            )
+            .join('');
+          const recs = f.recommendations.length
+            ? `<ul class="rec-list">${f.recommendations
+                .map(
+                  (r) => `<li>${esc(r.action)}<span class="rec-reason">${esc(r.reason)}</span></li>`,
+                )
+                .join('')}</ul>`
+            : '<p class="clean-note">No further narrowing rule fired for this grant.</p>';
+
+          return `
+        <div class="finding-card" data-severity="${f.blast.severity}">
+          <div class="finding-head">
+            <span class="finding-title">${esc(f.label)}</span>
+            <span class="severity-tag" data-severity="${f.blast.severity}">${esc(SEVERITY_LABELS[f.blast.severity])}</span>
+          </div>
+          <p class="finding-facts">Reversibility: ${esc(f.blast.reversibility)}. Detectability: ${esc(f.blast.detectability)}.</p>
+          <p class="finding-outcome">${esc(f.blast.worstOutcome)}</p>
+          <p class="finding-containment">${esc(f.blast.containment)}</p>
+          ${warnings}
+          ${recs}
+          <p class="finding-remains">${esc(f.whatRemainsPossible)}</p>
+        </div>`;
+        })
+        .join('');
+    }
+
+    function renderCombos(analysis: PlannerAnalysis) {
+      const target = el('[data-combos]');
+      if (!target) return;
+      if (!analysis.combos.length) {
+        target.innerHTML =
+          '<p class="clean-note">None of the three named compound risks matched this configuration. That states what did not match, not that the configuration carries no risk.</p>';
+        return;
+      }
+      target.innerHTML = analysis.combos
+        .map(
+          (c) => `
+        <div class="combo-card">
+          <p class="combo-name">${esc(c.name)}</p>
+          <p class="combo-involves">${c.involves.map((id) => esc(CAPABILITIES[id].label)).join(' + ')}</p>
+          <p>${esc(c.message)}</p>
+        </div>`,
+        )
+        .join('');
+    }
+
+    function renderAudit(analysis: PlannerAnalysis) {
+      const target = el('[data-audit]');
+      if (!target) return;
+      if (!analysis.auditLog.length) {
+        target.innerHTML = '<p class="clean-note">No capability selected.</p>';
+        return;
+      }
+      target.innerHTML = analysis.auditLog
+        .map(
+          (a) => `
+        <div class="audit-block">
+          <p class="audit-title">${esc(a.label)}</p>
+          <ul class="audit-list">${a.log.map((line) => `<li>${esc(line)}</li>`).join('')}</ul>
+        </div>`,
+        )
+        .join('');
+    }
+
+    function renderAll() {
+      const state = readState();
+      const analysis = analyze(state);
+
+      const results = el<HTMLElement>('[data-results]');
+      const empty = el<HTMLElement>('[data-empty]');
+      const hasSelection = analysis.findings.length > 0;
+      if (results) results.hidden = !hasSelection;
+      if (empty) empty.hidden = hasSelection;
+
+      if (hasSelection) {
+        renderMatrix(analysis);
+        renderFindings(analysis);
+        renderCombos(analysis);
+        renderAudit(analysis);
+      }
+    }
+
+    // Toggle a capability's config block the instant it is selected,
+    // so the fields a recommendation refers to are visible immediately.
+    root.addEventListener('change', (event) => {
+      const box = (event.target as HTMLElement)?.closest<HTMLInputElement>('[data-cap-selected]');
+      if (box) {
+        const id = box.dataset.capId as CapabilityId;
+        const configBlock = el<HTMLElement>(`[data-cap-config="${id}"]`);
+        if (configBlock) configBlock.hidden = !box.checked;
+      }
+      renderAll();
+    });
+    root.addEventListener('input', renderAll);
+
+    el('[data-load-sample]')?.addEventListener('click', () => {
+      const id = el<HTMLSelectElement>('[data-sample-select]')?.value ?? SAMPLES[0].id;
+      writeState(sampleState(id));
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = getSample(id)?.teaches ?? '';
+      renderAll();
+    });
+
+    el('[data-reset]')?.addEventListener('click', () => {
+      writeState(emptyState());
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = '';
+      renderAll();
+    });
+
+    // EmptyState's sample button dispatches this. Loads the required
+    // email and calendar sample regardless of what the select shows.
+    root.addEventListener('workbench:load-sample', () => {
+      const select = el<HTMLSelectElement>('[data-sample-select]');
+      if (select) select.value = 'email-calendar-assistant';
+      writeState(sampleState('email-calendar-assistant'));
+      const teaches = el('[data-teaches]');
+      if (teaches) teaches.textContent = getSample('email-calendar-assistant')?.teaches ?? '';
+      renderAll();
+    });
+
+    // ExportBar asks; the tool answers. See src/components/kit/ExportBar.astro.
+    root.addEventListener('workbench:export', ((event: CustomEvent) => {
+      const { format, resolve } = event.detail ?? {};
+      if (typeof resolve !== 'function') return;
+      const fmt = format === 'markdown' ? 'markdown' : 'json';
+      resolve(serialize(readState(), fmt));
+    }) as EventListener);
+
+    // Seed every unselected capability with a clean default config so
+    // reading state before a single interaction never crashes on an
+    // undefined field.
+    writeState(emptyState());
+    renderAll();
+  }
+</script>

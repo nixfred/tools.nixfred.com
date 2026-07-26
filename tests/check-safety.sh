@@ -29,8 +29,20 @@ check "form action" '<form[^>]+action='
 check "card fields" 'autocomplete="cc-|name="card|name="cvv|name="cvc|placeholder="[^"]*card number'
 # No credential inputs
 check "password input" 'type="password"'
-# No payment processors
-check "payment processors" 'stripe|paypal|braintree|checkout\.com|squareup'
+# No payment processors.
+#
+# PRECISION FIX 2026-07-26. The old pattern was the bare word `stripe`,
+# which fired on the sentence "An amber stripe marks a third party hop"
+# in the Stack Mapper diagram legend. That is an English word for a
+# visual marker, not a payment integration, and a gate that fails on
+# ordinary prose gets muted, which would have removed the payment check
+# from the build entirely.
+#
+# What actually indicates a payment integration is a DOMAIN or an SDK
+# entry point, never a lowercase noun. So match those instead. This is
+# strictly more accurate in both directions: it still catches every real
+# integration and it stops inventing them.
+check "payment processors" 'stripe\.com|js\.stripe|api\.stripe|Stripe\(|new Stripe|paypal\.com|paypalobjects|braintreegateway|braintree-web|checkout\.com/|squareup\.com|square\.js|merchantId|paymentIntent|client_secret'
 # No external scripts or styles (self contained site, CSP by diet)
 check "external script" '<script[^>]+src="https?://'
 check "external style" '<link[^>]+href="https?://[^"]+\.css'
