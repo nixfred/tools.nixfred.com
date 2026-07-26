@@ -1,0 +1,49 @@
+---
+// FACTORY SCAFFOLD PAGE. Replaced by the real homepage in Stage 3.
+// Exists so the bootstrap has a page to build and deploy.
+import Base from '../layouts/Base.astro';
+---
+
+<Base
+  title="Nixfred AI Systems Workbench"
+  description="Nixfred AI Systems Workbench is being prepared."
+  surface="crisis"
+>
+  <main id="main" class="hold">
+    <p class="eyebrow">Nixfred AI Systems Workbench</p>
+    <h1>Scaffold live.</h1>
+    <p class="lede">
+      Infrastructure is provisioned and serving this page. The site is
+      being manufactured.
+    </p>
+    <p class="mono status">STATUS: FACTORY BOOTSTRAP COMPLETE</p>
+  </main>
+
+  <style>
+    .hold {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: flex-start;
+      max-width: var(--page-max);
+      margin: 0 auto;
+      padding: var(--space-7) var(--space-4);
+    }
+
+    h1 { font-size: var(--text-hero); }
+
+    .lede {
+      font-size: var(--text-lg);
+      color: var(--text-muted);
+      max-width: 52ch;
+    }
+
+    .status {
+      font-size: var(--text-sm);
+      color: var(--accent);
+      letter-spacing: 0.08em;
+      margin-top: var(--space-4);
+    }
+  </style>
+</Base>

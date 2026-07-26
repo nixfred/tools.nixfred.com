@@ -1,0 +1,47 @@
+---
+// Base layout. Every page passes through here. Add fontsource imports
+// in Stage 2 once the pack's typography is chosen (self hosted, no CDN).
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description: string;
+  surface?: 'editorial' | 'crisis';
+}
+
+const { title, description, surface = 'editorial' } = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site);
+---
+
+<!doctype html>
+<html lang="en" data-surface={surface}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#081426" />
+    <meta name="color-scheme" content="dark" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:site_name" content="Nixfred AI Systems Workbench" />
+    <meta property="og:image" content={new URL('/images/og-card.jpg', Astro.site)} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={new URL('/images/og-card.jpg', Astro.site)} />
+    <!-- FACTORY NOTE: /images/og-card.jpg does not exist until Stage 2
+         generates it (render a 1200x630 card in a browser, capture,
+         sips to exact size). Until then these three tags advertise a
+         missing image; generate the card before sharing any link. -->
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to main content</a>
+    <slot />
+  </body>
+</html>
