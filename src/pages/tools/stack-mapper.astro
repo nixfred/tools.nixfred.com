@@ -13,7 +13,7 @@ import ExportBar from '../../components/kit/ExportBar.astro';
 import EmptyState from '../../components/kit/EmptyState.astro';
 import Field from '../../components/kit/Field.astro';
 import { getTool } from '../../data/registry';
-import { SAMPLES, COMPONENT_KINDS, CATALOG } from '../../lib/tools/stack-mapper';
+import { SAMPLES, TEMPLATES, COMPONENT_KINDS, CATALOG } from '../../lib/tools/stack-mapper';
 
 const tool = getTool('stack-mapper')!;
 ---
@@ -24,12 +24,25 @@ const tool = getTool('stack-mapper')!;
       <div class="toolbar-group">
         <Field
           type="select"
+          id="template-select"
+          name="template"
+          label="Architecture template"
+          hint="A starting point to edit, not a finished design."
+          options={TEMPLATES.map((t) => ({ value: t.id, label: t.name }))}
+        />
+        <button type="button" class="btn btn-primary" data-load-template>
+          Start from template
+        </button>
+      </div>
+      <div class="toolbar-group">
+        <Field
+          type="select"
           id="sample-select"
           name="sample"
           label="Sample stack"
           options={SAMPLES.map((s) => ({ value: s.id, label: s.name }))}
         />
-        <button type="button" class="btn btn-primary" data-load-sample>
+        <button type="button" class="btn" data-load-sample>
           Load sample
         </button>
       </div>
@@ -623,6 +636,7 @@ const tool = getTool('stack-mapper')!;
     COMPONENT_KINDS,
     CATALOG,
     SAMPLES,
+    TEMPLATES,
     DATA_TAG_LABELS,
     createComponent,
     addComponent,
@@ -630,6 +644,8 @@ const tool = getTool('stack-mapper')!;
     moveComponent,
     emptyState,
     sampleState,
+    templateState,
+    getTemplate,
     reset,
     validate,
     analyzeStack,
@@ -991,6 +1007,17 @@ const tool = getTool('stack-mapper')!;
     });
 
     /* ---- Sample, reset, load-sample bridge from EmptyState ----------- */
+
+    el('[data-load-template]')?.addEventListener('click', () => {
+      const id = el<HTMLSelectElement>('#template-select')?.value ?? TEMPLATES[0].id;
+      loadFullState(templateState(id));
+      const t = getTemplate(id);
+      renderStatus(
+        t
+          ? `Started from template: ${t.name}. ${t.description}`
+          : `Started from template: ${id}.`,
+      );
+    });
 
     el('[data-load-sample]')?.addEventListener('click', () => {
       const id = el<HTMLSelectElement>('#sample-select')?.value ?? SAMPLES[0].id;
