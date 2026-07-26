@@ -45,7 +45,7 @@ const BASE_TOOLS: ToolEntry[] = [
       'Estimate context usage, request cost, and monthly spend with assumptions you can edit and inspect.',
     category: 'Design',
     tags: ['cost', 'tokens', 'pricing', 'budget', 'context window'],
-    status: 'coming-soon',
+    status: 'released',
     version: '0.1.0',
     iconKey: 'gauge',
     inputSensitivity: 'low',

@@ -1,0 +1,851 @@
+---
+// Token & Cost Planner.
+//
+// tools-nixfred-prds/tools/02-TOKEN-PLANNER.md: estimate context usage,
+// request cost, monthly cost, and headroom using editable assumptions.
+//
+// All arithmetic lives in src/lib/tools/token-planner.ts. This file is
+// the shell: it renders the form once from an empty state, renders a
+// results skeleton whose numbers are filled in by client script, and
+// wires the kit's event contract (workbench:load-sample,
+// workbench:export). Nothing here computes a cost.
+import ToolLayout from '../../layouts/ToolLayout.astro';
+import { getTool } from '../../data/registry';
+import {
+  Field,
+  ResultPanel,
+  AssumptionList,
+  HelpNote,
+  WarningNote,
+  ExportBar,
+  EmptyState,
+} from '../../components/kit';
+import {
+  PRICING_PROFILES,
+  PRICING_EFFECTIVE_DATE,
+  TIME_PERIODS,
+  emptyState,
+  calculateScenario,
+} from '../../lib/tools/token-planner';
+import type { ScenarioInputs } from '../../lib/tools/token-planner';
+
+const tool = getTool('token-planner')!;
+
+// Server rendered starting point. The page always loads in this empty
+// configuration; loading the sample or typing into a field is what
+// brings the results panels to life, entirely client side.
+const initial = emptyState();
+const initialResultA = calculateScenario(initial.scenarioA, initial.period);
+const initialResultB = calculateScenario(initial.scenarioB, initial.period);
+
+const PROFILE_OPTIONS = PRICING_PROFILES.map((p) => ({ value: p.id, label: p.label }));
+const PERIOD_OPTIONS = TIME_PERIODS.map((p) => ({
+  value: p,
+  label: p.charAt(0).toUpperCase() + p.slice(1),
+}));
+const COMPARE_OPTIONS = [
+  { value: 'single', label: 'Single scenario' },
+  { value: 'compare', label: 'Compare two scenarios' },
+];
+
+interface ScenarioBlock {
+  key: 'scenarioA' | 'scenarioB';
+  label: string;
+  state: ScenarioInputs;
+}
+
+const SCENARIOS: ScenarioBlock[] = [
+  { key: 'scenarioA', label: 'Scenario A', state: initial.scenarioA },
+  { key: 'scenarioB', label: 'Scenario B', state: initial.scenarioB },
+];
+
+// Assumption rows are DERIVED values, not the raw Fields above them.
+// Order is load bearing: the client script updates row N by index, so
+// this array and the script's writer must stay in the same order.
+function assumptionItems(inputs: ScenarioInputs, result: ReturnType<typeof calculateScenario>) {
+  return [
+    { label: 'Effective input tokens per call', value: `${result.rawInputTokensPerExecution}`, editable: false, source: 'system prompt plus input tokens' },
+    { label: 'Cached tokens per call', value: `${result.cachedInputTokensPerExecution}`, editable: false, source: 'from your cache hit rate' },
+    { label: 'Uncached tokens per call', value: `${result.uncachedInputTokensPerExecution}`, editable: false, source: 'from your cache hit rate' },
+    { label: 'Model calls per request', value: `${result.executionsPerRequest.toFixed(3)}`, editable: false, source: 'from your retry rate' },
+    { label: 'Requests per day', value: `${result.requestsPerDay}`, editable: false, source: 'normalized from your period' },
+  ];
+}
+---
+
+<ToolLayout tool={tool}>
+  <p class="pricing-note mono">
+    Built in pricing effective <strong>{PRICING_EFFECTIVE_DATE}</strong>. Every price below
+    is a starting point you can overwrite.
+  </p>
+
+  <WarningNote severity="info" title="These are planning estimates, not a bill">
+    <p>
+      Every number on this page comes from the assumptions you enter, run through
+      the visible formulas below. This tool has no connection to any billing
+      account and cannot see what a provider actually charged you.
+    </p>
+  </WarningNote>
+
+  <div id="planner-empty-state">
+    <EmptyState
+      title="Enter a workload, or start from a realistic example"
+      body="Fill in a system prompt size, average tokens, and a request volume below, or load a sample comparing a flagship model against a cheaper one with prompt caching turned on."
+      sampleLabel="Load sample workload"
+    />
+  </div>
+
+  <div id="planner-app" data-planner-app hidden>
+    <section class="controls" aria-labelledby="controls-heading">
+      <h2 id="controls-heading" class="eyebrow">Plan settings</h2>
+      <div class="controls-grid">
+        <Field
+          label="Time period"
+          name="period"
+          type="select"
+          options={PERIOD_OPTIONS}
+          value={initial.period}
+          hint="Both scenarios read their request volume in this unit."
+        />
+        <Field
+          label="Comparison"
+          name="compare-mode"
+          type="select"
+          options={COMPARE_OPTIONS}
+          value={initial.compareEnabled ? 'compare' : 'single'}
+          hint="Compare mode runs the same formulas twice, side by side."
+        />
+      </div>
+    </section>
+
+    {
+      SCENARIOS.map((scenario) => (
+        <section
+          class="scenario"
+          data-scenario-fields={scenario.key}
+          aria-labelledby={`${scenario.key}-heading`}
+        >
+          <h2 id={`${scenario.key}-heading`} class="eyebrow">
+            {scenario.label}
+          </h2>
+
+          <div class="field-grid">
+            <Field
+              label="Model pricing profile"
+              name={`${scenario.key}-profile`}
+              type="select"
+              options={PROFILE_OPTIONS}
+              value={scenario.state.profileId}
+              hint="Picking a profile fills in the three prices below. Edit any of them afterward."
+            />
+            <Field
+              label="Input price"
+              name={`${scenario.key}-input-price`}
+              type="number"
+              value={scenario.state.inputPerMillion}
+              min={0}
+              step="0.01"
+              hint="USD per 1,000,000 uncached input tokens."
+            />
+            <Field
+              label="Output price"
+              name={`${scenario.key}-output-price`}
+              type="number"
+              value={scenario.state.outputPerMillion}
+              min={0}
+              step="0.01"
+              hint="USD per 1,000,000 output tokens."
+            />
+            <Field
+              label="Cached input price"
+              name={`${scenario.key}-cached-price`}
+              type="number"
+              value={scenario.state.cachedInputPerMillion}
+              min={0}
+              step="0.01"
+              hint="USD per 1,000,000 tokens served from a prompt cache."
+            />
+            <Field
+              label="System prompt tokens"
+              name={`${scenario.key}-system-tokens`}
+              type="number"
+              value={scenario.state.systemPromptTokens}
+              min={0}
+              step="1"
+              hint="Tokens spent on the fixed system prompt for every call."
+            />
+            <Field
+              label="Average input tokens"
+              name={`${scenario.key}-input-tokens`}
+              type="number"
+              value={scenario.state.avgInputTokens}
+              min={0}
+              step="1"
+              hint="Visitor facing input per request, not counting the system prompt."
+            />
+            <Field
+              label="Average output tokens"
+              name={`${scenario.key}-output-tokens`}
+              type="number"
+              value={scenario.state.avgOutputTokens}
+              min={0}
+              step="1"
+            />
+            <Field
+              label="Requests"
+              name={`${scenario.key}-requests`}
+              type="number"
+              value={scenario.state.requestsPerPeriod}
+              min={0}
+              step="1"
+              hint="Requests handled per the time period selected above."
+            />
+            <Field
+              label="Retry rate"
+              name={`${scenario.key}-retry-rate`}
+              type="number"
+              value={scenario.state.retryRatePercent}
+              min={0}
+              step="0.1"
+              hint="Percent of requests that need one extra full retry."
+            />
+            <Field
+              label="Cache hit rate"
+              name={`${scenario.key}-cache-rate`}
+              type="number"
+              value={scenario.state.cacheHitRatePercent}
+              min={0}
+              max={100}
+              step="0.1"
+              hint="Percent of system prompt plus input tokens served from cache."
+            />
+          </div>
+
+          <AssumptionList
+            name={`${scenario.key}-assumptions`}
+            title={`${scenario.label}: derived assumptions`}
+            items={assumptionItems(scenario.state, scenario.key === 'scenarioA' ? initialResultA : initialResultB)}
+          />
+        </section>
+      ))
+    }
+
+    <ResultPanel
+      id="cost-panel"
+      title="Cost breakdown"
+      status="idle"
+      description="Per call, per request, and projected over the selected period."
+      headingLevel={2}
+    >
+      <p class="driver-line" data-field="majorDriverLine">Enter a workload above to see a cost estimate.</p>
+
+      <div class="result-table" role="table" aria-label="Cost breakdown">
+        <div class="result-row result-head" role="row">
+          <span role="columnheader">Metric</span>
+          <span role="columnheader">Scenario A</span>
+          <span role="columnheader" data-scenario-b-col>Scenario B</span>
+        </div>
+        <div class="result-row" role="row">
+          <span role="rowheader">Cost per request</span>
+          <span role="cell" class="mono" data-field="cost-a-per-request">$0.00</span>
+          <span role="cell" class="mono" data-field="cost-b-per-request" data-scenario-b-col>$0.00</span>
+        </div>
+        <div class="result-row" role="row">
+          <span role="rowheader">Daily cost</span>
+          <span role="cell" class="mono" data-field="cost-a-daily">$0.00</span>
+          <span role="cell" class="mono" data-field="cost-b-daily" data-scenario-b-col>$0.00</span>
+        </div>
+        <div class="result-row" role="row">
+          <span role="rowheader">Monthly cost</span>
+          <span role="cell" class="mono" data-field="cost-a-monthly">$0.00</span>
+          <span role="cell" class="mono" data-field="cost-b-monthly" data-scenario-b-col>$0.00</span>
+        </div>
+        <div class="result-row" role="row">
+          <span role="rowheader">Annual cost</span>
+          <span role="cell" class="mono" data-field="cost-a-annual">$0.00</span>
+          <span role="cell" class="mono" data-field="cost-b-annual" data-scenario-b-col>$0.00</span>
+        </div>
+      </div>
+
+      <p class="comparison-line" data-field="comparisonLine" data-scenario-b-col hidden></p>
+
+      <HelpNote title="Show the arithmetic for scenario A" open={true} slot="footer">
+        <p data-field="formula-a-raw-input" />
+        <p data-field="formula-a-cache-split" />
+        <p data-field="formula-a-uncached-cost" />
+        <p data-field="formula-a-cached-cost" />
+        <p data-field="formula-a-output-cost" />
+        <p data-field="formula-a-cost-per-execution" />
+        <p data-field="formula-a-executions" />
+        <p data-field="formula-a-cost-per-request" />
+        <p data-field="formula-a-requests-per-day" />
+        <p data-field="formula-a-monthly-cost" />
+        <p data-field="formula-a-annual-cost" />
+      </HelpNote>
+    </ResultPanel>
+
+    <ResultPanel
+      id="tokens-panel"
+      title="Token allocation"
+      status="idle"
+      description="Where tokens go on a single model call, and over the period."
+      headingLevel={2}
+    >
+      <div class="result-table" role="table" aria-label="Token allocation">
+        <div class="result-row result-head" role="row">
+          <span role="columnheader">Metric</span>
+          <span role="columnheader">Scenario A</span>
+          <span role="columnheader" data-scenario-b-col>Scenario B</span>
+        </div>
+        <div class="result-row" role="row">
+          <span role="rowheader">System prompt tokens per call</span>
+          <span role="cell" class="mono" data-field="tokens-a-system">0</span>
+          <span role="cell" class="mono" data-field="tokens-b-system" data-scenario-b-col>0</span>
+        </div>
+        <div class="result-row" role="row">
+          <span role="rowheader">Average input tokens per call</span>
+          <span role="cell" class="mono" data-field="tokens-a-input">0</span>
+          <span role="cell" class="mono" data-field="tokens-b-input" data-scenario-b-col>0</span>
+        </div>
+        <div class="result-row" role="row">
+          <span role="rowheader">Cached portion of the call (system plus input)</span>
+          <span role="cell" class="mono" data-field="tokens-a-cached">0</span>
+          <span role="cell" class="mono" data-field="tokens-b-cached" data-scenario-b-col>0</span>
+        </div>
+        <div class="result-row" role="row">
+          <span role="rowheader">Uncached portion of the call (system plus input)</span>
+          <span role="cell" class="mono" data-field="tokens-a-uncached">0</span>
+          <span role="cell" class="mono" data-field="tokens-b-uncached" data-scenario-b-col>0</span>
+        </div>
+        <div class="result-row" role="row">
+          <span role="rowheader">Output tokens per call</span>
+          <span role="cell" class="mono" data-field="tokens-a-output">0</span>
+          <span role="cell" class="mono" data-field="tokens-b-output" data-scenario-b-col>0</span>
+        </div>
+        <div class="result-row" role="row">
+          <span role="rowheader">Total tokens per request</span>
+          <span role="cell" class="mono" data-field="tokens-a-per-request">0</span>
+          <span role="cell" class="mono" data-field="tokens-b-per-request" data-scenario-b-col>0</span>
+        </div>
+        <div class="result-row" role="row">
+          <span role="rowheader">Tokens per month</span>
+          <span role="cell" class="mono" data-field="tokens-a-monthly">0</span>
+          <span role="cell" class="mono" data-field="tokens-b-monthly" data-scenario-b-col>0</span>
+        </div>
+      </div>
+    </ResultPanel>
+
+    <div id="planner-warnings" aria-live="polite">
+      <div id="warning-cache-opportunity">
+        <WarningNote severity="warning" title="No prompt caching yet">
+          <p data-field="warning-cache-body" />
+        </WarningNote>
+      </div>
+      <div id="warning-retry-overhead">
+        <WarningNote severity="warning" title="High retry rate">
+          <p data-field="warning-retry-body" />
+        </WarningNote>
+      </div>
+      <div id="warning-high-spend">
+        <WarningNote severity="alert" title="Large projected monthly spend">
+          <p data-field="warning-spend-body" />
+        </WarningNote>
+      </div>
+    </div>
+
+    <HelpNote title="How this planner works">
+      <p>
+        Every model call is billed for the tokens it reads and the tokens it
+        writes. This planner splits the tokens a call reads into a system
+        prompt plus your average input, then splits that total again by your
+        cache hit rate, because a cached token and a fresh token are priced
+        differently. A retry rate above zero adds a fraction of an extra call
+        to every request, since a retried request pays for both attempts.
+      </p>
+      <p>
+        Token counts here are whatever you enter. A rough rule of thumb for
+        English prose is about four characters per token, but the exact count
+        depends on the model's tokenizer, so use a real count from your own
+        prompts when you have one.
+      </p>
+    </HelpNote>
+
+    <div class="actions">
+      <ExportBar formats={['json', 'csv']} filename="token-cost-plan" />
+      <button type="button" class="reset-button" data-planner-reset>
+        Reset to empty
+      </button>
+    </div>
+  </div>
+</ToolLayout>
+
+<script>
+  import type { TokenPlannerState, ScenarioInputs, TimePeriod } from '../../lib/tools/token-planner';
+  import {
+    emptyState,
+    sampleState,
+    reset as resetState,
+    validate,
+    calculateScenario,
+    getThresholdWarnings,
+    compareScenarios,
+    getPricingProfile,
+    formatCurrency,
+    formatTokens,
+    formatPercent,
+    exportAdapter,
+  } from '../../lib/tools/token-planner';
+
+  const app = document.querySelector<HTMLElement>('[data-planner-app]');
+  const emptyStateEl = document.getElementById('planner-empty-state');
+  if (!app || !emptyStateEl) throw new Error('token planner shell markup is missing');
+
+  let state: TokenPlannerState = emptyState();
+
+  /* ---- element lookups ------------------------------------------- */
+
+  function field(id: string): HTMLInputElement | HTMLSelectElement {
+    const el = document.getElementById(id);
+    if (!el) throw new Error(`token planner: missing field #${id}`);
+    return el as HTMLInputElement | HTMLSelectElement;
+  }
+
+  const scenarioFieldIds = (key: 'scenarioA' | 'scenarioB') => ({
+    profile: `field-${key}-profile`,
+    inputPerMillion: `field-${key}-input-price`,
+    outputPerMillion: `field-${key}-output-price`,
+    cachedInputPerMillion: `field-${key}-cached-price`,
+    systemPromptTokens: `field-${key}-system-tokens`,
+    avgInputTokens: `field-${key}-input-tokens`,
+    avgOutputTokens: `field-${key}-output-tokens`,
+    requestsPerPeriod: `field-${key}-requests`,
+    retryRatePercent: `field-${key}-retry-rate`,
+    cacheHitRatePercent: `field-${key}-cache-rate`,
+  });
+
+  const periodField = field('field-period') as HTMLSelectElement;
+  const compareField = field('field-compare-mode') as HTMLSelectElement;
+
+  /* ---- reading and writing the form -------------------------------
+
+     The DOM is the only place state lives between recomputes; these
+     two functions are the sole translation points between it and the
+     TokenPlannerState shape the pure calculation functions expect. */
+
+  function readScenario(key: 'scenarioA' | 'scenarioB'): ScenarioInputs {
+    const ids = scenarioFieldIds(key);
+    const num = (id: string) => {
+      const raw = (field(id) as HTMLInputElement).valueAsNumber;
+      return Number.isNaN(raw) ? 0 : raw;
+    };
+    const profileId = (field(ids.profile) as HTMLSelectElement).value;
+    return {
+      name: getPricingProfile(profileId).label,
+      profileId,
+      inputPerMillion: num(ids.inputPerMillion),
+      outputPerMillion: num(ids.outputPerMillion),
+      cachedInputPerMillion: num(ids.cachedInputPerMillion),
+      systemPromptTokens: num(ids.systemPromptTokens),
+      avgInputTokens: num(ids.avgInputTokens),
+      avgOutputTokens: num(ids.avgOutputTokens),
+      requestsPerPeriod: num(ids.requestsPerPeriod),
+      retryRatePercent: num(ids.retryRatePercent),
+      cacheHitRatePercent: num(ids.cacheHitRatePercent),
+    };
+  }
+
+  function readState(): TokenPlannerState {
+    return {
+      period: periodField.value as TimePeriod,
+      compareEnabled: compareField.value === 'compare',
+      scenarioA: readScenario('scenarioA'),
+      scenarioB: readScenario('scenarioB'),
+    };
+  }
+
+  function writeScenario(key: 'scenarioA' | 'scenarioB', inputs: ScenarioInputs): void {
+    const ids = scenarioFieldIds(key);
+    (field(ids.profile) as HTMLSelectElement).value = inputs.profileId;
+    (field(ids.inputPerMillion) as HTMLInputElement).value = String(inputs.inputPerMillion);
+    (field(ids.outputPerMillion) as HTMLInputElement).value = String(inputs.outputPerMillion);
+    (field(ids.cachedInputPerMillion) as HTMLInputElement).value = String(inputs.cachedInputPerMillion);
+    (field(ids.systemPromptTokens) as HTMLInputElement).value = String(inputs.systemPromptTokens);
+    (field(ids.avgInputTokens) as HTMLInputElement).value = String(inputs.avgInputTokens);
+    (field(ids.avgOutputTokens) as HTMLInputElement).value = String(inputs.avgOutputTokens);
+    (field(ids.requestsPerPeriod) as HTMLInputElement).value = String(inputs.requestsPerPeriod);
+    (field(ids.retryRatePercent) as HTMLInputElement).value = String(inputs.retryRatePercent);
+    (field(ids.cacheHitRatePercent) as HTMLInputElement).value = String(inputs.cacheHitRatePercent);
+  }
+
+  function writeState(next: TokenPlannerState): void {
+    periodField.value = next.period;
+    compareField.value = next.compareEnabled ? 'compare' : 'single';
+    writeScenario('scenarioA', next.scenarioA);
+    writeScenario('scenarioB', next.scenarioB);
+  }
+
+  /* ---- assumption list updates ------------------------------------
+
+     Row order here MUST match assumptionItems() in the frontmatter. */
+
+  function updateAssumptions(key: 'scenarioA' | 'scenarioB', result: ReturnType<typeof calculateScenario>) {
+    const list = document.querySelector<HTMLElement>(`[data-list-name="${key}-assumptions"]`);
+    if (!list) return;
+    const values = [
+      formatTokens(result.rawInputTokensPerExecution),
+      formatTokens(result.cachedInputTokensPerExecution),
+      formatTokens(result.uncachedInputTokensPerExecution),
+      `${result.executionsPerRequest.toFixed(3)} calls`,
+      `${formatTokens(result.requestsPerDay)} per day`,
+    ];
+    values.forEach((value, index) => {
+      const row = list.querySelector<HTMLElement>(`.assumption-row[data-index="${index}"] [data-assumption-value]`);
+      if (row) row.textContent = value;
+    });
+  }
+
+  /* ---- profile pre fill --------------------------------------------
+
+     Changing the profile select overwrites the three price fields.
+     The visitor can still edit any of them afterward: this only ever
+     runs on the select's own change event, never on recompute. */
+
+  function wireProfileSelect(key: 'scenarioA' | 'scenarioB') {
+    const ids = scenarioFieldIds(key);
+    const select = field(ids.profile) as HTMLSelectElement;
+    select.addEventListener('change', () => {
+      const profile = getPricingProfile(select.value);
+      (field(ids.inputPerMillion) as HTMLInputElement).value = String(profile.inputPerMillion);
+      (field(ids.outputPerMillion) as HTMLInputElement).value = String(profile.outputPerMillion);
+      (field(ids.cachedInputPerMillion) as HTMLInputElement).value = String(profile.cachedInputPerMillion);
+      recompute();
+    });
+  }
+
+  /* ---- rendering ---------------------------------------------------- */
+
+  function setText(id: string, text: string) {
+    const el = document.querySelector<HTMLElement>(`[data-field="${id}"]`);
+    if (el) el.textContent = text;
+  }
+
+  function setPanelStatus(panelId: string, status: 'idle' | 'ready') {
+    const panel = document.getElementById(panelId);
+    if (panel) panel.dataset.resultStatus = status;
+  }
+
+  function renderScenarioResult(
+    prefix: 'a' | 'b',
+    inputs: ScenarioInputs,
+    result: ReturnType<typeof calculateScenario>,
+  ) {
+    setText(`cost-${prefix}-per-request`, formatCurrency(result.costPerRequest, 6));
+    setText(`cost-${prefix}-daily`, formatCurrency(result.dailyCost));
+    setText(`cost-${prefix}-monthly`, formatCurrency(result.monthlyCost));
+    setText(`cost-${prefix}-annual`, formatCurrency(result.annualCost));
+    setText(`tokens-${prefix}-system`, formatTokens(inputs.systemPromptTokens));
+    setText(`tokens-${prefix}-input`, formatTokens(inputs.avgInputTokens));
+    setText(`tokens-${prefix}-cached`, formatTokens(result.cachedInputTokensPerExecution));
+    setText(`tokens-${prefix}-uncached`, formatTokens(result.uncachedInputTokensPerExecution));
+    setText(`tokens-${prefix}-output`, formatTokens(result.outputTokensPerExecution));
+    setText(`tokens-${prefix}-per-request`, formatTokens(result.tokensPerRequest));
+    setText(`tokens-${prefix}-monthly`, formatTokens(result.monthlyTokens));
+  }
+
+  function renderWarnings(state: TokenPlannerState, resultA: ReturnType<typeof calculateScenario>, resultB: ReturnType<typeof calculateScenario> | null) {
+    const warnings = getThresholdWarnings(state, resultA, resultB);
+    const byKeyPrefix = (prefix: string) => warnings.find((w) => w.key.startsWith(prefix));
+
+    const cache = byKeyPrefix('cache-opportunity');
+    const cacheNote = document.getElementById('warning-cache-opportunity');
+    if (cacheNote) {
+      cacheNote.hidden = !cache;
+      if (cache) setText('warning-cache-body', cache.body);
+    }
+
+    const retry = byKeyPrefix('retry-overhead');
+    const retryNote = document.getElementById('warning-retry-overhead');
+    if (retryNote) {
+      retryNote.hidden = !retry;
+      if (retry) setText('warning-retry-body', retry.body);
+    }
+
+    const spend = byKeyPrefix('high-spend');
+    const spendNote = document.getElementById('warning-high-spend');
+    if (spendNote) {
+      spendNote.hidden = !spend;
+      if (spend) setText('warning-spend-body', spend.body);
+    }
+  }
+
+  function applyErrors(issues: ReturnType<typeof validate>) {
+    // Clear every error slot first, then set the ones validate() found.
+    document.querySelectorAll<HTMLElement>('[data-field-error]').forEach((el) => {
+      el.hidden = true;
+      const text = el.querySelector<HTMLElement>('[data-field-error-text]');
+      if (text) text.textContent = '';
+      const controlId = el.id.replace(/-error$/, '');
+      document.getElementById(controlId)?.removeAttribute('aria-invalid');
+    });
+
+    const propToFieldKey: Record<string, string> = {
+      inputPerMillion: 'input-price',
+      outputPerMillion: 'output-price',
+      cachedInputPerMillion: 'cached-price',
+      systemPromptTokens: 'system-tokens',
+      avgInputTokens: 'input-tokens',
+      avgOutputTokens: 'output-tokens',
+      requestsPerPeriod: 'requests',
+      retryRatePercent: 'retry-rate',
+      cacheHitRatePercent: 'cache-rate',
+    };
+
+    for (const issue of issues) {
+      const [scenarioKey, prop] = issue.field.split('.');
+      const suffix = propToFieldKey[prop];
+      if (!suffix) continue;
+      const controlId = `field-${scenarioKey}-${suffix}`;
+      const errorEl = document.getElementById(`${controlId}-error`);
+      const control = document.getElementById(controlId);
+      if (errorEl) {
+        errorEl.hidden = false;
+        const text = errorEl.querySelector<HTMLElement>('[data-field-error-text]');
+        if (text) text.textContent = issue.message;
+      }
+      if (control && issue.severity === 'error') control.setAttribute('aria-invalid', 'true');
+    }
+  }
+
+  function hasMeaningfulInput(s: TokenPlannerState): boolean {
+    const meaningful = (sc: ScenarioInputs) =>
+      sc.systemPromptTokens + sc.avgInputTokens + sc.avgOutputTokens > 0 || sc.requestsPerPeriod > 0;
+    return meaningful(s.scenarioA) || (s.compareEnabled && meaningful(s.scenarioB));
+  }
+
+  function recompute() {
+    state = readState();
+
+    const compareEnabled = state.compareEnabled;
+    document.querySelectorAll<HTMLElement>('[data-scenario-fields="scenarioB"]').forEach((el) => {
+      el.hidden = !compareEnabled;
+    });
+    document.querySelectorAll<HTMLElement>('[data-scenario-b-col]').forEach((el) => {
+      el.hidden = !compareEnabled;
+    });
+
+    const show = hasMeaningfulInput(state);
+    app!.hidden = !show;
+    emptyStateEl!.hidden = show;
+    if (!show) return;
+
+    const resultA = calculateScenario(state.scenarioA, state.period);
+    const resultB = compareEnabled ? calculateScenario(state.scenarioB, state.period) : null;
+
+    renderScenarioResult('a', state.scenarioA, resultA);
+    updateAssumptions('scenarioA', resultA);
+    if (resultB) {
+      renderScenarioResult('b', state.scenarioB, resultB);
+      updateAssumptions('scenarioB', resultB);
+    }
+
+    const driverLine = `Scenario A's biggest cost driver is ${resultA.majorDriver} tokens, about ${formatPercent(resultA.majorDriverShare * 100)} of the cost of one call.`;
+    setText('majorDriverLine', driverLine);
+
+    const comparisonEl = document.querySelector<HTMLElement>('[data-field="comparisonLine"]');
+    if (comparisonEl) {
+      if (resultB) {
+        const comparison = compareScenarios(resultA, resultB);
+        comparisonEl.hidden = false;
+        comparisonEl.textContent = comparison.formula;
+      } else {
+        comparisonEl.hidden = true;
+      }
+    }
+
+    const formulas = resultA.formulas;
+    setText('formula-a-raw-input', formulas.rawInput);
+    setText('formula-a-cache-split', formulas.cacheSplit);
+    setText('formula-a-uncached-cost', formulas.uncachedCost);
+    setText('formula-a-cached-cost', formulas.cachedCost);
+    setText('formula-a-output-cost', formulas.outputCost);
+    setText('formula-a-cost-per-execution', formulas.costPerExecution);
+    setText('formula-a-executions', formulas.executionsPerRequest);
+    setText('formula-a-cost-per-request', formulas.costPerRequest);
+    setText('formula-a-requests-per-day', formulas.requestsPerDay);
+    setText('formula-a-monthly-cost', formulas.monthlyCost);
+    setText('formula-a-annual-cost', formulas.annualCost);
+
+    setPanelStatus('cost-panel', 'ready');
+    setPanelStatus('tokens-panel', 'ready');
+
+    renderWarnings(state, resultA, resultB);
+    applyErrors(validate(state));
+  }
+
+  /* ---- wiring -------------------------------------------------------- */
+
+  (['scenarioA', 'scenarioB'] as const).forEach((key) => {
+    const ids = scenarioFieldIds(key);
+    Object.values(ids).forEach((id) => {
+      field(id).addEventListener('input', recompute);
+      field(id).addEventListener('change', recompute);
+    });
+    wireProfileSelect(key);
+  });
+  periodField.addEventListener('change', recompute);
+  compareField.addEventListener('change', recompute);
+
+  emptyStateEl.addEventListener('workbench:load-sample', () => {
+    writeState(sampleState());
+    recompute();
+  });
+
+  document.querySelector('[data-planner-reset]')?.addEventListener('click', () => {
+    writeState(resetState());
+    recompute();
+  });
+
+  app.addEventListener('workbench:export', ((event: CustomEvent) => {
+    const { format, resolve } = event.detail;
+    try {
+      resolve(exportAdapter.serialize(state, format));
+    } catch {
+      resolve(null);
+    }
+  }) as EventListener);
+
+  // Initial paint matches the server rendered empty state.
+  recompute();
+</script>
+
+<style>
+  .pricing-note {
+    max-width: var(--measure);
+    font-size: var(--text-sm);
+    color: var(--text-faint);
+    margin-bottom: var(--space-3);
+  }
+
+  .pricing-note strong {
+    color: var(--text-muted);
+  }
+
+  .controls {
+    margin-bottom: var(--space-5);
+  }
+
+  .controls-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: var(--space-3) var(--space-4);
+    margin-top: var(--space-3);
+  }
+
+  .scenario {
+    border-top: 1px solid var(--line);
+    padding-top: var(--space-4);
+    margin-bottom: var(--space-5);
+  }
+
+  .field-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+    gap: var(--space-2) var(--space-4);
+    margin-bottom: var(--space-4);
+  }
+
+  #cost-panel,
+  #tokens-panel {
+    margin-bottom: var(--space-5);
+  }
+
+  .driver-line {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    margin: 0 0 var(--space-3);
+  }
+
+  .comparison-line {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+    border-top: 1px solid var(--line);
+    padding-top: var(--space-3);
+    margin: var(--space-3) 0 0;
+  }
+
+  .result-table {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .result-row {
+    display: grid;
+    grid-template-columns: 1.6fr 1fr 1fr;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--line-faint);
+  }
+
+  .result-row:last-child {
+    border-bottom: 0;
+  }
+
+  .result-head {
+    background: var(--bg-alt);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: 700;
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .result-row span[role='rowheader'] {
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+  }
+
+  .result-row span[role='cell'] {
+    font-size: var(--text-sm);
+    text-align: right;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .reset-button {
+    font: 600 var(--text-xs) var(--font-sans);
+    letter-spacing: var(--track-label);
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+  }
+
+  .reset-button:hover {
+    color: var(--accent);
+    border-color: var(--signal-edge);
+  }
+
+  @media (max-width: 34rem) {
+    .result-row {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .result-head span:last-child,
+    .result-row span[data-scenario-b-col] {
+      display: none;
+    }
+  }
+</style>

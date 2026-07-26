@@ -102,3 +102,45 @@ register and unregister without a single edit to landing page markup.
 
 If you find yourself editing src/pages/index.astro to add a tool, stop.
 Something has gone wrong, and it is not the landing page.
+
+---
+
+## AMENDMENT, 2026-07-26: the operator named all fourteen
+
+Fred directed that all 14 tool PRDs be built, triple checked, and
+shipped. That is a change in scope, not a violation of the protocol,
+and the distinction matters enough to write down.
+
+02-BUILD-CONTROL.md says "Claude Code must implement only the PRD
+explicitly named by the operator." The protocol constrains what may be
+INFERRED, not what the operator may AUTHORIZE. Fred is the operator. He
+named all fourteen. Building them is compliant. Building them because
+the plan looked broad enough to justify it would not have been.
+
+What survives from the original decision, unchanged:
+
+1. A tool ships only when its own PRD is implemented, not when it looks
+   convenient to flip a status.
+2. Status still reflects reality. A registry entry moves to released
+   only when a real page exists behind it.
+3. The landing page still needs no edit when a tool ships.
+
+What changed, deliberately:
+
+Assertion 8 in tests/check-registry.mjs required the production
+actionable set to be EMPTY. That assertion only held while zero tools
+existed, and its own comment named its successor. It has been replaced
+with the stronger, permanent check the comment specified: every
+actionable tool must have a page file at src/pages/tools/<slug>.astro,
+plus the converse, no orphan page without an actionable registry entry.
+
+The old check could only ever fail once. The new one guards the actual
+failure mode forever: a status flipped to released with nothing behind
+it, which is a dead route.
+
+Assertion 7d was also rescoped. It forbade any file under
+src/components, src/layouts, or src/pages from naming a tool slug. That
+fired on prompt-lab.astro for calling getTool('prompt-lab'), which is
+how a tool page identifies itself and is not a hardcoded landing grid.
+A tool page may now name exactly one slug, its own. Every other file
+still may not name any.
