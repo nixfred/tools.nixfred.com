@@ -15,6 +15,7 @@
 import Base from '../layouts/Base.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
+import ShareSheet from '../components/ShareSheet.astro';
 import ToolCard from '../components/ToolCard.astro';
 import { PUBLIC_TOOLS, FEATURED_TOOLS, activeCategories } from '../data/registry';
 import { isActionable, type ToolEntry } from '../data/types';
@@ -241,6 +242,10 @@ const description =
       <p class="outro-link">
         Built by Fred Nix. More at <a href="https://nixfred.com">nixfred.com</a>.
       </p>
+
+      {/* Shares the catalog URL. Nothing about what a visitor searched
+          for or filtered by travels with the link. */}
+      <ShareSheet title="Practical instruments for reliable AI systems" />
     </section>
   </main>
 

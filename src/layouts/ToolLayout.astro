@@ -19,6 +19,7 @@ import StatusBadge from '../components/StatusBadge.astro';
 import CategoryDot from '../components/CategoryDot.astro';
 import PrivacyNotice from '../components/kit/PrivacyNotice.astro';
 import ErrorBoundary from '../components/kit/ErrorBoundary.astro';
+import ShareSheet from '../components/ShareSheet.astro';
 import type { ToolEntry } from '../data/types';
 
 interface Props {
@@ -67,6 +68,10 @@ const capabilities = [
     <ErrorBoundary label={tool.name}>
       <slot />
     </ErrorBoundary>
+
+    {/* Sharing a tool shares its URL and nothing else. No tool state, no
+        input, and no result travels with the link. */}
+    <ShareSheet title={tool.name} />
   </main>
 
   <SiteFooter />
