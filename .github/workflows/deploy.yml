@@ -53,6 +53,9 @@ jobs:
       - name: Static safety gate
         run: ./tests/check-safety.sh
 
+      - name: Canonical URL gate
+        run: ./tests/check-canonical.sh
+
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:

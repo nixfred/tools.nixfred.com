@@ -7,6 +7,7 @@
 import '@fontsource-variable/inter';
 import '@fontsource-variable/jetbrains-mono';
 import '../styles/global.css';
+import { canonicalUrl } from '../lib/canonicalPath';
 
 interface Props {
   title: string;
@@ -17,7 +18,9 @@ interface Props {
 }
 
 const { title, description, surface = 'chassis' } = Astro.props;
-const canonical = new URL(Astro.url.pathname, Astro.site);
+// Normalized so canonical, og:url, and the share sheet all agree.
+// See src/lib/canonicalPath.ts for why the raw pathname is wrong here.
+const canonical = canonicalUrl(Astro.url.pathname, Astro.site);
 ---
 
 <!doctype html>
@@ -33,9 +36,14 @@ const canonical = new URL(Astro.url.pathname, Astro.site);
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
-    {/* SVG favicon, self hosted like everything else. Without this the
-        browser requests /favicon.ico on every page and logs a 404. */}
+    {/* Icons, all self hosted. The SVG is the primary and scales to any
+        size. The 32px PNG is the fallback for clients that do not take an
+        SVG favicon, and apple-touch-icon is what iOS uses when someone
+        adds the site to a home screen. Both PNGs are rasterized from the
+        same favicon.svg, so the mark can never drift between them. */}
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
@@ -48,10 +56,13 @@ const canonical = new URL(Astro.url.pathname, Astro.site);
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={new URL('/images/og-card.jpg', Astro.site)} />
-    <!-- FACTORY NOTE: /images/og-card.jpg does not exist until Stage 2
-         generates it (render a 1200x630 card in a browser, capture,
-         sips to exact size). Until then these three tags advertise a
-         missing image; generate the card before sharing any link. -->
+    <!-- The card at /images/og-card.jpg is real and exactly 1200x630. It
+         was rendered from an HTML card in a browser and converted with
+         sips, the method the factory note here used to describe as a
+         TODO. Before this existed every one of these tags advertised a
+         404, so any shared link previewed as a broken image. If the
+         wordmark or the instrument count on the card ever changes,
+         regenerate it; nothing rebuilds it automatically. -->
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to main content</a>

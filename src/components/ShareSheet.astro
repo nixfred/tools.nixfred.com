@@ -8,8 +8,13 @@ interface Props {
   // Optional override; defaults to the current page URL at render time.
   url?: string;
 }
+import { canonicalUrl } from '../lib/canonicalPath';
+
 const { title, url } = Astro.props;
-const pageUrl = url ?? new URL(Astro.url.pathname, Astro.site).toString();
+// Share the CANONICAL url. Astro emits .html paths under
+// build.format 'file', and handing those out would spread a URL the
+// site does not link to anywhere else.
+const pageUrl = url ?? canonicalUrl(Astro.url.pathname, Astro.site);
 const enc = encodeURIComponent;
 const shareText = `${title} · Nixfred AI Systems Workbench`;
 ---
