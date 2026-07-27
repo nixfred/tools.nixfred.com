@@ -1035,16 +1035,16 @@ function buildSample(): EvalPlanState {
  * engineering notes. Every score below carries both a pass or fail
  * call and a one to five scale, the same underlying judgment recorded
  * both ways, so it can be read under either rubric without re-entering
- * anything. Under pass or fail, three lenient calls make Prompt A look
+ * anything. Under pass or fail, three lenient calls make Incident wording A look
  * like the clear winner, three passes to Prompt B's one. Score those
  * same three calls on a one to five scale and none of them reach a
- * four, so Prompt A falls to zero passing cases while Prompt B's one
+ * four, so Incident wording A falls to zero passing cases while B's one
  * confident, accurate answer edges ahead. The rubric choice is not a
  * toggle nobody exercises. It changes which candidate wins.
  */
 function buildScaledRubricSample(): EvalPlanState {
-  const candidateA = newCandidate('Prompt A');
-  const candidateB = newCandidate('Prompt B');
+  const candidateA = newCandidate('Incident wording A');
+  const candidateB = newCandidate('Incident wording B');
 
   const caseCheckout = newCase();
   caseCheckout.title = 'Checkout errors, root cause not yet confirmed';
@@ -1148,8 +1148,8 @@ function buildScaledRubricSample(): EvalPlanState {
  * orders, becomes visible.
  */
 function buildDisagreementSample(): EvalPlanState {
-  const candidateA = newCandidate('Prompt A');
-  const candidateB = newCandidate('Prompt B');
+  const candidateA = newCandidate('Extractor A');
+  const candidateB = newCandidate('Extractor B');
 
   const case1 = newCase();
   case1.title = 'Order confirmation, standard case';
@@ -1259,8 +1259,8 @@ function buildDisagreementSample(): EvalPlanState {
  * nothing checks for it. Only the coverage report shows the gap.
  */
 function buildCoverageGapSample(): EvalPlanState {
-  const candidateA = newCandidate('Prompt A');
-  const candidateB = newCandidate('Prompt B');
+  const candidateA = newCandidate('Summarizer A');
+  const candidateB = newCandidate('Summarizer B');
 
   const caseSync = newCase();
   caseSync.title = 'Weekly sync notes with a direct phone number';
@@ -1367,7 +1367,7 @@ export const SAMPLES: Sample[] = [
     id: 'incident-updates-rubric-flip',
     name: 'Incident status updates, rubric comparison',
     teaches:
-      'Scored pass or fail, Prompt A wins clearly, three passes to one. Score the exact same judgments on a scale of one to five, and Prompt A drops to zero passing cases while Prompt B, with one confident and accurate answer, edges ahead. The rubric is not cosmetic. It decides the winner.',
+      'Scored pass or fail, wording A wins clearly, three passes to one. Score the exact same judgments on a scale of one to five and A drops to zero passing cases, while B edges ahead on one confident and accurate answer. Read the raw pass rates, not just the badges: under the scale neither candidate clears the threshold, so the rubric does not only reorder them, it reveals that neither is shippable yet. The rubric is not cosmetic.',
     build: buildScaledRubricSample,
   },
   {
