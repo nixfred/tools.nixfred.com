@@ -4,10 +4,12 @@
 //
 // Turns stated workload constraints into a ranked shortlist. Every
 // number a visitor sees is a pure function of the requirements,
-// weights, token blend assumption, and per model overrides defined in
-// src/lib/tools/model-selector.ts. This file renders the form from an
-// empty state, renders a result computed from that same empty state so
-// the panels are never blank, and wires the kit event contract
+// weights, token blend assumption, and per model user ratings defined
+// in src/lib/tools/model-selector.ts. Capability, latency, and
+// throughput carry no catalog default there, only whatever a visitor
+// rates a candidate on. This file renders the form from an empty
+// state, renders a result computed from that same empty state so the
+// panels are never blank, and wires the kit event contract
 // (workbench:load-sample, workbench:export, kit:assumption-edit).
 // Nothing here scores a model.
 import ToolLayout from '../../layouts/ToolLayout.astro';
@@ -92,12 +94,13 @@ const YES_NO_OPTIONS = [
         that would have altered the outcome.
       </p>
       <p>
-        Capability tier, latency class, and throughput tier are this
-        tool's own coarse editorial priors, not vendor claims and not
-        benchmark results. Every one of them is overridable per candidate
-        below, and an overridden value is marked user edited rather than
-        shown as unedited catalog data, in both the ranked list and the
-        export.
+        This tool ships no capability, latency, or throughput rating of
+        its own for any candidate. Those three axes are modeled only
+        once you rate a candidate on them, from your own evals or
+        experience, using the controls on each ranked row. An axis with
+        no rating is named plainly rather than silently dropped, and a
+        rated axis is marked rated by you rather than shown as though it
+        were catalog fact, in both the ranked list and the export.
       </p>
     </WarningNote>
 
@@ -472,16 +475,23 @@ const YES_NO_OPTIONS = [
     border-color: var(--status-beta);
   }
 
-  /* Stale and user edited are different concerns from price confidence,
+  /* Stale and user rated are different concerns from price confidence,
      so they carry their own modifier rather than reusing "confidence". */
   .candidate-badge[data-badge-kind='stale'] {
     color: var(--status-alert);
     border-color: var(--status-alert);
   }
 
-  .candidate-badge[data-badge-kind='user-edited'] {
+  .candidate-badge[data-badge-kind='user-rated'] {
     color: var(--accent);
     border-color: var(--accent);
+  }
+
+  /* No rating supplied is the honest default, not an error, so it gets
+     a quiet dashed border rather than an alert color. */
+  .candidate-badge[data-badge-kind='unrated'] {
+    color: var(--text-dim);
+    border-style: dashed;
   }
 
   .candidate-badges {
@@ -584,6 +594,14 @@ const YES_NO_OPTIONS = [
     display: block;
   }
 
+  /* An unmodeled axis renders no fill at all rather than a zero width
+     one, so it reads as "no data" instead of "scored zero". */
+  .axis-bar-unmodeled {
+    display: block;
+    height: 100%;
+    background: var(--line);
+  }
+
   .axis-num {
     font-family: var(--font-mono);
     font-size: var(--text-xs);
@@ -592,7 +610,12 @@ const YES_NO_OPTIONS = [
     white-space: nowrap;
   }
 
-  .override-row {
+  .axis-row[data-modeled='false'] .axis-num {
+    color: var(--text-dim);
+    font-style: italic;
+  }
+
+  .rating-row {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-3);
@@ -601,7 +624,7 @@ const YES_NO_OPTIONS = [
     border-top: 1px solid var(--line-faint);
   }
 
-  .override-label {
+  .rating-label {
     display: flex;
     flex-direction: column;
     gap: 0.2rem;
@@ -612,7 +635,7 @@ const YES_NO_OPTIONS = [
     color: var(--text-dim);
   }
 
-  .override-select {
+  .rating-select {
     font: inherit;
     font-size: var(--text-sm);
     text-transform: none;
@@ -697,6 +720,7 @@ const YES_NO_OPTIONS = [
     computeSensitivity,
     unansweredQuestions,
     evaluationPlan,
+    unmodeledAxes,
     validate,
     sampleState,
     emptyState,
@@ -704,6 +728,7 @@ const YES_NO_OPTIONS = [
     serialize,
     SAMPLES,
     AXIS_KEYS,
+    AXIS_LABELS,
     CAPABILITY_TIERS,
     CAPABILITY_TIER_LABELS,
     LATENCY_CLASSES,
@@ -719,7 +744,7 @@ const YES_NO_OPTIONS = [
     type SelectorState,
     type RankedCandidate,
     type EliminatedCandidate,
-    type OverridableField,
+    type RatedField,
   } from '../../lib/tools/model-selector';
 
   const root = document.querySelector<HTMLElement>('[data-selector]');
@@ -854,43 +879,46 @@ const YES_NO_OPTIONS = [
     }
 
     /* ---------------------------------------------------------------
-     * Per model overrides. capabilityTier, latencyClass, and
-     * throughputTier are this tool's own editorial priors, so every
-     * ranked row exposes them as an ordinary select, never as read only
-     * text, per the honesty requirement in model-selector.ts.
+     * Per model ratings. Capability, latency, and throughput carry no
+     * catalog default at all, so every ranked row exposes an ordinary
+     * select, defaulting to Unrated, never a read only value standing
+     * in for a fact this tool does not have. Per the honesty
+     * requirement in model-selector.ts, an axis is scored only once
+     * this select carries a value.
      * --------------------------------------------------------------- */
-    function overrideSelectHtml(
+    function ratingSelectHtml(
       modelId: string,
-      field: 'capabilityTier' | 'latencyClass' | 'throughputTier',
+      field: 'capability' | 'latency' | 'throughput',
       options: readonly string[],
       labels: Record<string, string>,
-      current: string,
+      current: string | undefined,
       label: string,
     ): string {
+      const unratedOpt = `<option value="" ${current === undefined ? 'selected' : ''}>Unrated, not modeled</option>`;
       const opts = options
         .map(
           (o) =>
             `<option value="${esc(o)}" ${o === current ? 'selected' : ''}>${esc(labels[o])}</option>`,
         )
         .join('');
-      return `<label class="override-label">${esc(label)}
-        <select class="override-select" data-override-model="${esc(modelId)}" data-override-field="${field}">${opts}</select>
+      return `<label class="rating-label">${esc(label)}
+        <select class="rating-select" data-rating-model="${esc(modelId)}" data-rating-field="${field}">${unratedOpt}${opts}</select>
       </label>`;
     }
 
     root.addEventListener('change', (event) => {
       const target = event.target as HTMLElement;
-      const select = target.closest<HTMLSelectElement>('[data-override-model]');
+      const select = target.closest<HTMLSelectElement>('[data-rating-model]');
       if (!select) return;
-      const modelId = select.dataset.overrideModel!;
-      const field = select.dataset.overrideField as
-        | 'capabilityTier'
-        | 'latencyClass'
-        | 'throughputTier';
-      state.overrides = {
-        ...state.overrides,
-        [modelId]: { ...state.overrides[modelId], [field]: select.value },
-      };
+      const modelId = select.dataset.ratingModel!;
+      const field = select.dataset.ratingField as 'capability' | 'latency' | 'throughput';
+      const current = { ...(state.userRatings[modelId] ?? {}) };
+      if (select.value === '') {
+        delete current[field];
+      } else {
+        (current as Record<string, string>)[field] = select.value;
+      }
+      state.userRatings = { ...state.userRatings, [modelId]: current };
       renderAll();
     });
 
@@ -911,17 +939,28 @@ const YES_NO_OPTIONS = [
 
     function axisRowsHtml(candidate: RankedCandidate): string {
       return candidate.axisScores
-        .map(
-          (a) => `
-        <div class="axis-row">
+        .map((a) => {
+          if (!a.modeled || a.score == null) {
+            return `
+        <div class="axis-row" data-modeled="false">
+          <span class="axis-label">${esc(a.label)}</span>
+          <span class="axis-bar-wrap">
+            <span class="axis-bar"><span class="axis-bar-unmodeled"></span></span>
+            <p class="axis-why">${esc(a.why)}</p>
+          </span>
+          <span class="axis-num">Not modeled</span>
+        </div>`;
+          }
+          return `
+        <div class="axis-row" data-modeled="true">
           <span class="axis-label">${esc(a.label)}</span>
           <span class="axis-bar-wrap">
             <span class="axis-bar"><span class="axis-fill" style="width:${a.score}%"></span></span>
             <p class="axis-why">${esc(a.why)}</p>
           </span>
           <span class="axis-num">${a.score} / 100</span>
-        </div>`,
-        )
+        </div>`;
+        })
         .join('');
     }
 
@@ -929,11 +968,13 @@ const YES_NO_OPTIONS = [
      * The badge row every candidate carries: price confidence (always),
      * a live computed stale flag (when this specific price is past the
      * threshold, evaluated against today, not build time), and whether
-     * the user has overridden any editorial field on this candidate.
-     * The last one is the visual distinction the PRD requires between
-     * shipped catalog data and user supplied data.
+     * the user has rated any axis of this candidate. The last one is
+     * the visual distinction the PRD requires between shipped catalog
+     * data and user supplied data: this tool ships none of the three
+     * rated axes, so "no rating supplied" is the honest default, not
+     * an error state.
      */
-    function badgesHtml(model: RankedCandidate['model'], fields: OverridableField[]): string {
+    function badgesHtml(model: RankedCandidate['model'], fields: RatedField[]): string {
       const badges = [
         `<span class="candidate-badge" data-confidence="${esc(model.priceConfidence)}">${esc(PRICE_CONFIDENCE_LABELS[model.priceConfidence])}</span>`,
       ];
@@ -945,8 +986,8 @@ const YES_NO_OPTIONS = [
       }
       badges.push(
         fields.length
-          ? `<span class="candidate-badge" data-badge-kind="user-edited">User edited: ${esc(fields.join(', '))}</span>`
-          : '<span class="candidate-badge">As shipped in the catalog</span>',
+          ? `<span class="candidate-badge" data-badge-kind="user-rated">Rated by you: ${esc(fields.join(', '))}</span>`
+          : '<span class="candidate-badge" data-badge-kind="unrated">No rating supplied</span>',
       );
       return `<div class="candidate-badges">${badges.join('')}</div>`;
     }
@@ -970,15 +1011,15 @@ const YES_NO_OPTIONS = [
             <span class="candidate-name">${r.rank}. ${esc(m.name)}<span class="candidate-provider">${esc(m.provider)}</span></span>
             <span class="candidate-score mono">${r.weightedScore.toFixed(1)}</span>
           </div>
-          ${badgesHtml(m, r.overriddenFields)}
+          ${badgesHtml(m, r.ratedFields)}
           <p class="axis-why">
             Price dated ${esc(m.priceEffectiveDate)}${m.notes ? `. ${esc(m.notes)}` : ''}
           </p>
           ${axisRowsHtml(r)}
-          <div class="override-row">
-            ${overrideSelectHtml(m.id, 'capabilityTier', CAPABILITY_TIERS, CAPABILITY_TIER_LABELS, m.capabilityTier, 'Capability tier (editorial, overridable)')}
-            ${overrideSelectHtml(m.id, 'latencyClass', LATENCY_CLASSES, LATENCY_CLASS_LABELS, m.latencyClass, 'Latency class (editorial, overridable)')}
-            ${overrideSelectHtml(m.id, 'throughputTier', THROUGHPUT_TIERS, THROUGHPUT_TIER_LABELS, m.throughputTier, 'Throughput tier (editorial, overridable)')}
+          <div class="rating-row">
+            ${ratingSelectHtml(m.id, 'capability', CAPABILITY_TIERS, CAPABILITY_TIER_LABELS, state.userRatings[m.id]?.capability, 'Your capability rating')}
+            ${ratingSelectHtml(m.id, 'latency', LATENCY_CLASSES, LATENCY_CLASS_LABELS, state.userRatings[m.id]?.latency, 'Your latency rating')}
+            ${ratingSelectHtml(m.id, 'throughput', THROUGHPUT_TIERS, THROUGHPUT_TIER_LABELS, state.userRatings[m.id]?.throughput, 'Your throughput rating')}
           </div>
           <details class="hard-checks">
             <summary>Show the five hard constraint checks</summary>
@@ -1004,7 +1045,7 @@ const YES_NO_OPTIONS = [
           <div class="candidate-head">
             <span class="candidate-name">${esc(e.model.name)}<span class="candidate-provider">${esc(e.model.provider)}</span></span>
           </div>
-          ${badgesHtml(e.model, e.overriddenFields)}
+          ${badgesHtml(e.model, e.ratedFields)}
           ${hardCheckRowsHtml(e.failedChecks)}
           <details class="hard-checks">
             <summary>Show all five constraint checks</summary>
@@ -1066,7 +1107,11 @@ const YES_NO_OPTIONS = [
       const summary = el('[data-ranked-summary]');
       if (summary) {
         const totalCatalog = result.ranked.length + result.eliminated.length;
-        summary.textContent = `${result.ranked.length} of ${totalCatalog} candidates survive every hard constraint.`;
+        const unmodeled = unmodeledAxes(result);
+        const unmodeledNote = unmodeled.length
+          ? ` ${unmodeled.map((a) => AXIS_LABELS[a]).join(', ')} ${unmodeled.length > 1 ? 'carry' : 'carries'} no rating yet, so this ranking runs on the remaining axes alone. Rate a candidate below to bring ${unmodeled.length > 1 ? 'an axis' : 'it'} in.`
+          : '';
+        summary.textContent = `${result.ranked.length} of ${totalCatalog} candidates survive every hard constraint.${unmodeledNote}`;
       }
 
       renderRanked(result.ranked);

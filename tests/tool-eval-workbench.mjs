@@ -43,6 +43,7 @@ import {
   validate,
   serialize,
   importState,
+  getSample,
   SAMPLES,
   FORMAT_VERSION,
   outputKey,
@@ -444,28 +445,133 @@ const setMde = evalSetMde(sampleForMde, 0.8);
 expect('evalSetMde uses the real case count', setMde.n === sampleForMde.cases.length, `expected n=${sampleForMde.cases.length}, got ${setMde.n}`);
 
 /* ==================================================================
- * 8. Samples.
+ * 8. Samples. Four sets, each teaching a different lesson from the
+ * PRD's acceptance criteria and outputs. Every sample first passes a
+ * generic gate, then gets its own lesson specific assertion below.
  * ================================================================== */
 
-expect('samples count', SAMPLES.length >= 1, `expected at least 1 sample, got ${SAMPLES.length}`);
+expect('samples count', SAMPLES.length >= 4, `expected at least 4 samples, got ${SAMPLES.length}`);
+
 for (const s of SAMPLES) {
   expect('sample shape', Boolean(s.id && s.name && s.teaches), `sample ${s.id} is missing a field`);
   const built = s.build();
   expect('sample has cases', built.cases.length > 0, `sample ${s.id} has no cases`);
   expect('sample has two or more candidates', built.candidates.length >= 2, `sample ${s.id} needs at least two candidates`);
-  expect('sample has a critical case', built.cases.some((c) => c.critical), `sample ${s.id} has no critical case, so the headline tension cannot show`);
 
-  // The sample must actually demonstrate the tension: at least one
-  // candidate has a high raw pass rate that still fails on the
-  // critical case rule.
+  const issues = validate(built);
+  const errorIssues = issues.filter((i) => i.severity === 'error');
+  expect('sample validates without errors', errorIssues.length === 0, `sample ${s.id} failed validation: ${JSON.stringify(errorIssues)}`);
+
+  // Exercise every analysis and export function so a broken sample
+  // fails loudly here rather than silently in the browser.
+  computeAllAggregates(built);
+  computeCoverageGaps(built);
+  computeCaseDivergence(built);
+  computeRubricInconsistencies(built);
+  serialize(built, 'json');
+  serialize(built, 'markdown');
+}
+console.log(`  ${SAMPLES.length} samples load, validate, and score without error: ${SAMPLES.map((s) => s.id).join(', ')}`);
+
+/* ------------------------------------------------------------------
+ * 8a. The critical case override, the tool's headline idea.
+ * ------------------------------------------------------------------ */
+{
+  const s = getSample('support-prompt-revision');
+  expect('critical override sample exists', Boolean(s), 'expected the support-prompt-revision sample to exist');
+  const built = s.build();
+  expect('critical override sample has a critical case', built.cases.some((c) => c.critical), 'sample has no critical case, so the headline tension cannot show');
+
   const aggregates = computeAllAggregates(built);
-  const tensionVisible = aggregates.some((a) => a.hasCriticalFailure && a.rawPassRate >= 0.6);
-  expect('sample demonstrates the critical case tension', tensionVisible, `sample ${s.id} does not show a high pass rate coexisting with a critical failure: ${JSON.stringify(aggregates.map((a) => ({ label: a.candidateLabel, rate: a.rawPassRate, critical: a.hasCriticalFailure, verdict: a.verdict })))}`);
+  const criticalFailure = aggregates.find((a) => a.hasCriticalFailure);
+  expect('critical override: a candidate fails on a critical case', Boolean(criticalFailure), 'no candidate has a critical failure in this sample');
+  if (criticalFailure) {
+    expect(
+      'critical override: aggregate is high',
+      criticalFailure.rawPassRate >= 0.6,
+      `expected a high raw pass rate coexisting with the critical failure, got ${(criticalFailure.rawPassRate * 100).toFixed(1)} percent`,
+    );
+    expect(
+      'critical override: verdict is fail despite the high aggregate',
+      criticalFailure.verdict === 'fail',
+      `raw pass rate was ${(criticalFailure.rawPassRate * 100).toFixed(1)} percent but verdict was "${criticalFailure.verdict}"`,
+    );
+    console.log(`  critical override: ${criticalFailure.candidateLabel} scores ${(criticalFailure.rawPassRate * 100).toFixed(1)} percent raw pass rate and still verdicts "${criticalFailure.verdict}" on the failed critical case`);
+  }
 
   const cleanPass = aggregates.some((a) => a.verdict === 'pass');
-  expect('sample has at least one passing candidate', cleanPass, `sample ${s.id} should have at least one candidate that actually passes, to show the contrast`);
+  expect('critical override: at least one candidate passes for contrast', cleanPass, 'no candidate in this sample actually passes, so there is no contrast to show');
 }
-console.log(`  samples: ${SAMPLES.map((s) => s.id).join(', ')}, each demonstrates the critical case tension`);
+
+/* ------------------------------------------------------------------
+ * 8b. Scaled rubric changes the winner. Same manual scores, read
+ * once under pass or fail and once under the scale of one to five.
+ * ------------------------------------------------------------------ */
+{
+  const s = getSample('incident-updates-rubric-flip');
+  expect('scaled rubric sample exists', Boolean(s), 'expected the incident-updates-rubric-flip sample to exist');
+  const built = s.build();
+
+  const passFailAgg = computeAllAggregates({ ...built, scoreMode: 'pass-fail' });
+  const scaleAgg = computeAllAggregates({ ...built, scoreMode: 'scale-5' });
+
+  const passFailWinner = passFailAgg.reduce((best, a) => (a.rawPassRate > best.rawPassRate ? a : best));
+  const scaleWinner = scaleAgg.reduce((best, a) => (a.rawPassRate > best.rawPassRate ? a : best));
+
+  expect(
+    'scaled rubric: winner differs between rubrics on the same data',
+    passFailWinner.candidateLabel !== scaleWinner.candidateLabel,
+    `expected different winners, got "${passFailWinner.candidateLabel}" under both`,
+  );
+  console.log(
+    `  scaled rubric, pass or fail: ${passFailAgg.map((a) => `${a.candidateLabel} ${(a.rawPassRate * 100).toFixed(1)}%`).join(', ')}, winner ${passFailWinner.candidateLabel}`,
+  );
+  console.log(
+    `  scaled rubric, scale of 1 to 5: ${scaleAgg.map((a) => `${a.candidateLabel} ${(a.rawPassRate * 100).toFixed(1)}%`).join(', ')}, winner ${scaleWinner.candidateLabel}`,
+  );
+}
+
+/* ------------------------------------------------------------------
+ * 8c. Disagreement behind aggregate parity. Two candidates land on
+ * the same raw pass rate while diverging sharply case by case.
+ * ------------------------------------------------------------------ */
+{
+  const s = getSample('order-extraction-disagreement');
+  expect('disagreement sample exists', Boolean(s), 'expected the order-extraction-disagreement sample to exist');
+  const built = s.build();
+
+  const aggregates = computeAllAggregates(built);
+  expect('disagreement sample has exactly two candidates', aggregates.length === 2, `expected 2 candidates, got ${aggregates.length}`);
+  const aggregateGap = Math.abs(aggregates[0].rawPassRate - aggregates[1].rawPassRate);
+
+  const divergence = computeCaseDivergence(built);
+  const sharplyDivergentCases = divergence.filter((d) => d.spread >= 0.99).length;
+
+  expect('disagreement: aggregate gap is small', aggregateGap < 0.05, `expected the two candidates to be near parity in aggregate, got a gap of ${(aggregateGap * 100).toFixed(1)} percentage points`);
+  expect('disagreement: per case divergence is high', sharplyDivergentCases >= 2, `expected at least 2 sharply divergent cases, found ${sharplyDivergentCases}`);
+  console.log(`  disagreement: aggregate gap ${(aggregateGap * 100).toFixed(1)} percentage points, ${sharplyDivergentCases} case(s) with a full spread despite that parity`);
+}
+
+/* ------------------------------------------------------------------
+ * 8d. Coverage gap. A declared concern with zero exercising cases,
+ * reported by the tool rather than silently dropped.
+ * ------------------------------------------------------------------ */
+{
+  const s = getSample('meeting-followups-coverage-gap');
+  expect('coverage gap sample exists', Boolean(s), 'expected the meeting-followups-coverage-gap sample to exist');
+  const built = s.build();
+
+  const usedConcerns = new Set(
+    built.cases.flatMap((c) => c.expectedProperties.map((p) => p.concern.trim()).filter(Boolean)),
+  );
+  const unexercised = built.concerns.filter((concern) => concern.trim() && !usedConcerns.has(concern.trim()));
+  expect('coverage gap: at least one declared concern is never exercised', unexercised.length >= 1, `expected an unexercised concern among ${JSON.stringify(built.concerns)}, but every declared concern has a case: ${JSON.stringify([...usedConcerns])}`);
+
+  const gaps = computeCoverageGaps(built);
+  const reported = unexercised.every((concern) => gaps.some((g) => g.includes(concern)));
+  expect('coverage gap: the tool reports the unexercised concern', reported, `expected the coverage report to name ${JSON.stringify(unexercised)}, got: ${JSON.stringify(gaps)}`);
+  console.log(`  coverage gap: declared concerns ${JSON.stringify(built.concerns)}, unexercised ${JSON.stringify(unexercised)}, reported: ${JSON.stringify(gaps)}`);
+}
 
 /* ==================================================================
  * 9. Reset and empty state, and basic validation.
