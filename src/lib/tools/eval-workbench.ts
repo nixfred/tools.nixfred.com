@@ -880,14 +880,30 @@ export function withManualScoreSet(
 }
 
 /* ------------------------------------------------------------------ *
- * Sample
+ * Samples
  *
- * One evaluation set, sized so the tension between a high average and
- * a failed critical case is visible without any extra data entry.
- * Candidate A leaks a temporary password in plain text on the one
- * critical case, and otherwise does well everywhere else, so its raw
- * pass rate looks strong right up until the critical case rule
- * overrides it. Candidate B redacts correctly and passes everything.
+ * Four evaluation sets, each sized so its lesson is visible without
+ * any extra data entry once loaded. Every candidate output below is
+ * text written for the example, the same disclosure appears in each
+ * set's own description field so it reads in the interface itself,
+ * not only here.
+ *
+ * 1. Critical case override. Candidate A leaks a temporary password
+ *    in plain text on the one critical case, and otherwise does well
+ *    everywhere else, so its raw pass rate looks strong right up
+ *    until the critical case rule overrides it. Candidate B redacts
+ *    correctly and passes everything.
+ * 2. Scaled rubric changes the winner. The same four judgments are
+ *    recorded on both a pass or fail call and a one to five score, so
+ *    switching the rubric in force changes which candidate is ahead
+ *    on identical underlying judgments.
+ * 3. Disagreement behind aggregate parity. Two candidates land on the
+ *    exact same raw pass rate, five of six, while failing on two
+ *    different cases each. The aggregate reads as a tie. The case
+ *    level divergence is where the real difference shows.
+ * 4. Coverage gap. A concern is declared up front and never exercised
+ *    by any case, and a Customer's phone number slips through in one
+ *    candidate's reply with nothing to catch it.
  * ------------------------------------------------------------------ */
 
 function buildSample(): EvalPlanState {
@@ -998,7 +1014,7 @@ function buildSample(): EvalPlanState {
     formatVersion: FORMAT_VERSION,
     name: 'Customer support assistant, prompt revision',
     description:
-      'Comparing the current production prompt against a revised prompt before rolling the revision out, with one case that checks whether either version leaks a Customer credential.',
+      'Comparing the current production prompt against a revised prompt before rolling the revision out, with one case that checks whether either version leaks a Customer credential. Every candidate output in this sample is text written for the example, not real output from a model.',
     concerns: ['Policy grounding', 'Format validity', 'Tone', 'Credential safety', 'Verbosity'],
     cases,
     candidates: [candidateA, candidateB],

@@ -22,7 +22,16 @@ Thumbs.db
 .env.*
 !.env.example
 
-# Playwright MCP review artifacts, not part of the site
+# Playwright MCP review artifacts, not part of the site.
+#
+# SCOPED TO THE REPO ROOT ON PURPOSE. A blanket *.png here silently
+# swallowed public/favicon-32.png and public/apple-touch-icon.png, so
+# the site shipped <link> tags pointing at files that were never
+# committed. The link integrity gate caught it in CI and blocked the
+# deploy, which is the only reason it did not go live broken.
+# Review artifacts land at the repo root; real site assets live under
+# public/ and must always be tracked.
 .playwright-mcp/
-*.png
-*.jpeg
+/*.png
+/*.jpeg
+/*.jpg
