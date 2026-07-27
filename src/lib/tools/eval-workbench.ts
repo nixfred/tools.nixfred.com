@@ -1027,6 +1027,327 @@ function buildSample(): EvalPlanState {
   };
 }
 
+/**
+ * Sample: scaled rubric changes the winner.
+ *
+ * PRD acceptance criterion: "Support pass/fail and scaled rubrics."
+ * Two prompts draft Customer facing incident status updates from raw
+ * engineering notes. Every score below carries both a pass or fail
+ * call and a one to five scale, the same underlying judgment recorded
+ * both ways, so it can be read under either rubric without re-entering
+ * anything. Under pass or fail, three lenient calls make Prompt A look
+ * like the clear winner, three passes to Prompt B's one. Score those
+ * same three calls on a one to five scale and none of them reach a
+ * four, so Prompt A falls to zero passing cases while Prompt B's one
+ * confident, accurate answer edges ahead. The rubric choice is not a
+ * toggle nobody exercises. It changes which candidate wins.
+ */
+function buildScaledRubricSample(): EvalPlanState {
+  const candidateA = newCandidate('Prompt A');
+  const candidateB = newCandidate('Prompt B');
+
+  const caseCheckout = newCase();
+  caseCheckout.title = 'Checkout errors, root cause not yet confirmed';
+  caseCheckout.input =
+    'Incident notes. Checkout returned elevated errors between 14:02 and 14:26 UTC. A deploy was rolled back at 14:20. Root cause not yet confirmed, the deploy is suspected.';
+  const checkoutProp = newProperty();
+  checkoutProp.description = 'Update states only the confirmed facts and hedges on the suspected cause.';
+  checkoutProp.concern = 'Numeric accuracy';
+  caseCheckout.expectedProperties = [checkoutProp];
+
+  const caseSearch = newCase();
+  caseSearch.title = 'Search results served stale data, cause confirmed';
+  caseSearch.input =
+    'Incident notes. Search results showed stale data for about 40 minutes starting 09:15 UTC, caused by a caching configuration issue confirmed by the on call engineer. Fix deployed at 09:58 UTC.';
+  const searchProp = newProperty();
+  searchProp.description = 'Update states the confirmed cause and the actual duration without inventing extra minutes.';
+  searchProp.concern = 'Numeric accuracy';
+  caseSearch.expectedProperties = [searchProp];
+
+  const caseCss = newCase();
+  caseCss.title = 'Login page styling failed after a CDN change';
+  caseCss.input =
+    'Incident notes. The login page failed to load its styling for about 12 minutes after a CDN configuration change. The change was reverted. Exact restoration time was not logged.';
+  const cssProp = newProperty();
+  cssProp.description = 'Update does not invent a precise restoration timestamp that was never logged.';
+  cssProp.concern = 'Numeric accuracy';
+  caseCss.expectedProperties = [cssProp];
+
+  const caseExport = newCase();
+  caseExport.title = 'Export job produced duplicate records';
+  caseExport.input =
+    'Incident notes. A retry bug caused some data exports between 03:00 and 03:45 UTC to include duplicate records. Affected Customers will be notified individually, corrected exports reissued by end of day.';
+  const exportProp = newProperty();
+  exportProp.description = 'Update states the affected window accurately and does not promise a fix time beyond what is stated.';
+  exportProp.concern = 'Numeric accuracy';
+  caseExport.expectedProperties = [exportProp];
+
+  const cases = [caseCheckout, caseSearch, caseCss, caseExport];
+
+  const outputs: Record<string, string> = {
+    [outputKey(candidateA.id, caseCheckout.id)]:
+      'Between 14:02 and 14:26 UTC some Customers saw errors on checkout. We believe a recent deploy was the cause and it has been rolled back. We are continuing to confirm the exact cause.',
+    [outputKey(candidateB.id, caseCheckout.id)]:
+      'Between 14:02 and 14:26 UTC checkout was down due to a bad deploy. The issue is fully resolved and confirmed.',
+    [outputKey(candidateA.id, caseSearch.id)]:
+      'From about 09:15 to 09:55 UTC, search results could show stale data because of a caching configuration issue. The fix is live.',
+    [outputKey(candidateB.id, caseSearch.id)]:
+      'For over an hour this morning, search results were stale due to a caching bug. We have fixed the issue.',
+    [outputKey(candidateA.id, caseCss.id)]:
+      'For about 12 minutes after a CDN change, some Customers saw the login page without styling. The change was reverted and the page is back to normal.',
+    [outputKey(candidateB.id, caseCss.id)]:
+      'For 12 minutes and 40 seconds, the login page failed to load styling after a CDN change. Service was fully restored at 14:07 UTC.',
+    [outputKey(candidateA.id, caseExport.id)]:
+      'Between 03:00 and 03:45 UTC some exports contained duplicate records. We expect corrected exports within the next 30 minutes.',
+    [outputKey(candidateB.id, caseExport.id)]:
+      'Between 03:00 and 03:45 UTC, a retry bug caused some data exports to include duplicate records. We are notifying affected Customers individually and will reissue corrected exports by the end of today.',
+  };
+
+  // Every score below carries both fields, passFail and scale, so the
+  // identical judgment can be read under either rubric. scoreMode
+  // below picks which one is in force when this sample first loads.
+  const manualScores: Record<string, PropertyResult> = {
+    [scoreKey(candidateA.id, caseCheckout.id, checkoutProp.id)]: { passFail: 'pass', scale: 3 },
+    [scoreKey(candidateB.id, caseCheckout.id, checkoutProp.id)]: { passFail: 'fail', scale: 2 },
+    [scoreKey(candidateA.id, caseSearch.id, searchProp.id)]: { passFail: 'pass', scale: 3 },
+    [scoreKey(candidateB.id, caseSearch.id, searchProp.id)]: { passFail: 'fail', scale: 2 },
+    [scoreKey(candidateA.id, caseCss.id, cssProp.id)]: { passFail: 'pass', scale: 3 },
+    [scoreKey(candidateB.id, caseCss.id, cssProp.id)]: { passFail: 'fail', scale: 2 },
+    [scoreKey(candidateA.id, caseExport.id, exportProp.id)]: { passFail: 'fail', scale: 1 },
+    [scoreKey(candidateB.id, caseExport.id, exportProp.id)]: { passFail: 'pass', scale: 5 },
+  };
+
+  return {
+    formatVersion: FORMAT_VERSION,
+    name: 'Incident status updates, rubric comparison',
+    description:
+      'Comparing two prompts that draft Customer facing incident status updates from raw engineering notes, scored once but readable under either rubric. Every candidate output in this sample is text written for the example, not real output from a model.',
+    concerns: ['Numeric accuracy'],
+    cases,
+    candidates: [candidateA, candidateB],
+    outputs,
+    manualScores,
+    scoreMode: 'pass-fail',
+    passThreshold: 0.6,
+    confidenceLevel: 95,
+    power: 80,
+  };
+}
+
+/**
+ * Sample: aggregate parity hides a real behavioral difference.
+ *
+ * PRD outputs: "disagreement indicators." Two prompts extract order
+ * confirmations into JSON. On four ordinary orders both stay
+ * disciplined and output clean JSON. On two harder orders, one prompt
+ * wraps its answer in prose or a markdown fence and the other does
+ * not, but which prompt slips changes from one case to the next. The
+ * two candidates land on the exact same raw pass rate, five of six,
+ * so the aggregate alone reads as a tie. The case level divergence
+ * panel is where the real difference, that they fail on different
+ * orders, becomes visible.
+ */
+function buildDisagreementSample(): EvalPlanState {
+  const candidateA = newCandidate('Prompt A');
+  const candidateB = newCandidate('Prompt B');
+
+  const case1 = newCase();
+  case1.title = 'Order confirmation, standard case';
+  case1.input = 'Order confirmation. Order 88213, total 42.50 USD, ships to Atlanta.';
+  const prop1 = newProperty();
+  prop1.description = 'Output is a JSON object with orderId, total, and currency.';
+  prop1.concern = 'Format validity';
+  prop1.checkType = 'json-schema';
+  prop1.check = { ...defaultCheckConfig(), requiredKeys: ['orderId', 'total', 'currency'] };
+  case1.expectedProperties = [prop1];
+
+  const case2 = newCase();
+  case2.title = 'Order confirmation, standard shipping';
+  case2.input = 'Order confirmation. Order 60142, total 15.00 USD, standard shipping.';
+  const prop2 = newProperty();
+  prop2.description = 'Output is a JSON object with orderId, total, and currency.';
+  prop2.concern = 'Format validity';
+  prop2.checkType = 'json-schema';
+  prop2.check = { ...defaultCheckConfig(), requiredKeys: ['orderId', 'total', 'currency'] };
+  case2.expectedProperties = [prop2];
+
+  const case3 = newCase();
+  case3.title = 'Order confirmation, gift wrap requested';
+  case3.input = 'Order confirmation. Order 91847, total 120.00 USD, gift wrap requested.';
+  const prop3 = newProperty();
+  prop3.description = 'Output is a JSON object with orderId, total, and currency.';
+  prop3.concern = 'Format validity';
+  prop3.checkType = 'json-schema';
+  prop3.check = { ...defaultCheckConfig(), requiredKeys: ['orderId', 'total', 'currency'] };
+  case3.expectedProperties = [prop3];
+
+  const case4 = newCase();
+  case4.title = 'Order confirmation, digital delivery';
+  case4.input = 'Order confirmation. Order 33456, total 8.75 USD, digital delivery.';
+  const prop4 = newProperty();
+  prop4.description = 'Output is a JSON object with orderId, total, and currency.';
+  prop4.concern = 'Format validity';
+  prop4.checkType = 'json-schema';
+  prop4.check = { ...defaultCheckConfig(), requiredKeys: ['orderId', 'total', 'currency'] };
+  case4.expectedProperties = [prop4];
+
+  const case5 = newCase();
+  case5.title = 'Order confirmation, foreign currency';
+  case5.input = 'Order confirmation. Order 55021, total 19.99 EUR, expedited shipping requested.';
+  const prop5 = newProperty();
+  prop5.description = 'Output is a JSON object with orderId, total, and currency.';
+  prop5.concern = 'Format validity';
+  prop5.checkType = 'json-schema';
+  prop5.check = { ...defaultCheckConfig(), requiredKeys: ['orderId', 'total', 'currency'] };
+  case5.expectedProperties = [prop5];
+
+  const case6 = newCase();
+  case6.title = 'Order confirmation, subtotal plus fee';
+  case6.input =
+    'Order confirmation. Order 71190 lists a subtotal of 30.00 USD plus a 5.00 USD shipping fee, total 35.00 USD.';
+  const prop6 = newProperty();
+  prop6.description = 'Output is a JSON object with orderId, total, and currency.';
+  prop6.concern = 'Format validity';
+  prop6.checkType = 'json-schema';
+  prop6.check = { ...defaultCheckConfig(), requiredKeys: ['orderId', 'total', 'currency'] };
+  case6.expectedProperties = [prop6];
+
+  const cases = [case1, case2, case3, case4, case5, case6];
+
+  const outputs: Record<string, string> = {
+    [outputKey(candidateA.id, case1.id)]: '{"orderId": "88213", "total": 42.50, "currency": "USD"}',
+    [outputKey(candidateB.id, case1.id)]: '{"orderId": "88213", "total": 42.50, "currency": "USD"}',
+    [outputKey(candidateA.id, case2.id)]: '{"orderId": "60142", "total": 15.00, "currency": "USD"}',
+    [outputKey(candidateB.id, case2.id)]: '{"orderId": "60142", "total": 15.00, "currency": "USD"}',
+    [outputKey(candidateA.id, case3.id)]: '{"orderId": "91847", "total": 120.00, "currency": "USD"}',
+    [outputKey(candidateB.id, case3.id)]: '{"orderId": "91847", "total": 120.00, "currency": "USD"}',
+    [outputKey(candidateA.id, case4.id)]: '{"orderId": "33456", "total": 8.75, "currency": "USD"}',
+    [outputKey(candidateB.id, case4.id)]: '{"orderId": "33456", "total": 8.75, "currency": "USD"}',
+    [outputKey(candidateA.id, case5.id)]: '{"orderId": "55021", "total": 19.99, "currency": "EUR"}',
+    [outputKey(candidateB.id, case5.id)]:
+      'Here is the extracted order data.\n\n```json\n{"orderId": "55021", "total": 19.99, "currency": "EUR"}\n```',
+    [outputKey(candidateA.id, case6.id)]: 'The order 71190 totals 35.00 USD once shipping is included.',
+    [outputKey(candidateB.id, case6.id)]: '{"orderId": "71190", "total": 35.00, "currency": "USD"}',
+  };
+
+  return {
+    formatVersion: FORMAT_VERSION,
+    name: 'Order data extraction, format disagreement',
+    description:
+      'Comparing two prompts that extract order confirmations into JSON. Every candidate output in this sample is text written for the example, not real output from a model.',
+    concerns: ['Format validity'],
+    cases,
+    candidates: [candidateA, candidateB],
+    outputs,
+    manualScores: {},
+    scoreMode: 'pass-fail',
+    passThreshold: 0.8,
+    confidenceLevel: 95,
+    power: 80,
+  };
+}
+
+/**
+ * Sample: a declared concern nobody ever tests.
+ *
+ * PRD outputs: "coverage gaps." Four concerns are declared up front,
+ * and every case that got written scores cleanly against one of the
+ * other three. Nobody ever wrote a case or a property for the fourth,
+ * PII redaction, even though the first case's notes contain a
+ * Customer's direct phone number. One candidate repeats that number
+ * back in its reply. Nothing in the results panel catches it, because
+ * nothing checks for it. Only the coverage report shows the gap.
+ */
+function buildCoverageGapSample(): EvalPlanState {
+  const candidateA = newCandidate('Prompt A');
+  const candidateB = newCandidate('Prompt B');
+
+  const caseSync = newCase();
+  caseSync.title = 'Weekly sync notes with a direct phone number';
+  caseSync.input =
+    'Meeting notes. Launch date pushed to March 10. Sarah owns the migration doc. Tom will follow up with legal by Friday, his direct line is 555-0148 in case they need to reach him directly.';
+  const syncProp = newProperty();
+  syncProp.description = 'Follow up email lists every action item with an owner and a date.';
+  syncProp.concern = 'Action item accuracy';
+  caseSync.expectedProperties = [syncProp];
+
+  const caseEscalation = newCase();
+  caseEscalation.title = 'Escalation review, credit amount undecided';
+  caseEscalation.input =
+    'Meeting notes. Reviewed the Customer escalation. Team agreed to offer a service credit, no dollar amount decided yet. Priya will draft the credit proposal by Wednesday.';
+  const escalationProp = newProperty();
+  escalationProp.description = 'Follow up email does not state a credit amount that was never decided.';
+  escalationProp.concern = 'Action item accuracy';
+  caseEscalation.expectedProperties = [escalationProp];
+
+  const caseBrainstorm = newCase();
+  caseBrainstorm.title = 'Unstructured brainstorm, no decisions made';
+  caseBrainstorm.input =
+    'Meeting notes. Brainstorm ran long with no clear structure. No decisions were made. Team agreed to reconvene next week.';
+  const brainstormProp = newProperty();
+  brainstormProp.description = 'Email stays brief and does not invent decisions or urgency the meeting did not produce.';
+  brainstormProp.concern = 'Tone';
+  caseBrainstorm.expectedProperties = [brainstormProp];
+
+  const caseStandup = newCase();
+  caseStandup.title = 'Routine standup, opening summary length';
+  caseStandup.input = 'Meeting notes. Standup covered sprint status only. Nothing unusual to report.';
+  const standupProp = newProperty();
+  standupProp.description = 'The opening summary line is under 400 characters.';
+  standupProp.concern = 'Length';
+  standupProp.checkType = 'length-bounds';
+  standupProp.check = { ...defaultCheckConfig(), maxLength: 400 };
+  caseStandup.expectedProperties = [standupProp];
+
+  const cases = [caseSync, caseEscalation, caseBrainstorm, caseStandup];
+
+  const outputs: Record<string, string> = {
+    [outputKey(candidateA.id, caseSync.id)]:
+      'Summary. Launch moves to March 10. Sarah owns the migration doc. Tom will follow up with legal by Friday.',
+    [outputKey(candidateB.id, caseSync.id)]:
+      'Summary. Launch moves to March 10. Sarah owns the migration doc. Tom will follow up with legal by Friday, reach him directly at 555-0148 if needed.',
+    [outputKey(candidateA.id, caseEscalation.id)]:
+      'Summary. Escalation reviewed, team will offer a service credit. Priya will draft the proposal by Wednesday.',
+    [outputKey(candidateB.id, caseEscalation.id)]:
+      'Summary. Escalation reviewed, team will offer a 50 dollar service credit. Priya will draft the proposal by Wednesday.',
+    [outputKey(candidateA.id, caseBrainstorm.id)]:
+      'Summary. Brainstorm session held, no decisions made, reconvening next week.',
+    [outputKey(candidateB.id, caseBrainstorm.id)]:
+      'Summary. Team made great progress and finalized next steps, reconvening next week to execute.',
+    [outputKey(candidateA.id, caseStandup.id)]: 'Summary. Standup covered sprint status, no blockers reported.',
+    [outputKey(candidateB.id, caseStandup.id)]:
+      'Summary. Standup covered sprint status in detail, walking through every ticket on the board one at a time, ' +
+      'noting the owner, the current state, and the next step for each one individually, plus a short digression ' +
+      'about upcoming holiday coverage and a reminder about the code freeze date, none of which changes the plain ' +
+      'fact that the standup itself had no blockers of any kind to report to the rest of the team this week.',
+  };
+
+  const manualScores: Record<string, PropertyResult> = {
+    [scoreKey(candidateA.id, caseSync.id, syncProp.id)]: { passFail: 'pass' },
+    [scoreKey(candidateB.id, caseSync.id, syncProp.id)]: { passFail: 'pass' },
+    [scoreKey(candidateA.id, caseEscalation.id, escalationProp.id)]: { passFail: 'pass' },
+    [scoreKey(candidateB.id, caseEscalation.id, escalationProp.id)]: { passFail: 'fail' },
+    [scoreKey(candidateA.id, caseBrainstorm.id, brainstormProp.id)]: { passFail: 'pass' },
+    [scoreKey(candidateB.id, caseBrainstorm.id, brainstormProp.id)]: { passFail: 'fail' },
+  };
+
+  return {
+    formatVersion: FORMAT_VERSION,
+    name: 'Meeting follow ups, coverage gap',
+    description:
+      'Drafting follow up emails from meeting notes, with four concerns declared up front. Every candidate output in this sample is text written for the example, not real output from a model.',
+    concerns: ['Action item accuracy', 'Tone', 'Length', 'PII redaction'],
+    cases,
+    candidates: [candidateA, candidateB],
+    outputs,
+    manualScores,
+    scoreMode: 'pass-fail',
+    passThreshold: 0.7,
+    confidenceLevel: 95,
+    power: 80,
+  };
+}
+
 export interface Sample {
   id: string;
   name: string;
@@ -1041,6 +1362,27 @@ export const SAMPLES: Sample[] = [
     teaches:
       'The current prompt scores well on the easy cases and still fails the eval, because it leaks a credential on the one case marked critical. The revised prompt fixes it and passes.',
     build: buildSample,
+  },
+  {
+    id: 'incident-updates-rubric-flip',
+    name: 'Incident status updates, rubric comparison',
+    teaches:
+      'Scored pass or fail, Prompt A wins clearly, three passes to one. Score the exact same judgments on a scale of one to five, and Prompt A drops to zero passing cases while Prompt B, with one confident and accurate answer, edges ahead. The rubric is not cosmetic. It decides the winner.',
+    build: buildScaledRubricSample,
+  },
+  {
+    id: 'order-extraction-disagreement',
+    name: 'Order data extraction, format disagreement',
+    teaches:
+      'Both prompts pass five of six cases. The aggregate reads as an exact tie. They fail on two different cases each, one prompt breaks format under a foreign currency, the other breaks format when a fee has to be added in. The disagreement panel shows what the aggregate cannot.',
+    build: buildDisagreementSample,
+  },
+  {
+    id: 'meeting-followups-coverage-gap',
+    name: 'Meeting follow ups, coverage gap',
+    teaches:
+      'Four concerns are declared, three are actually checked. Nobody wrote a case for PII redaction, so when one candidate repeats a Customer phone number back in its reply, every score still comes back clean. The coverage report is the only place that gap is visible.',
+    build: buildCoverageGapSample,
   },
 ];
 

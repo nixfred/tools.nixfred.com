@@ -8,28 +8,39 @@
  * HONESTY BOUNDARIES FROM THE PRD AND 00-PRODUCT-VISION.md, enforced by
  * the shape of this file rather than left as a promise:
  *
- * 1. This tool never claims benchmark authority. Every field that is an
- *    editorial judgment rather than a published spec (capabilityTier,
- *    latencyClass, throughputTier, and each strong task affinity) is
- *    labeled as such everywhere it renders, and every one of those
- *    fields is user overridable through the overrides map on
- *    SelectorState. Nothing here pretends a coarse tier is a benchmark
- *    score.
+ * 1. This catalog ships NO capability, latency, or throughput rating of
+ *    its own. Those three axes used to carry an invented editorial tier
+ *    (capabilityTier, latencyClass, throughputTier) that ranked every
+ *    candidate by default as though a guess were a fact. That default
+ *    ranking on invented tiers was the exact defect this file was
+ *    rewritten to remove, and it is not coming back under a different
+ *    name. A candidate is scored on capability, latency, or throughput
+ *    only once a rating for that axis is supplied through userRatings,
+ *    by a person working from their own evals or experience, the only
+ *    signal this tool trusts for those three axes. Absent a rating, the
+ *    axis is reported as unmodeled, named plainly in the why text, in
+ *    unmodeledAxes, and in the export. Never silently dropped and never
+ *    presented as though the ranking were complete without it. See
+ *    scoreCapability, scoreLatency, scoreThroughput, unmodeledAxes, and
+ *    ratedFields.
  * 2. Only OBJECTIVE, published facts are allowed to eliminate a
  *    candidate outright. That is why the five hard constraints below
  *    are context window size, vision support, tool use support,
  *    hosting availability, and published or estimated price against a
  *    stated ceiling, and why capability, latency, and throughput never
- *    appear in evaluateHardConstraints. An editorial guess is not
- *    allowed the power to silently kill a candidate.
+ *    appear in evaluateHardConstraints, whether unrated or rated by a
+ *    user. A rating is still a judgment, even a real one supplied by a
+ *    person, and a judgment is never allowed to silently kill a
+ *    candidate the way an objective fact can.
  * 3. Nothing here computes a single "best model." rankCandidates
- *    returns a ranking that is a pure function of the stated weights,
- *    and computeSensitivity always names what would have to change for
- *    the runner up to win instead.
+ *    returns a ranking that is a pure function of the stated
+ *    requirements, weights, and whatever ratings were supplied, and
+ *    computeSensitivity always names what would have to change for the
+ *    runner up to win instead.
  *
  * Pure functions only. No DOM, no globals, no I/O, no network. The
  * catalog is static versioned data with a source and a date on every
- * price.
+ * price, and nothing softer than that.
  */
 
 /* ------------------------------------------------------------------ *
@@ -55,7 +66,11 @@ export const TASK_TYPE_LABELS: Record<TaskType, string> = {
   'agentic-tool-use': 'Autonomous multi step tool use',
 };
 
-/** Shared by a workload's stated accuracy bar and a model's capability rating. */
+/**
+ * Shared by a workload's stated accuracy bar and a candidate's user
+ * supplied capability rating. This tool ships no value on this scale
+ * for any catalog entry. See ModelUserRating.
+ */
 export const CAPABILITY_TIERS = ['basic', 'solid', 'high', 'frontier'] as const;
 export type CapabilityTier = (typeof CAPABILITY_TIERS)[number];
 
@@ -73,13 +88,17 @@ const CAPABILITY_RANK: Record<CapabilityTier, number> = {
   frontier: 3,
 };
 
+/** The scale a user picks a latency rating from. No catalog entry ships one. */
 export const LATENCY_CLASSES = ['fast', 'standard', 'slow'] as const;
 export type LatencyClass = (typeof LATENCY_CLASSES)[number];
 
 /**
- * Representative time to a usable response, in milliseconds. This is a
- * coarse editorial estimate, not a measured benchmark, stated here so
- * the UI can render the number next to the label rather than hiding it.
+ * Representative time to a usable response, in milliseconds, for each
+ * point on the latency rating scale. A coarse label meaning, stated
+ * here so the UI can render the number next to the label rather than
+ * hiding it. Still just a label meaning, not a measurement of any
+ * particular candidate, which is why it only applies once a person
+ * rates a candidate on this scale.
  */
 export const LATENCY_CLASS_MS: Record<LatencyClass, number> = {
   fast: 900,
@@ -93,6 +112,7 @@ export const LATENCY_CLASS_LABELS: Record<LatencyClass, string> = {
   slow: 'Slow, typically several seconds, often extended reasoning',
 };
 
+/** The scale a user picks a throughput rating from. No catalog entry ships one. */
 export const THROUGHPUT_TIERS = ['limited', 'standard', 'scale'] as const;
 export type ThroughputTier = (typeof THROUGHPUT_TIERS)[number];
 
@@ -173,21 +193,20 @@ export const PRICE_CONFIDENCE_LABELS: Record<PriceConfidence, string> = {
  * The catalog
  *
  * PRD boundary: "The model catalog is versioned data with sources and
- * dates." Every entry states where its price came from and when that
- * price was true. capabilityTier, latencyClass, and throughputTier are
- * this tool's own coarse editorial priors, not vendor claims and not
- * benchmark results, which is why SelectorState carries an overrides
- * map that lets a user replace any one of them per candidate.
+ * dates." Every field on ModelEntry below is a published spec, a well
+ * documented fact, or a dated price with a named source. Nothing softer
+ * than that lives here. capabilityTier, latencyClass, and
+ * throughputTier used to ship on this catalog as this tool's own
+ * editorial priors, ranked by default as though they were measured.
+ * They do not anymore. See ModelUserRating for where a capability,
+ * latency, or throughput signal comes from now: a person, not this
+ * catalog.
  * ------------------------------------------------------------------ */
 
 export interface ModelEntry {
   id: string;
   name: string;
   provider: string;
-  /** Coarse editorial prior. Overridable. Never used in a hard constraint. */
-  capabilityTier: CapabilityTier;
-  /** Task types this catalog notes as a particular strength. Editorial. */
-  strongTasks: TaskType[];
   /** Published spec. Used in a hard constraint. */
   contextWindowTokens: number;
   /** Published spec. Used in a hard constraint. */
@@ -196,10 +215,6 @@ export interface ModelEntry {
   supportsToolUse: boolean;
   /** Published or well documented availability. Used in a hard constraint. */
   hosting: HostingMode[];
-  /** Coarse editorial prior. Overridable. Never used in a hard constraint. */
-  latencyClass: LatencyClass;
-  /** Coarse editorial prior. Overridable. Never used in a hard constraint. */
-  throughputTier: ThroughputTier;
   /** Dollars per million input tokens. */
   pricePerMillionInput: number;
   /** Dollars per million output tokens. */
@@ -218,14 +233,10 @@ export const CATALOG: ModelEntry[] = [
     id: 'claude-opus-5',
     name: 'Claude Opus 5',
     provider: 'Anthropic',
-    capabilityTier: 'frontier',
-    strongTasks: ['reasoning-and-analysis', 'coding', 'agentic-tool-use'],
     contextWindowTokens: 200000,
     supportsVision: true,
     supportsToolUse: true,
     hosting: ['vendor-api', 'private-cloud'],
-    latencyClass: 'slow',
-    throughputTier: 'limited',
     pricePerMillionInput: 5,
     pricePerMillionOutput: 25,
     priceConfidence: 'published',
@@ -239,14 +250,10 @@ export const CATALOG: ModelEntry[] = [
     id: 'claude-sonnet-5',
     name: 'Claude Sonnet 5',
     provider: 'Anthropic',
-    capabilityTier: 'high',
-    strongTasks: ['coding', 'general-chat', 'extraction-and-structured-output'],
     contextWindowTokens: 200000,
     supportsVision: true,
     supportsToolUse: true,
     hosting: ['vendor-api', 'private-cloud'],
-    latencyClass: 'standard',
-    throughputTier: 'standard',
     pricePerMillionInput: 3,
     pricePerMillionOutput: 15,
     priceConfidence: 'published',
@@ -260,14 +267,10 @@ export const CATALOG: ModelEntry[] = [
     id: 'claude-haiku-4-5',
     name: 'Claude Haiku 4.5',
     provider: 'Anthropic',
-    capabilityTier: 'solid',
-    strongTasks: ['general-chat', 'extraction-and-structured-output'],
     contextWindowTokens: 200000,
     supportsVision: true,
     supportsToolUse: true,
     hosting: ['vendor-api', 'private-cloud'],
-    latencyClass: 'fast',
-    throughputTier: 'scale',
     pricePerMillionInput: 1,
     pricePerMillionOutput: 5,
     priceConfidence: 'published',
@@ -281,14 +284,10 @@ export const CATALOG: ModelEntry[] = [
     id: 'gpt-4o',
     name: 'GPT 4o',
     provider: 'OpenAI',
-    capabilityTier: 'high',
-    strongTasks: ['general-chat', 'extraction-and-structured-output'],
     contextWindowTokens: 128000,
     supportsVision: true,
     supportsToolUse: true,
     hosting: ['vendor-api', 'private-cloud'],
-    latencyClass: 'standard',
-    throughputTier: 'standard',
     pricePerMillionInput: 2.5,
     pricePerMillionOutput: 10,
     priceConfidence: 'published',
@@ -299,14 +298,10 @@ export const CATALOG: ModelEntry[] = [
     id: 'gpt-4o-mini',
     name: 'GPT 4o mini',
     provider: 'OpenAI',
-    capabilityTier: 'solid',
-    strongTasks: ['general-chat'],
     contextWindowTokens: 128000,
     supportsVision: true,
     supportsToolUse: true,
     hosting: ['vendor-api', 'private-cloud'],
-    latencyClass: 'fast',
-    throughputTier: 'scale',
     pricePerMillionInput: 0.15,
     pricePerMillionOutput: 0.6,
     priceConfidence: 'published',
@@ -317,14 +312,10 @@ export const CATALOG: ModelEntry[] = [
     id: 'gpt-4-1',
     name: 'GPT 4.1',
     provider: 'OpenAI',
-    capabilityTier: 'high',
-    strongTasks: ['coding', 'long-document-summarization'],
     contextWindowTokens: 1000000,
     supportsVision: true,
     supportsToolUse: true,
     hosting: ['vendor-api', 'private-cloud'],
-    latencyClass: 'standard',
-    throughputTier: 'standard',
     pricePerMillionInput: 2,
     pricePerMillionOutput: 8,
     priceConfidence: 'published',
@@ -335,14 +326,10 @@ export const CATALOG: ModelEntry[] = [
     id: 'llama-3-3-70b',
     name: 'Llama 3.3 70B',
     provider: 'Meta, open weights',
-    capabilityTier: 'solid',
-    strongTasks: ['general-chat'],
     contextWindowTokens: 128000,
     supportsVision: false,
     supportsToolUse: true,
     hosting: ['vendor-api', 'private-cloud', 'self-hosted'],
-    latencyClass: 'standard',
-    throughputTier: 'scale',
     pricePerMillionInput: 0.6,
     pricePerMillionOutput: 0.6,
     priceConfidence: 'estimate',
@@ -355,21 +342,16 @@ export const CATALOG: ModelEntry[] = [
     id: 'deepseek-v3',
     name: 'DeepSeek V3',
     provider: 'DeepSeek, open weights',
-    capabilityTier: 'high',
-    strongTasks: ['coding', 'reasoning-and-analysis'],
     contextWindowTokens: 64000,
     supportsVision: false,
     supportsToolUse: true,
     hosting: ['vendor-api', 'self-hosted'],
-    latencyClass: 'standard',
-    throughputTier: 'scale',
     pricePerMillionInput: 0.27,
     pricePerMillionOutput: 1.1,
     priceConfidence: 'published',
     priceSource: 'DeepSeek published API list price at the date below, standard rate.',
     priceEffectiveDate: '2024-12-26',
-    notes:
-      'Text only. Capability tier is a cautious editorial read of third party comparisons, not independently verified by this catalog.',
+    notes: 'Text only.',
   },
 ];
 
@@ -477,6 +459,16 @@ export const AXIS_LABELS: Record<AxisKey, string> = {
   throughput: 'Throughput fit',
 };
 
+/** The one axis this catalog carries data for on its own, no rating required. */
+export const OBJECTIVE_AXES: AxisKey[] = ['cost'];
+
+/**
+ * The three axes with no catalog default. Each is modeled for a
+ * candidate only once a rating for it is supplied through
+ * ModelUserRating. See the honesty boundary at the top of this file.
+ */
+export const USER_RATED_AXES: AxisKey[] = ['capability', 'latency', 'throughput'];
+
 export interface Weights {
   capability: number;
   cost: number;
@@ -499,35 +491,41 @@ export interface TokenBlend {
 
 export const DEFAULT_TOKEN_BLEND: TokenBlend = { inputShare: 0.75, outputShare: 0.25 };
 
-export const OVERRIDABLE_FIELDS = ['capabilityTier', 'latencyClass', 'throughputTier'] as const;
-export type OverridableField = (typeof OVERRIDABLE_FIELDS)[number];
+export const RATED_FIELDS = ['capability', 'latency', 'throughput'] as const;
+export type RatedField = (typeof RATED_FIELDS)[number];
 
-export type ModelOverride = Partial<Pick<ModelEntry, OverridableField>>;
-export type Overrides = Record<string, ModelOverride>;
+/**
+ * A user supplied rating for one candidate, on one or more of the axes
+ * this catalog ships no data for. Every field starts absent, meaning
+ * unrated, never defaulted to a value this tool invented. Absence is
+ * the honest default, not a gap to paper over.
+ */
+export interface ModelUserRating {
+  capability?: CapabilityTier;
+  latency?: LatencyClass;
+  throughput?: ThroughputTier;
+}
+export type UserRatings = Record<string, ModelUserRating>;
 
 export interface SelectorState {
   requirements: WorkloadRequirements;
   weights: Weights;
   tokenBlend: TokenBlend;
-  overrides: Overrides;
-}
-
-function applyOverride(model: ModelEntry, override?: ModelOverride): ModelEntry {
-  if (!override) return model;
-  return { ...model, ...override };
+  userRatings: UserRatings;
 }
 
 /**
- * Which fields of a candidate carry a user supplied value rather than
- * shipped catalog data, in a stable order. Empty when the user has not
- * touched this candidate. This is the fact that makes a row "user
- * edited" rather than "as shipped," a distinction the PRD requires to
- * survive into the export, not just show up as a badge on screen.
+ * Which axes a candidate carries a user supplied rating for, in a
+ * stable order. Empty when the user has not rated this candidate at
+ * all, which is also the shipped default for every candidate in the
+ * catalog. This is the fact that makes a row "rated by you" rather than
+ * "no rating supplied," a distinction the PRD requires to survive into
+ * the export, not just show up as a badge on screen.
  */
-export function overriddenFields(modelId: string, overrides: Overrides): OverridableField[] {
-  const override = overrides[modelId];
-  if (!override) return [];
-  return OVERRIDABLE_FIELDS.filter((field) => override[field] !== undefined);
+export function ratedFields(modelId: string, userRatings: UserRatings): RatedField[] {
+  const rating = userRatings[modelId];
+  if (!rating) return [];
+  return RATED_FIELDS.filter((field) => rating[field] !== undefined);
 }
 
 export function blendedCost(model: ModelEntry, tokenBlend: TokenBlend): number {
@@ -557,8 +555,9 @@ function fmtInt(n: number): string {
  * Hard constraints
  *
  * Every check here reads a published or well documented fact. None of
- * them reads an editorial rating, on purpose, per the honesty
- * boundary stated at the top of this file.
+ * them reads a capability, latency, or throughput rating, shipped or
+ * user supplied, on purpose, per the honesty boundary stated at the
+ * top of this file.
  * ------------------------------------------------------------------ */
 
 export type HardCheckKey = 'context' | 'vision' | 'tool-use' | 'hosting' | 'cost-ceiling';
@@ -643,26 +642,43 @@ export function evaluateHardConstraints(
  * Soft, weighted axes
  *
  * Every score here comes with a "why" that never resolves to an empty
- * string, and every editorial input it depends on is named so the UI
- * can point back to the override control for it.
+ * string. cost is always modeled, computed straight from published
+ * catalog prices. capability, latency, and throughput are modeled only
+ * when the state carries a user rating for that candidate on that axis,
+ * and each says so plainly, both when modeled ("your rating of...") and
+ * when not ("not modeled for this candidate... supply one").
  * ------------------------------------------------------------------ */
 
 export interface AxisScore {
   axis: AxisKey;
   label: string;
-  score: number;
+  /** False when this candidate carries no rating for this axis. */
+  modeled: boolean;
+  /** Null exactly when modeled is false. */
+  score: number | null;
   why: string;
 }
 
-function scoreCapability(model: ModelEntry, requirements: WorkloadRequirements): AxisScore {
-  const modelRank = CAPABILITY_RANK[model.capabilityTier];
+function scoreCapability(
+  model: ModelEntry,
+  requirements: WorkloadRequirements,
+  rating: CapabilityTier | undefined,
+): AxisScore {
+  if (rating === undefined) {
+    return {
+      axis: 'capability',
+      label: AXIS_LABELS.capability,
+      modeled: false,
+      score: null,
+      why: `Capability is not modeled for ${model.name}. This tool ships no capability rating of its own, invented or otherwise. Rate this candidate from your own evals or experience using the control on this row to bring capability into the ranking.`,
+    };
+  }
+
+  const modelRank = CAPABILITY_RANK[rating];
   const requiredRank = CAPABILITY_RANK[requirements.accuracyBar];
   const gap = modelRank - requiredRank;
-  let score = gap >= 0 ? Math.min(100, 85 + gap * 5) : Math.max(0, 85 + gap * 35);
-
-  const isStrongTask = model.strongTasks.includes(requirements.taskType);
-  if (isStrongTask) score = Math.min(100, score + 10);
-  score = Math.round(score);
+  const rawScore = gap >= 0 ? Math.min(100, 85 + gap * 5) : Math.max(0, 85 + gap * 35);
+  const score = Math.round(rawScore);
 
   const gapWord =
     gap === 0
@@ -670,15 +686,13 @@ function scoreCapability(model: ModelEntry, requirements: WorkloadRequirements):
       : gap > 0
         ? `exceeds by ${gap} tier${gap > 1 ? 's' : ''}`
         : `falls short by ${Math.abs(gap)} tier${Math.abs(gap) > 1 ? 's' : ''}`;
-  const taskNote = isStrongTask
-    ? `This catalog also notes a particular editorial strength for ${TASK_TYPE_LABELS[requirements.taskType].toLowerCase()}.`
-    : `This catalog notes no particular strength for ${TASK_TYPE_LABELS[requirements.taskType].toLowerCase()}, which is not a claim of weakness, only an absence of a noted strength.`;
 
   return {
     axis: 'capability',
     label: AXIS_LABELS.capability,
+    modeled: true,
     score,
-    why: `Capability tier "${model.capabilityTier}" ${gapWord} the stated "${requirements.accuracyBar}" bar. ${taskNote} Capability tier is a coarse editorial prior, not a benchmark result, and it is overridable.`,
+    why: `Your capability rating of "${rating}" for ${model.name} ${gapWord} the stated "${requirements.accuracyBar}" bar. This rating is what you supplied, not a catalog default.`,
   };
 }
 
@@ -697,13 +711,28 @@ function scoreCost(
   return {
     axis: 'cost',
     label: AXIS_LABELS.cost,
+    modeled: true,
     score,
     why: `Blended cost estimate is $${blended.toFixed(2)} per million tokens, assuming ${Math.round(tokenBlend.inputShare * 100)} percent input and ${Math.round(tokenBlend.outputShare * 100)} percent output tokens. That is the ${ordinal(cheaperCount + 1)} cheapest of the ${allBlendedCosts.length} candidates in this catalog. Change the token blend assumption to match real traffic.`,
   };
 }
 
-function scoreLatency(model: ModelEntry, requirements: WorkloadRequirements): AxisScore {
-  const ms = LATENCY_CLASS_MS[model.latencyClass];
+function scoreLatency(
+  model: ModelEntry,
+  requirements: WorkloadRequirements,
+  rating: LatencyClass | undefined,
+): AxisScore {
+  if (rating === undefined) {
+    return {
+      axis: 'latency',
+      label: AXIS_LABELS.latency,
+      modeled: false,
+      score: null,
+      why: `Latency is not modeled for ${model.name}. This tool ships no measured or vendor published latency figure. Rate this candidate from your own testing using the control on this row to bring latency into the ranking.`,
+    };
+  }
+
+  const ms = LATENCY_CLASS_MS[rating];
   const ceiling = requirements.latencyCeilingMs;
   let score: number;
   let fitNote: string;
@@ -727,13 +756,28 @@ function scoreLatency(model: ModelEntry, requirements: WorkloadRequirements): Ax
   return {
     axis: 'latency',
     label: AXIS_LABELS.latency,
+    modeled: true,
     score,
-    why: `Editorial "${model.latencyClass}" latency class, about ${fmtInt(ms)} milliseconds typical. ${fitNote} Latency class is a coarse editorial estimate, not a measured benchmark, and it is overridable.`,
+    why: `Your latency rating of "${rating}" for ${model.name}, about ${fmtInt(ms)} milliseconds typical. ${fitNote} This rating is what you supplied, not a catalog default.`,
   };
 }
 
-function scoreThroughput(model: ModelEntry, requirements: WorkloadRequirements): AxisScore {
-  const modelRank = THROUGHPUT_RANK[model.throughputTier];
+function scoreThroughput(
+  model: ModelEntry,
+  requirements: WorkloadRequirements,
+  rating: ThroughputTier | undefined,
+): AxisScore {
+  if (rating === undefined) {
+    return {
+      axis: 'throughput',
+      label: AXIS_LABELS.throughput,
+      modeled: false,
+      score: null,
+      why: `Throughput is not modeled for ${model.name}. This tool ships no rate limit or provisioned capacity rating of its own. Rate this candidate from your own testing using the control on this row to bring throughput into the ranking.`,
+    };
+  }
+
+  const modelRank = THROUGHPUT_RANK[rating];
   const neededRank = THROUGHPUT_NEED_RANK[requirements.throughputNeed];
   const shortfall = neededRank - modelRank;
   const score = shortfall <= 0 ? 100 : shortfall === 1 ? 40 : 0;
@@ -741,8 +785,9 @@ function scoreThroughput(model: ModelEntry, requirements: WorkloadRequirements):
   return {
     axis: 'throughput',
     label: AXIS_LABELS.throughput,
+    modeled: true,
     score,
-    why: `Rated "${model.throughputTier}" for sustained throughput, an editorial read of typical published rate limits and the availability of batch or provisioned capacity, against the stated "${requirements.throughputNeed}" need. Throughput tier is overridable.`,
+    why: `Your throughput rating of "${rating}" for ${model.name}, against the stated "${requirements.throughputNeed}" need. This rating is what you supplied, not a catalog default.`,
   };
 }
 
@@ -756,16 +801,15 @@ export interface RankedCandidate {
   axisScores: AxisScore[];
   weightedScore: number;
   rank: number;
-  /** Empty when this candidate is exactly as shipped in the catalog. */
-  overriddenFields: OverridableField[];
+  /** Empty when no axis of this candidate carries a user supplied rating. */
+  ratedFields: RatedField[];
 }
 
 export interface EliminatedCandidate {
   model: ModelEntry;
   hardChecks: HardCheck[];
   failedChecks: HardCheck[];
-  /** Empty when this candidate is exactly as shipped in the catalog. */
-  overriddenFields: OverridableField[];
+  ratedFields: RatedField[];
 }
 
 export interface SelectionResult {
@@ -773,12 +817,26 @@ export interface SelectionResult {
   eliminated: EliminatedCandidate[];
 }
 
+/**
+ * A weighted average restricted to the axes actually modeled for this
+ * candidate. cost is always modeled, so the denominator is never zero
+ * across an empty set in practice, but the fallback below still covers
+ * the case where every modeled axis happens to carry a zero weight. An
+ * axis with no rating contributes nothing to either the numerator or
+ * the denominator, which is the mechanism behind "ranking runs on the
+ * objective axes only" when nothing has been rated: it is not that
+ * unrated axes score zero, it is that they are excluded from the
+ * average entirely, exactly as an unknown fact should be.
+ */
 export function computeWeightedScore(axisScores: AxisScore[], weights: Weights): number {
-  const totalWeight = AXIS_KEYS.reduce((sum, axis) => sum + weights[axis], 0);
+  const modeled = axisScores.filter((a) => a.modeled && a.score != null);
+  const totalWeight = modeled.reduce((sum, a) => sum + weights[a.axis], 0);
   if (totalWeight <= 0) {
-    return axisScores.reduce((sum, a) => sum + a.score, 0) / axisScores.length;
+    return modeled.length
+      ? modeled.reduce((sum, a) => sum + (a.score ?? 0), 0) / modeled.length
+      : 0;
   }
-  const sum = axisScores.reduce((acc, a) => acc + a.score * weights[a.axis], 0);
+  const sum = modeled.reduce((acc, a) => acc + (a.score ?? 0) * weights[a.axis], 0);
   return sum / totalWeight;
 }
 
@@ -788,25 +846,25 @@ export function rankCandidates(state: SelectorState): SelectionResult {
   const ranked: RankedCandidate[] = [];
   const eliminated: EliminatedCandidate[] = [];
 
-  for (const baseModel of CATALOG) {
-    const model = applyOverride(baseModel, state.overrides[baseModel.id]);
-    const fields = overriddenFields(baseModel.id, state.overrides);
+  for (const model of CATALOG) {
+    const rating = state.userRatings[model.id];
+    const fields = ratedFields(model.id, state.userRatings);
     const hardChecks = evaluateHardConstraints(model, state.requirements, state.tokenBlend);
     const failedChecks = hardChecks.filter((c) => !c.passed);
 
     if (failedChecks.length > 0) {
-      eliminated.push({ model, hardChecks, failedChecks, overriddenFields: fields });
+      eliminated.push({ model, hardChecks, failedChecks, ratedFields: fields });
       continue;
     }
 
     const axisScores: AxisScore[] = [
-      scoreCapability(model, state.requirements),
+      scoreCapability(model, state.requirements, rating?.capability),
       scoreCost(model, state.tokenBlend, allBlendedCosts),
-      scoreLatency(model, state.requirements),
-      scoreThroughput(model, state.requirements),
+      scoreLatency(model, state.requirements, rating?.latency),
+      scoreThroughput(model, state.requirements, rating?.throughput),
     ];
     const weightedScore = computeWeightedScore(axisScores, state.weights);
-    ranked.push({ model, hardChecks, axisScores, weightedScore, rank: 0, overriddenFields: fields });
+    ranked.push({ model, hardChecks, axisScores, weightedScore, rank: 0, ratedFields: fields });
   }
 
   ranked.sort((a, b) => b.weightedScore - a.weightedScore || a.model.name.localeCompare(b.model.name));
@@ -815,6 +873,23 @@ export function rankCandidates(state: SelectorState): SelectionResult {
   });
 
   return { ranked, eliminated };
+}
+
+/**
+ * Which of the three user rated axes carry no rating for ANY surviving
+ * candidate in this result. Stated at the level of the whole ranking,
+ * not just inside each candidate's own axis text, so the tool can say
+ * plainly up front that a run used fewer than four axes rather than
+ * leaving that fact to be discovered one row at a time. Empty once at
+ * least one surviving candidate is rated on an axis.
+ */
+export function unmodeledAxes(result: SelectionResult): AxisKey[] {
+  return USER_RATED_AXES.filter((axis) =>
+    result.ranked.every((r) => {
+      const a = r.axisScores.find((x) => x.axis === axis);
+      return !a || !a.modeled;
+    }),
+  );
 }
 
 /* ------------------------------------------------------------------ *
@@ -849,20 +924,35 @@ export function computeSensitivity(
     };
   }
 
+  // Restricted to axes BOTH candidates carry a modeled score for.
+  // Raising the weight on an axis neither has a rating for, or only one
+  // of them has a rating for, is not a lever either candidate's actual
+  // score can respond to. cost is always in this set. When the two
+  // candidates carry different rated axes beyond cost, this is an
+  // approximation: it answers what would flip the ranking using only
+  // what both of them have data for, which is not exactly the
+  // derivative of computeWeightedScore, since that function normalizes
+  // each candidate over its own modeled set rather than a shared one.
+  const sharedAxes = AXIS_KEYS.filter((axis) => {
+    const w = winner.axisScores.find((a) => a.axis === axis);
+    const r = runnerUp.axisScores.find((a) => a.axis === axis);
+    return Boolean(w?.modeled && r?.modeled);
+  });
+
   let best: { axis: AxisKey; requiredWeight: number } | null = null;
 
-  for (const axis of AXIS_KEYS) {
-    const winnerScore = winner.axisScores.find((a) => a.axis === axis)!.score;
-    const runnerScore = runnerUp.axisScores.find((a) => a.axis === axis)!.score;
+  for (const axis of sharedAxes) {
+    const winnerScore = winner.axisScores.find((a) => a.axis === axis)!.score!;
+    const runnerScore = runnerUp.axisScores.find((a) => a.axis === axis)!.score!;
     if (runnerScore <= winnerScore) continue;
 
     let runnerRest = 0;
     let winnerRest = 0;
-    for (const other of AXIS_KEYS) {
+    for (const other of sharedAxes) {
       if (other === axis) continue;
       const w = weights[other];
-      runnerRest += w * runnerUp.axisScores.find((a) => a.axis === other)!.score;
-      winnerRest += w * winner.axisScores.find((a) => a.axis === other)!.score;
+      runnerRest += w * runnerUp.axisScores.find((a) => a.axis === other)!.score!;
+      winnerRest += w * winner.axisScores.find((a) => a.axis === other)!.score!;
     }
     const denom = runnerScore - winnerScore;
     const requiredWeight = Math.max(0, (winnerRest - runnerRest) / denom);
@@ -875,7 +965,7 @@ export function computeSensitivity(
   if (!best) {
     return {
       possible: false,
-      message: `${runnerUp.model.name} trails ${winner.model.name} on every scored axis, so no single weight change flips this ranking. Multiple axes would have to move together.`,
+      message: `${runnerUp.model.name} trails ${winner.model.name} on every axis both candidates have a rating for, so no single weight change flips this ranking. Rate another axis for one of them, or move multiple weights together.`,
     };
   }
 
@@ -903,6 +993,12 @@ export function unansweredQuestions(state: SelectorState, result: SelectionResul
   const questions: string[] = [];
   const { requirements } = state;
 
+  const unmodeled = unmodeledAxes(result);
+  if (unmodeled.length > 0 && result.ranked.length > 0) {
+    questions.push(
+      `${unmodeled.map((a) => AXIS_LABELS[a]).join(', ')} carry no rating for any surviving candidate, so this ranking runs on the remaining axes alone. Rate the candidates you are seriously considering, from your own evals or experience, to bring ${unmodeled.length > 1 ? 'those axes' : 'that axis'} into the ranking.`,
+    );
+  }
   if (requirements.dataSensitivity === 'regulated' && requirements.hostingRequirement === 'any') {
     questions.push(
       'Data sensitivity is marked regulated but no private cloud or self hosted requirement was stated. Confirm the vendor agreement and data processing terms cover this before proceeding.',
@@ -910,7 +1006,7 @@ export function unansweredQuestions(state: SelectorState, result: SelectionResul
   }
   if (requirements.throughputNeed === 'high') {
     questions.push(
-      'Throughput need is marked high. State an actual expected request or token volume per day so a real rate limit and cost projection can be checked against it, since this tool only scores a coarse throughput tier.',
+      'Throughput need is marked high. State an actual expected request or token volume per day so a real rate limit and cost projection can be checked against it, since this tool only scores a throughput rating you supplied, coarse by nature.',
     );
   }
   if (requirements.costCeilingPerMTok == null) {
@@ -920,7 +1016,7 @@ export function unansweredQuestions(state: SelectorState, result: SelectionResul
   }
   if (requirements.latencyCeilingMs == null) {
     questions.push(
-      'No latency ceiling was stated. Latency is scored only as a soft preference for speed in that case.',
+      'No latency ceiling was stated. Latency is scored only as a soft preference for speed in that case, and only for candidates you have rated.',
     );
   }
   if (result.eliminated.length === CATALOG.length) {
@@ -930,7 +1026,7 @@ export function unansweredQuestions(state: SelectorState, result: SelectionResul
   }
   if (result.ranked.length > 0) {
     questions.push(
-      'Confirm whether this shortlist has been tested against real examples from this workload, since every score above comes from stated constraints and catalog data, not from a live run.',
+      'Confirm whether this shortlist has been tested against real examples from this workload, since every score above comes from stated constraints, catalog prices, and whatever you rated, not from a live run.',
     );
   }
 
@@ -951,6 +1047,11 @@ export function evaluationPlan(state: SelectorState, result: SelectionResult): s
   plan.push(
     `Collect 10 to 20 real examples from this workload and run them through ${top.model.name}${runnerUp ? ` and ${runnerUp.model.name}` : ''} directly, not through this tool.`,
   );
+  if (unmodeledAxes(result).length > 0) {
+    plan.push(
+      'Rate capability, latency, or throughput for the candidates you are seriously considering, from your own evals or experience, before leaning on this ranking beyond cost. This tool ships none of those ratings itself.',
+    );
+  }
   plan.push('Score those outputs against a concrete pass or fail rule defined in advance, not general impressions.');
   plan.push(
     `Confirm current published pricing for ${top.model.name} directly with the vendor. This catalog dates that price to ${top.model.priceEffectiveDate} and marks it as ${PRICE_CONFIDENCE_LABELS[top.model.priceConfidence].toLowerCase()}.`,
@@ -962,7 +1063,7 @@ export function evaluationPlan(state: SelectorState, result: SelectionResult): s
   }
   if (state.requirements.throughputNeed !== 'low') {
     plan.push(
-      'Load test at the expected peak volume before committing, since published rate limits and this tool throughput rating are both coarse.',
+      'Load test at the expected peak volume before committing, since published rate limits and any throughput rating you supplied are both coarse.',
     );
   }
   plan.push('Repeat this comparison when the catalog date is old or when a new model generation ships.');
@@ -972,6 +1073,14 @@ export function evaluationPlan(state: SelectorState, result: SelectionResult): s
 
 /* ------------------------------------------------------------------ *
  * Samples
+ *
+ * Each sample bundles a workload with ILLUSTRATIVE user ratings, not
+ * catalog data. They stand in for a person's own evals or experience,
+ * entered exactly the way a visitor would enter them through the per
+ * candidate rating controls on the page, so a sample demonstrates the
+ * complete, honest workflow rather than a ranking that only ever runs
+ * on cost. Loading Reset instead of a sample ships zero ratings, per
+ * the honesty boundary at the top of this file.
  * ------------------------------------------------------------------ */
 
 export interface Sample {
@@ -981,14 +1090,33 @@ export interface Sample {
   requirements: WorkloadRequirements;
   weights: Weights;
   tokenBlend: TokenBlend;
+  /** Illustrative, not shipped catalog data. See the comment above. */
+  userRatings?: UserRatings;
 }
+
+/**
+ * One illustrative rating set, reused across the sample workloads
+ * below so all three demonstrate the same worked example. Not catalog
+ * data. A visitor comparing real candidates should replace every one
+ * of these with a number from their own evals or experience.
+ */
+const ILLUSTRATIVE_SAMPLE_RATINGS: UserRatings = {
+  'claude-opus-5': { capability: 'frontier', latency: 'slow', throughput: 'limited' },
+  'claude-sonnet-5': { capability: 'high', latency: 'standard', throughput: 'standard' },
+  'claude-haiku-4-5': { capability: 'solid', latency: 'fast', throughput: 'scale' },
+  'gpt-4o': { capability: 'high', latency: 'standard', throughput: 'standard' },
+  'gpt-4o-mini': { capability: 'solid', latency: 'fast', throughput: 'scale' },
+  'gpt-4-1': { capability: 'high', latency: 'standard', throughput: 'standard' },
+  'llama-3-3-70b': { capability: 'solid', latency: 'standard', throughput: 'scale' },
+  'deepseek-v3': { capability: 'high', latency: 'standard', throughput: 'scale' },
+};
 
 export const SAMPLES: Sample[] = [
   {
     id: 'support-triage-volume',
     name: 'High volume support triage',
     teaches:
-      'Throughput and cost dominate the ranking when the accuracy bar only needs to be solid and nothing is regulated.',
+      'Throughput and cost dominate this ranking once you rate the candidates, illustrated here with example ratings standing in for your own evaluation notes, since this tool ships none of its own.',
     requirements: {
       taskType: 'general-chat',
       accuracyBar: 'solid',
@@ -1003,12 +1131,13 @@ export const SAMPLES: Sample[] = [
     },
     weights: { capability: 20, cost: 35, latency: 20, throughput: 25 },
     tokenBlend: { inputShare: 0.75, outputShare: 0.25 },
+    userRatings: ILLUSTRATIVE_SAMPLE_RATINGS,
   },
   {
     id: 'regulated-document-analysis',
     name: 'Regulated document analysis',
     teaches:
-      'A hosting requirement and a large context need eliminate most of the catalog before ranking even starts.',
+      'A hosting requirement and a large context need eliminate most of the catalog before ranking even starts, entirely from published facts, before any rating enters the picture.',
     requirements: {
       taskType: 'long-document-summarization',
       accuracyBar: 'high',
@@ -1023,12 +1152,13 @@ export const SAMPLES: Sample[] = [
     },
     weights: { capability: 50, cost: 15, latency: 10, throughput: 25 },
     tokenBlend: { inputShare: 0.85, outputShare: 0.15 },
+    userRatings: ILLUSTRATIVE_SAMPLE_RATINGS,
   },
   {
     id: 'realtime-coding-copilot',
     name: 'Real time coding copilot',
     teaches:
-      'Two candidates that both pass every hard constraint still trade places when the weights move.',
+      'Two candidates that both pass every hard constraint still trade places when the weights move, once each carries a capability and latency rating from your own experience.',
     requirements: {
       taskType: 'coding',
       accuracyBar: 'high',
@@ -1043,6 +1173,7 @@ export const SAMPLES: Sample[] = [
     },
     weights: { capability: 45, cost: 15, latency: 30, throughput: 10 },
     tokenBlend: { inputShare: 0.7, outputShare: 0.3 },
+    userRatings: ILLUSTRATIVE_SAMPLE_RATINGS,
   },
 ];
 
@@ -1072,7 +1203,7 @@ export function emptyState(): SelectorState {
     requirements: { ...DEFAULT_REQUIREMENTS },
     weights: { ...DEFAULT_WEIGHTS },
     tokenBlend: { ...DEFAULT_TOKEN_BLEND },
-    overrides: {},
+    userRatings: {},
   };
 }
 
@@ -1082,7 +1213,9 @@ export function sampleState(id: string = SAMPLES[0].id): SelectorState {
     requirements: { ...sample.requirements },
     weights: { ...sample.weights },
     tokenBlend: { ...sample.tokenBlend },
-    overrides: {},
+    userRatings: Object.fromEntries(
+      Object.entries(sample.userRatings ?? {}).map(([modelId, rating]) => [modelId, { ...rating }]),
+    ),
   };
 }
 
@@ -1133,7 +1266,7 @@ export function validate(state: SelectorState): ValidationIssue[] {
   if (totalWeight <= 0) {
     issues.push({
       field: 'weights',
-      message: 'All weights are zero. Ranking falls back to an unweighted average of the four scored axes.',
+      message: 'All weights are zero. Ranking falls back to an unweighted average of whichever axes are modeled.',
       severity: 'warning',
     });
   }
@@ -1144,12 +1277,12 @@ export function validate(state: SelectorState): ValidationIssue[] {
 export type ExportFormat = 'json' | 'markdown';
 
 /**
- * Renders the same override tag on screen and in export, so the two
- * surfaces cannot say different things about which data is shipped
- * catalog data and which is user supplied.
+ * Renders the same rating tag on screen and in export, so the two
+ * surfaces cannot say different things about which axes carry a user
+ * supplied rating for this candidate and which carry none.
  */
-function overrideTag(fields: OverridableField[]): string {
-  return fields.length ? `user edited: ${fields.join(', ')}` : 'as shipped in the catalog';
+function ratingTag(fields: RatedField[]): string {
+  return fields.length ? `user rated: ${fields.join(', ')}` : 'no rating supplied';
 }
 
 export function serialize(state: SelectorState, format: ExportFormat): string {
@@ -1157,6 +1290,7 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
   const sensitivity = computeSensitivity(result.ranked[0], result.ranked[1], state.weights);
   const questions = unansweredQuestions(state, result);
   const plan = evaluationPlan(state, result);
+  const unmodeled = unmodeledAxes(result);
   // Evaluated at the moment of export, same as the page evaluates it at
   // load, rather than at some earlier build time.
   const staleness = catalogStaleness();
@@ -1166,12 +1300,12 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
       {
         generatedBy: 'Nixfred AI Systems Workbench, Model Selector',
         note:
-          'This ranking follows only from the constraints and weights stated below, and is not a claim that any model is objectively best. Capability, latency, and throughput ratings are coarse editorial priors, not measured benchmarks. Every field the user changed from its catalog default is marked overriddenFields per candidate below, distinct from unedited catalog data.',
+          'This ranking follows only from the constraints and weights stated below, plus whatever ratings were supplied, and is not a claim that any model is objectively best. This tool ships no capability, latency, or throughput rating of its own; each is modeled for a candidate only once a rating for it is supplied, from a person\'s own evals or experience. Every axis a candidate carries a rating for is named in ratedFields per candidate below, and any axis with no rating for any surviving candidate in this run is named in unmodeledAxes.',
         // Everything needed to reconstruct why this answer came out,
         // per the PRD user outcome of "a defensible model selection
         // shortlist": the requirements, the weights, the token blend,
-        // any per candidate overrides, and how current the catalog was
-        // at the moment this was generated.
+        // any per candidate ratings, which axes went unmodeled, and how
+        // current the catalog was at the moment this was generated.
         catalogStaleness: {
           thresholdDays: staleness.thresholdDays,
           totalCandidates: staleness.total,
@@ -1189,7 +1323,8 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
         requirements: state.requirements,
         weights: state.weights,
         tokenBlend: state.tokenBlend,
-        overrides: state.overrides,
+        userRatings: state.userRatings,
+        unmodeledAxes: unmodeled.map((axis) => ({ axis, label: AXIS_LABELS[axis] })),
         ranked: result.ranked.map((r) => ({
           rank: r.rank,
           model: r.model.name,
@@ -1199,7 +1334,7 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
           priceConfidence: r.model.priceConfidence,
           priceEffectiveDate: r.model.priceEffectiveDate,
           priceStale: isModelStale(r.model),
-          overriddenFields: r.overriddenFields,
+          ratedFields: r.ratedFields,
         })),
         eliminated: result.eliminated.map((e) => ({
           model: e.model.name,
@@ -1208,7 +1343,7 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
           priceConfidence: e.model.priceConfidence,
           priceEffectiveDate: e.model.priceEffectiveDate,
           priceStale: isModelStale(e.model),
-          overriddenFields: e.overriddenFields,
+          ratedFields: e.ratedFields,
         })),
         tradeoff: sensitivity,
         unansweredQuestions: questions,
@@ -1222,7 +1357,15 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
   const lines: string[] = [
     '# Model Selector report',
     '',
-    'This ranking follows only from the constraints and weights stated below, and is not a claim that any model is objectively best. Capability, latency, and throughput ratings are coarse editorial priors, not measured benchmarks.',
+    'This ranking follows only from the constraints and weights stated below, plus whatever ratings were supplied, and is not a claim that any model is objectively best. This tool ships no capability, latency, or throughput rating of its own. Each is modeled for a candidate only once a rating for it is supplied, from a person\'s own evals or experience.',
+    '',
+    '## Axes not modeled',
+    '',
+    ...(unmodeled.length
+      ? [
+          `${unmodeled.map((a) => AXIS_LABELS[a]).join(', ')} carry no rating for any surviving candidate in this run. Supply a rating per candidate to bring an axis into the ranking.`,
+        ]
+      : ['Every scored axis carries a rating for at least one surviving candidate in this run.']),
     '',
     `Catalog currency: checked against a ${STALE_THRESHOLD_DAYS} day staleness threshold. Oldest price point is ${staleness.oldest.name} at ${staleness.oldestDays} days old, dated ${staleness.oldest.priceEffectiveDate}. ${staleness.staleCount} of ${staleness.total} candidates exceed the threshold.`,
     ...(staleness.staleCount > 0
@@ -1256,8 +1399,8 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
     ...(result.ranked.length
       ? result.ranked.map(
           (r) =>
-            `${r.rank}. ${r.model.name} (${r.model.provider}), weighted score ${r.weightedScore.toFixed(1)}, ${overrideTag(r.overriddenFields)}. ` +
-            r.axisScores.map((a) => `${a.label} ${a.score}`).join(', '),
+            `${r.rank}. ${r.model.name} (${r.model.provider}), weighted score ${r.weightedScore.toFixed(1)}, ${ratingTag(r.ratedFields)}. ` +
+            r.axisScores.map((a) => `${a.label} ${a.modeled ? a.score : 'not modeled'}`).join(', '),
         )
       : ['No candidate survived every hard constraint.']),
     '',
@@ -1266,7 +1409,7 @@ export function serialize(state: SelectorState, format: ExportFormat): string {
     ...(result.eliminated.length
       ? result.eliminated.map(
           (e) =>
-            `${e.model.name} (${e.model.provider}), ${overrideTag(e.overriddenFields)}, eliminated by: ${e.failedChecks.map((c) => c.label).join(', ')}.`,
+            `${e.model.name} (${e.model.provider}), ${ratingTag(e.ratedFields)}, eliminated by: ${e.failedChecks.map((c) => c.label).join(', ')}.`,
         )
       : ['None. Every candidate in the catalog passed every hard constraint.']),
     '',

@@ -3,25 +3,44 @@
  *
  * Run: bun tests/tool-model-selector.mjs
  *
+ * WHY THIS FILE WAS REWRITTEN. The catalog used to ship capabilityTier,
+ * latencyClass, and throughputTier on every entry, an editorial guess
+ * presented as though it were a fact, and the default ranking sorted on
+ * it. That is exactly the "vibes or leaderboard rank" this tool's own
+ * shortDescription says it replaces. The fix removed those three
+ * fields from the catalog entirely. Capability, latency, and throughput
+ * are now modeled for a candidate only once a person supplies a rating
+ * for it through state.userRatings, defaulting to unrated. This suite
+ * proves the new mechanics hold, not the old ones.
+ *
  * Proves the PRD acceptance criteria that are properties of the engine
  * rather than of the page:
  *   1. Hard constraints visibly eliminate candidates, and the reason
- *      names the specific constraint.
+ *      names the specific constraint, and stay entirely unaffected by
+ *      any rating a user supplies.
  *   2. Weight changes update ranking, proven with two runs.
- *   3. Stale catalog data is clearly, ACTIVELY flagged: a catalog older
+ *   3. With no capability rating supplied, ranking still produces an
+ *      order from the objective axes alone, and the result says so
+ *      plainly rather than silently dropping the axis.
+ *   4. Supplying a rating for one candidate changes its position,
+ *      proving the user signal is actually wired into the score, not
+ *      just recorded.
+ *   5. Stale catalog data is clearly, ACTIVELY flagged: a catalog older
  *      than the threshold produces a warning, and one inside the
  *      threshold does not, which is the control that proves the check
  *      discriminates rather than always firing or never firing.
- *   4. Recommendations export with assumptions: weights, constraints,
- *      per candidate effective dates, and which fields the user edited
- *      versus what shipped in the catalog, all present and consistent
- *      with the state that produced them.
+ *   6. Recommendations export with assumptions: weights, constraints,
+ *      per candidate effective dates, which ratings were user supplied,
+ *      and which axes went unmodeled, all present and consistent with
+ *      the state that produced them.
+ *   7. No shipped catalog entry carries a capability, latency, or
+ *      throughput rating. This is the regression guard for the whole
+ *      fix: it fails the moment anyone reintroduces an invented tier.
  * Plus: scoring is deterministic and reproducible, every candidate
- * carries a per constraint explanation with none blank, a workload no
- * model satisfies returns an honest empty result, a user edited
- * candidate is marked distinctly from shipped catalog data, and the
- * supporting properties the tool depends on (catalog shape, tradeoff
- * sensitivity math, samples, validation).
+ * carries a per axis explanation with none blank, a workload no model
+ * satisfies returns an honest empty result, and the supporting
+ * properties the tool depends on (catalog shape, tradeoff sensitivity
+ * math, samples, validation, weighted score math).
  */
 
 import {
@@ -42,11 +61,12 @@ import {
   computeSensitivity,
   unansweredQuestions,
   evaluationPlan,
+  unmodeledAxes,
   blendedCost,
   catalogStaleness,
   isModelStale,
   daysSincePriceDate,
-  overriddenFields,
+  ratedFields,
   serialize,
 } from '../src/lib/tools/model-selector.ts';
 
@@ -63,7 +83,7 @@ function expect(label, cond, detail = '') {
 
 console.log('model selector logic gate');
 
-/* ---- 0. Catalog shape --------------------------------------------- */
+/* ---- 0. Catalog shape, and the regression guard for the whole fix - */
 expect('catalog size', CATALOG.length >= 5, `only ${CATALOG.length} candidates, expected at least 5`);
 const seenIds = new Set();
 for (const m of CATALOG) {
@@ -71,8 +91,15 @@ for (const m of CATALOG) {
   seenIds.add(m.id);
   expect('catalog shape', Boolean(m.name && m.provider && m.priceSource && m.priceEffectiveDate), `${m.id} is missing a required field`);
   expect('catalog price', m.pricePerMillionInput > 0 && m.pricePerMillionOutput > 0, `${m.id} has a non positive price`);
+  // THE REGRESSION GUARD. The whole defect was a shipped, invented
+  // capability rating driving a default ranking. If any of these three
+  // keys ever reappear on a catalog entry, that defect is back.
+  expect('catalog ships no capability rating', !('capabilityTier' in m), `${m.id} carries a shipped capabilityTier, the exact invented rating this fix removed`);
+  expect('catalog ships no latency rating', !('latencyClass' in m), `${m.id} carries a shipped latencyClass, the exact invented rating this fix removed`);
+  expect('catalog ships no throughput rating', !('throughputTier' in m), `${m.id} carries a shipped throughputTier, the exact invented rating this fix removed`);
+  expect('catalog ships no strong task claim', !('strongTasks' in m), `${m.id} carries a shipped strongTasks claim, another editorial judgment presented as catalog fact`);
 }
-console.log(`  catalog: ${CATALOG.length} candidates, ${seenIds.size} unique ids`);
+console.log(`  catalog: ${CATALOG.length} candidates, ${seenIds.size} unique ids, none carrying a shipped capability, latency, or throughput rating`);
 
 /* ---- 1. THE IMPORTANT ONE. A hard constraint eliminates a named --- *
  * candidate, and the reason names the specific constraint.          */
@@ -109,9 +136,80 @@ console.log(`  catalog: ${CATALOG.length} candidates, ${seenIds.size} unique ids
   console.log(`  hard elimination (hosting): ${eliminatedByHosting.length} eliminated by hosting, ${result.ranked.length} self hostable survivors remain`);
 }
 
-/* ---- 2. Changing a weight changes the ranking, two runs ----------- */
+/* ---- 2. Hard constraints never read a rating, shipped or supplied - */
+{
+  const state = emptyState();
+  const before = rankCandidates(state);
+  const rich = {
+    ...state,
+    userRatings: {
+      [CATALOG[0].id]: { capability: 'frontier', latency: 'fast', throughput: 'scale' },
+    },
+  };
+  const after = rankCandidates(rich);
+  const beforeElim = before.eliminated.map((e) => e.model.id).sort();
+  const afterElim = after.eliminated.map((e) => e.model.id).sort();
+  expect('hard constraints ignore user ratings', JSON.stringify(beforeElim) === JSON.stringify(afterElim), `eliminated set changed after adding a user rating, but a rating must never affect elimination: before ${JSON.stringify(beforeElim)}, after ${JSON.stringify(afterElim)}`);
+  console.log('  hard constraints confirmed independent of user supplied capability, latency, and throughput ratings');
+}
+
+/* ---- 3. THE IMPORTANT ONE. With no rating supplied, ranking still -- *
+ * produces an order from the objective axes, and says so plainly.    */
+{
+  const state = emptyState();
+  const result = rankCandidates(state);
+  expect('unrated ranking survives', result.ranked.length > 1, `expected more than one survivor with the default workload, got ${result.ranked.length}`);
+
+  for (const r of result.ranked) {
+    for (const axis of ['capability', 'latency', 'throughput']) {
+      const a = r.axisScores.find((x) => x.axis === axis);
+      expect('unrated axis reported unmodeled', a.modeled === false && a.score === null, `${r.model.name}: axis "${axis}" should be unmodeled with no rating supplied, got modeled=${a.modeled} score=${a.score}`);
+      expect('unrated axis why names it', /not modeled|no.*rating|supply/i.test(a.why), `${r.model.name}: axis "${axis}" why text does not plainly say it is unmodeled: "${a.why}"`);
+    }
+    const costAxis = r.axisScores.find((x) => x.axis === 'cost');
+    expect('cost stays modeled', costAxis.modeled === true && typeof costAxis.score === 'number', `${r.model.name}: cost must remain modeled even when nothing is rated`);
+    // With capability, latency, and throughput all unmodeled, cost is
+    // the only axis left to average, so the weighted score must equal
+    // the cost score exactly, regardless of the nominal weights.
+    expect('unrated weighted score equals cost score', Math.abs(r.weightedScore - costAxis.score) < 1e-9, `${r.model.name}: expected weightedScore ${r.weightedScore} to equal the sole modeled cost score ${costAxis.score}`);
+  }
+
+  const unmodeled = unmodeledAxes(result);
+  expect('unmodeledAxes reports all three', ['capability', 'latency', 'throughput'].every((a) => unmodeled.includes(a)), `expected unmodeledAxes to name capability, latency, and throughput, got ${JSON.stringify(unmodeled)}`);
+  console.log(`  no ratings supplied: ${result.ranked.length} ranked purely on cost, unmodeledAxes = ${JSON.stringify(unmodeled)}`);
+}
+
+/* ---- 4. THE IMPORTANT ONE. Supplying a rating for one candidate ---- *
+ * changes its position, proving the user signal is wired into score. */
+{
+  const state = emptyState();
+  state.requirements.accuracyBar = 'basic';
+  state.weights = { capability: 90, cost: 5, latency: 3, throughput: 2 };
+  const before = rankCandidates(state);
+  expect('baseline has survivors', before.ranked.length > 1, 'need more than one survivor to prove a rank change');
+
+  // Rate the candidate currently in LAST place as frontier capability.
+  // Under capability heavy weights and a low accuracy bar, that rating
+  // should score high enough to move it, proving the rating is not
+  // merely recorded but actually feeds the ranking.
+  const target = before.ranked[before.ranked.length - 1].model.id;
+  const rankBefore = before.ranked.find((r) => r.model.id === target).rank;
+  const scoreBefore = before.ranked.find((r) => r.model.id === target).weightedScore;
+
+  const rated = { ...state, userRatings: { [target]: { capability: 'frontier' } } };
+  const after = rankCandidates(rated);
+  const rankAfter = after.ranked.find((r) => r.model.id === target).rank;
+  const scoreAfter = after.ranked.find((r) => r.model.id === target).weightedScore;
+
+  expect('rating raises the score', scoreAfter > scoreBefore, `rating "${target}" frontier capability should raise its weighted score, went from ${scoreBefore} to ${scoreAfter}`);
+  expect('rating changes rank', rankAfter !== rankBefore, `rating "${target}" frontier capability under capability heavy weights should change its rank, stayed at ${rankBefore}`);
+  console.log(`  one candidate rated: ${target} moved from rank ${rankBefore} (score ${scoreBefore.toFixed(1)}) to rank ${rankAfter} (score ${scoreAfter.toFixed(1)}) after a single capability rating`);
+}
+
+/* ---- 5. Weight changes still re-rank, proven with two runs -------- */
 {
   const state = sampleState('realtime-coding-copilot');
+  expect('sample ships illustrative ratings', Object.keys(state.userRatings).length > 0, 'the sample workload should carry illustrative user ratings so weight changes have something to act on');
   const capabilityHeavy = rankCandidates({ ...state, weights: { capability: 90, cost: 5, latency: 3, throughput: 2 } });
   const costHeavy = rankCandidates({ ...state, weights: { capability: 2, cost: 90, latency: 5, throughput: 3 } });
 
@@ -122,7 +220,7 @@ console.log(`  catalog: ${CATALOG.length} candidates, ${seenIds.size} unique ids
   console.log(`  weight change: capability heavy top pick "${topCapability}", cost heavy top pick "${topCost}"`);
 }
 
-/* ---- 3. Deterministic and reproducible ---------------------------- */
+/* ---- 6. Deterministic and reproducible ----------------------------- */
 {
   const state = sampleState('support-triage-volume');
   const runA = rankCandidates(state);
@@ -142,7 +240,7 @@ console.log(`  catalog: ${CATALOG.length} candidates, ${seenIds.size} unique ids
   console.log(`  determinism: ${runA.ranked.length} ranked, ${runA.eliminated.length} eliminated, identical across three independent calls`);
 }
 
-/* ---- 4. Every candidate carries a per constraint explanation ------ */
+/* ---- 7. Every candidate carries a per axis explanation ------------- */
 {
   let hardChecksVerified = 0;
   let axisScoresVerified = 0;
@@ -156,7 +254,8 @@ console.log(`  catalog: ${CATALOG.length} candidates, ${seenIds.size} unique ids
       }
       for (const a of r.axisScores) {
         expect('axis score has why', typeof a.why === 'string' && a.why.trim().length > 10, `${r.model.name}: axis "${a.axis}" has a blank or trivial why`);
-        expect('axis score in range', a.score >= 0 && a.score <= 100, `${r.model.name}: axis "${a.axis}" score ${a.score} is out of the 0 to 100 range`);
+        expect('axis score modeled implies range', !a.modeled || (a.score >= 0 && a.score <= 100), `${r.model.name}: axis "${a.axis}" score ${a.score} is out of the 0 to 100 range`);
+        expect('axis score unmodeled implies null', a.modeled || a.score === null, `${r.model.name}: axis "${a.axis}" is unmodeled but score is not null: ${a.score}`);
         axisScoresVerified += 1;
       }
     }
@@ -171,7 +270,7 @@ console.log(`  catalog: ${CATALOG.length} candidates, ${seenIds.size} unique ids
   console.log(`  explanations verified: ${hardChecksVerified} hard checks, ${axisScoresVerified} axis scores, all non blank`);
 }
 
-/* ---- 5. A workload no model satisfies returns an honest empty ----- *
+/* ---- 8. A workload no model satisfies returns an honest empty ----- *
  * result, not a least bad pick presented as a fit.                   */
 {
   const state = emptyState();
@@ -192,38 +291,53 @@ console.log(`  catalog: ${CATALOG.length} candidates, ${seenIds.size} unique ids
   console.log(`  impossible workload: 0 of ${CATALOG.length} survive, tradeoff and plan both state this honestly rather than picking a least bad option`);
 }
 
-/* ---- 6. Hard constraints never read an editorial rating ----------- */
+/* ---- 9. computeWeightedScore excludes unmodeled axes from the ----- *
+ * average entirely, rather than scoring them zero.                   */
 {
-  const state = emptyState();
-  const model = CATALOG[0];
-  const before = evaluateHardConstraints(model, state.requirements, state.tokenBlend);
-  const mutated = { ...model, capabilityTier: 'basic', latencyClass: 'slow', throughputTier: 'limited' };
-  const after = evaluateHardConstraints(mutated, state.requirements, state.tokenBlend);
-  expect('hard constraints ignore editorial fields', JSON.stringify(before) === JSON.stringify(after), 'changing capabilityTier, latencyClass, or throughputTier changed a hard constraint outcome, but only objective fields may do that');
-  console.log('  hard constraints confirmed independent of capability tier, latency class, and throughput tier');
+  const axisScores = [
+    { axis: 'capability', label: 'Capability fit', modeled: false, score: null, why: 'not modeled' },
+    { axis: 'cost', label: 'Cost efficiency', modeled: true, score: 80, why: 'modeled' },
+    { axis: 'latency', label: 'Latency fit', modeled: false, score: null, why: 'not modeled' },
+    { axis: 'throughput', label: 'Throughput fit', modeled: false, score: null, why: 'not modeled' },
+  ];
+  const weighted = computeWeightedScore(axisScores, DEFAULT_WEIGHTS);
+  expect('weighted score ignores unmodeled axes', Math.abs(weighted - 80) < 1e-9, `expected the weighted score to equal the sole modeled axis score of 80 when the other three are unmodeled, got ${weighted}`);
+
+  // Two modeled axes, both weighted, must produce their own weighted
+  // average, not one diluted by the unmodeled axes.
+  const twoModeled = [
+    { axis: 'capability', label: 'Capability fit', modeled: true, score: 100, why: 'modeled' },
+    { axis: 'cost', label: 'Cost efficiency', modeled: true, score: 0, why: 'modeled' },
+    { axis: 'latency', label: 'Latency fit', modeled: false, score: null, why: 'not modeled' },
+    { axis: 'throughput', label: 'Throughput fit', modeled: false, score: null, why: 'not modeled' },
+  ];
+  const w2 = computeWeightedScore(twoModeled, { capability: 40, cost: 25, latency: 20, throughput: 15 });
+  const expected2 = (100 * 40 + 0 * 25) / (40 + 25);
+  expect('weighted score averages only modeled axes', Math.abs(w2 - expected2) < 1e-9, `expected ${expected2}, got ${w2}`);
+  console.log(`  weighted score math: one axis modeled -> ${weighted}, two axes modeled -> ${w2.toFixed(2)}, both computed over modeled axes only`);
 }
 
-/* ---- 7. Sensitivity math checks out by hand ------------------------ */
+/* ---- 10. Sensitivity math checks out by hand ------------------------ */
 {
-  // Two candidates, four axes, weights chosen so the hand calculation
-  // is checkable: winner ahead only on capability, runner up ahead on
-  // every other axis.
+  // Two candidates, four axes, all modeled, weights chosen so the hand
+  // calculation is checkable: winner ahead only on capability, runner
+  // up ahead on every other axis.
   const winner = {
     model: { name: 'Winner' },
     axisScores: [
-      { axis: 'capability', score: 90 },
-      { axis: 'cost', score: 40 },
-      { axis: 'latency', score: 50 },
-      { axis: 'throughput', score: 50 },
+      { axis: 'capability', modeled: true, score: 90 },
+      { axis: 'cost', modeled: true, score: 40 },
+      { axis: 'latency', modeled: true, score: 50 },
+      { axis: 'throughput', modeled: true, score: 50 },
     ],
   };
   const runnerUp = {
     model: { name: 'RunnerUp' },
     axisScores: [
-      { axis: 'capability', score: 60 },
-      { axis: 'cost', score: 80 },
-      { axis: 'latency', score: 50 },
-      { axis: 'throughput', score: 50 },
+      { axis: 'capability', modeled: true, score: 60 },
+      { axis: 'cost', modeled: true, score: 80 },
+      { axis: 'latency', modeled: true, score: 50 },
+      { axis: 'throughput', modeled: true, score: 50 },
     ],
   };
   const weights = { capability: 40, cost: 10, latency: 20, throughput: 20 };
@@ -250,31 +364,60 @@ console.log(`  catalog: ${CATALOG.length} candidates, ${seenIds.size} unique ids
   expect('sensitivity flips ranking', runnerScore >= winnerScore - 1e-9, `at the computed required weight the runner up score ${runnerScore} should be at least the winner score ${winnerScore}`);
 }
 
-/* ---- 8. A dominated runner up reports no single axis flip ---------- */
+/* ---- 11. A dominated runner up reports no single axis flip --------- */
 {
   const winner = {
     model: { name: 'Winner' },
     axisScores: [
-      { axis: 'capability', score: 90 },
-      { axis: 'cost', score: 90 },
-      { axis: 'latency', score: 90 },
-      { axis: 'throughput', score: 90 },
+      { axis: 'capability', modeled: true, score: 90 },
+      { axis: 'cost', modeled: true, score: 90 },
+      { axis: 'latency', modeled: true, score: 90 },
+      { axis: 'throughput', modeled: true, score: 90 },
     ],
   };
   const dominated = {
     model: { name: 'Dominated' },
     axisScores: [
-      { axis: 'capability', score: 10 },
-      { axis: 'cost', score: 10 },
-      { axis: 'latency', score: 10 },
-      { axis: 'throughput', score: 10 },
+      { axis: 'capability', modeled: true, score: 10 },
+      { axis: 'cost', modeled: true, score: 10 },
+      { axis: 'latency', modeled: true, score: 10 },
+      { axis: 'throughput', modeled: true, score: 10 },
     ],
   };
   const sensitivity = computeSensitivity(winner, dominated, DEFAULT_WEIGHTS);
   expect('dominated cannot flip', sensitivity.possible === false, 'a runner up that trails on every axis should never report a possible flip');
 }
 
-/* ---- 9. Samples --------------------------------------------------- */
+/* ---- 12. Sensitivity restricted to axes both candidates carry a ---- *
+ * rating for, since an axis neither has is not a real lever.          */
+{
+  const winner = {
+    model: { name: 'Winner' },
+    axisScores: [
+      { axis: 'capability', modeled: true, score: 80 },
+      { axis: 'cost', modeled: true, score: 50 },
+      { axis: 'latency', modeled: false, score: null },
+      { axis: 'throughput', modeled: false, score: null },
+    ],
+  };
+  const runnerUp = {
+    model: { name: 'RunnerUp' },
+    axisScores: [
+      { axis: 'capability', modeled: false, score: null },
+      { axis: 'cost', modeled: true, score: 90 },
+      { axis: 'latency', modeled: false, score: null },
+      { axis: 'throughput', modeled: false, score: null },
+    ],
+  };
+  // Only "cost" is modeled for both. Capability is modeled for the
+  // winner alone, so it cannot be a lever even though the winner leads
+  // on it, and latency and throughput are modeled for neither.
+  const sensitivity = computeSensitivity(winner, runnerUp, { capability: 40, cost: 25, latency: 20, throughput: 15 });
+  expect('sensitivity ignores axes not shared', sensitivity.possible === false || sensitivity.axis === 'cost', `expected the only usable lever to be "cost" or no flip to be possible, got axis "${sensitivity.axis}"`);
+  console.log(`  sensitivity with a partially rated pair: ${sensitivity.message}`);
+}
+
+/* ---- 13. Samples --------------------------------------------------- */
 expect('samples count', SAMPLES.length >= 3, `only ${SAMPLES.length} samples, expected at least 3`);
 for (const s of SAMPLES) {
   expect('sample shape', Boolean(s.id && s.name && s.teaches), `sample ${s.id} is missing a field`);
@@ -284,7 +427,7 @@ for (const s of SAMPLES) {
 }
 console.log(`  samples: ${SAMPLES.length}, each produces a full accounting of the catalog`);
 
-/* ---- 10. Validation ------------------------------------------------ */
+/* ---- 14. Validation ------------------------------------------------ */
 {
   const bad = emptyState();
   bad.requirements.contextNeededTokens = 0;
@@ -298,9 +441,10 @@ console.log(`  samples: ${SAMPLES.length}, each produces a full accounting of th
   expect('validate warns on zero weights', validate(zeroWeights).some((i) => i.field === 'weights' && i.severity === 'warning'), 'all weights at zero should produce a warning');
 
   expect('reset equals empty', JSON.stringify(reset()) === JSON.stringify(emptyState()), 'reset() should return the same shape as emptyState()');
+  expect('empty state ships zero ratings', Object.keys(emptyState().userRatings).length === 0, 'emptyState() must ship with no user ratings, the honest default');
 }
 
-/* ---- 11. Blended cost and cost axis normalization ------------------ */
+/* ---- 15. Blended cost and cost axis normalization ------------------ */
 {
   const model = { pricePerMillionInput: 10, pricePerMillionOutput: 20 };
   const blend = { inputShare: 0.75, outputShare: 0.25 };
@@ -308,7 +452,7 @@ console.log(`  samples: ${SAMPLES.length}, each produces a full accounting of th
   expect('blended cost formula', Math.abs(cost - 12.5) < 1e-9, `expected 10*0.75 + 20*0.25 = 12.5, got ${cost}`);
 }
 
-/* ---- 12. THE IMPORTANT ONE. Catalog staleness ACTIVELY discriminates */
+/* ---- 16. THE IMPORTANT ONE. Catalog staleness ACTIVELY discriminates */
 {
   const veryFuture = new Date('2099-01-01T00:00:00Z');
   const stale = catalogStaleness(veryFuture);
@@ -369,45 +513,48 @@ console.log(`  samples: ${SAMPLES.length}, each produces a full accounting of th
   expect('risk statement is substantive', STALE_RISK_STATEMENT.length > 60, 'the staleness risk statement is too short to actually explain the consequence');
 }
 
-/* ---- 12b. A user edited candidate is marked distinctly -------------- */
+/* ---- 17. A user rated candidate is marked distinctly ---------------- */
 {
   const state = emptyState();
   const targetId = CATALOG[0].id;
   const untouchedId = CATALOG[1].id;
 
-  expect('unedited has no overridden fields', overriddenFields(targetId, state.overrides).length === 0, 'a candidate with no entry in overrides should report zero overridden fields');
+  expect('unrated has no rated fields', ratedFields(targetId, state.userRatings).length === 0, 'a candidate with no entry in userRatings should report zero rated fields');
 
-  state.overrides = { [targetId]: { capabilityTier: 'frontier' } };
-  const fields = overriddenFields(targetId, state.overrides);
-  expect('overriddenFields names the edited field', fields.length === 1 && fields[0] === 'capabilityTier', `expected exactly ["capabilityTier"], got ${JSON.stringify(fields)}`);
+  state.userRatings = { [targetId]: { capability: 'frontier' } };
+  const fields = ratedFields(targetId, state.userRatings);
+  expect('ratedFields names the rated field', fields.length === 1 && fields[0] === 'capability', `expected exactly ["capability"], got ${JSON.stringify(fields)}`);
 
   const result = rankCandidates(state);
-  const edited = [...result.ranked, ...result.eliminated].find((c) => c.model.id === targetId);
+  const rated = [...result.ranked, ...result.eliminated].find((c) => c.model.id === targetId);
   const untouched = [...result.ranked, ...result.eliminated].find((c) => c.model.id === untouchedId);
-  expect('ranked candidate carries overriddenFields', edited && edited.overriddenFields.length === 1, 'the edited candidate did not carry its overriddenFields through rankCandidates');
-  expect('untouched candidate stays unmarked', untouched && untouched.overriddenFields.length === 0, 'a candidate the user never touched should report zero overridden fields');
-  expect('edited model reflects the override', edited.model.capabilityTier === 'frontier', 'the overridden capabilityTier did not reach the scored model');
+  expect('ranked candidate carries ratedFields', rated && rated.ratedFields.length === 1, 'the rated candidate did not carry its ratedFields through rankCandidates');
+  expect('untouched candidate stays unmarked', untouched && untouched.ratedFields.length === 0, 'a candidate the user never touched should report zero rated fields');
+  const ratedCapabilityAxis = rated.axisScores?.find((a) => a.axis === 'capability');
+  expect('rated candidate has a modeled capability axis', ratedCapabilityAxis && ratedCapabilityAxis.modeled === true, 'the supplied capability rating did not reach the scored axis');
 
   const json = JSON.parse(serialize(state, 'json'));
-  const exportedEdited = json.ranked.find((r) => r.model === CATALOG[0].name) ?? json.eliminated.find((e) => e.model === CATALOG[0].name);
+  const exportedRated = json.ranked.find((r) => r.model === CATALOG[0].name) ?? json.eliminated.find((e) => e.model === CATALOG[0].name);
   const exportedUntouched = json.ranked.find((r) => r.model === CATALOG[1].name) ?? json.eliminated.find((e) => e.model === CATALOG[1].name);
-  expect('export marks the edited candidate', exportedEdited && exportedEdited.overriddenFields.includes('capabilityTier'), 'export lost the overriddenFields marker for the edited candidate');
-  expect('export leaves the untouched candidate unmarked', exportedUntouched && exportedUntouched.overriddenFields.length === 0, 'export incorrectly marked an untouched candidate as edited');
-  console.log(`  user edit: ${CATALOG[0].name} marked overriddenFields=${JSON.stringify(exportedEdited.overriddenFields)}, ${CATALOG[1].name} marked overriddenFields=${JSON.stringify(exportedUntouched.overriddenFields)}`);
+  expect('export marks the rated candidate', exportedRated && exportedRated.ratedFields.includes('capability'), 'export lost the ratedFields marker for the rated candidate');
+  expect('export leaves the untouched candidate unmarked', exportedUntouched && exportedUntouched.ratedFields.length === 0, 'export incorrectly marked an untouched candidate as rated');
+  console.log(`  user rating: ${CATALOG[0].name} marked ratedFields=${JSON.stringify(exportedRated.ratedFields)}, ${CATALOG[1].name} marked ratedFields=${JSON.stringify(exportedUntouched.ratedFields)}`);
 }
 
-/* ---- 13. Export carries its assumptions, criterion 4 verbatim ------ *
+/* ---- 18. Export carries its assumptions, criterion 4 verbatim ------ *
  * "Recommendation exports with assumptions." A reader must be able to
  * reconstruct why the answer came out: the weights, the constraints,
- * the catalog effective dates, and any user edits.                    */
+ * the catalog effective dates, which ratings were user supplied, and
+ * which axes went unmodeled.                                          */
 {
   const state = sampleState('regulated-document-analysis');
-  state.overrides = { [CATALOG[0].id]: { latencyClass: 'fast' } };
+  state.userRatings = { ...state.userRatings, [CATALOG[0].id]: { ...state.userRatings[CATALOG[0].id], latency: 'fast' } };
   const json = serialize(state, 'json');
   const parsed = JSON.parse(json);
 
   expect('export json parses', Array.isArray(parsed.ranked) && Array.isArray(parsed.eliminated), 'JSON export is missing ranked or eliminated arrays');
   expect('export json discloses', /not a claim/i.test(parsed.note), 'JSON export does not disclose that this is not a claim of objective best');
+  expect('export json names the mechanism', /ships no capability/i.test(parsed.note), 'JSON export note does not state that this tool ships no capability rating of its own');
 
   // Weights.
   expect('export carries weights', JSON.stringify(parsed.weights) === JSON.stringify(state.weights), 'JSON export lost the stated weights');
@@ -428,25 +575,43 @@ console.log(`  samples: ${SAMPLES.length}, each produces a full accounting of th
   expect('export carries catalog staleness threshold', parsed.catalogStaleness.thresholdDays === STALE_THRESHOLD_DAYS, 'export catalogStaleness is missing or has the wrong threshold');
   expect('export carries the stale model list', Array.isArray(parsed.catalogStaleness.staleModels), 'export catalogStaleness is missing the staleModels list');
   expect('export carries the ranking risk statement', /ranking/i.test(parsed.catalogStaleness.riskIfAnyStale), 'export does not carry the staleness ranking risk statement');
-  // User edits, preserved and distinct from unedited catalog data.
-  expect('export overrides map is present', JSON.stringify(parsed.overrides) === JSON.stringify(state.overrides), 'JSON export lost the raw overrides map');
-  const editedExport = [...parsed.ranked, ...parsed.eliminated].find((c) => c.model === CATALOG[0].name);
-  expect('export marks the edited candidate distinctly', editedExport && editedExport.overriddenFields.includes('latencyClass'), 'export did not mark the edited candidate distinctly from shipped catalog data');
+  // User ratings, preserved and distinct from unrated candidates.
+  expect('export userRatings map is present', JSON.stringify(parsed.userRatings) === JSON.stringify(state.userRatings), 'JSON export lost the raw userRatings map');
+  const ratedExport = [...parsed.ranked, ...parsed.eliminated].find((c) => c.model === CATALOG[0].name);
+  expect('export marks the rated candidate distinctly', ratedExport && ratedExport.ratedFields.includes('latency'), 'export did not mark the rated candidate distinctly from unrated candidates');
+  // Unmodeled axes, THE NEW REQUIREMENT: which axes carried no rating
+  // for any surviving candidate in this run.
+  expect('export carries unmodeledAxes', Array.isArray(parsed.unmodeledAxes), 'JSON export is missing the unmodeledAxes array');
 
   const md = serialize(state, 'markdown');
   expect('export markdown header', md.includes('# Model Selector report'), 'markdown export missing header');
   expect('export markdown discloses', /not a claim/i.test(md), 'markdown export does not disclose that this is not a claim of objective best');
-  expect('export markdown sections', md.includes('## Tradeoff') && md.includes('## Unanswered questions') && md.includes('## Recommended evaluation plan'), 'markdown export is missing a required section');
+  expect('export markdown sections', md.includes('## Tradeoff') && md.includes('## Unanswered questions') && md.includes('## Recommended evaluation plan') && md.includes('## Axes not modeled'), 'markdown export is missing a required section');
   expect('export markdown carries weights', AXIS_KEYS.every((axis) => md.includes(String(state.weights[axis]))), 'markdown export does not print the stated weights');
   expect('export markdown carries constraints', md.includes(state.requirements.dataSensitivity), 'markdown export does not print the stated data sensitivity constraint');
-  expect('export markdown carries user edit tag', md.includes('user edited: latencyClass'), 'markdown export does not mark which candidate the user edited');
+  expect('export markdown carries user rating tag', /user rated:[^\n]*latency/.test(md), 'markdown export does not mark which candidate the user rated on the latency axis');
   expect('export markdown carries staleness risk', md.includes(STALE_RISK_STATEMENT) || md.includes('No candidate currently exceeds'), 'markdown export does not state the staleness risk or its absence');
-  console.log(`  export: json ${json.length} bytes, markdown ${md.length} bytes, both carry weights, constraints, effective dates, and the user edit`);
+  console.log(`  export: json ${json.length} bytes, markdown ${md.length} bytes, both carry weights, constraints, effective dates, the user rating, and unmodeled axes`);
 }
 
-/* ---- 14. Default weight sum sanity, used across all scoring -------- */
+/* ---- 19. Export names unmodeled axes plainly when nothing is rated - */
+{
+  const state = emptyState();
+  const json = JSON.parse(serialize(state, 'json'));
+  expect(
+    'export names unmodeled axes when nothing is rated',
+    ['capability', 'latency', 'throughput'].every((axis) => json.unmodeledAxes.some((u) => u.axis === axis)),
+    `expected unmodeledAxes to name capability, latency, and throughput when no ratings are supplied, got ${JSON.stringify(json.unmodeledAxes)}`,
+  );
+
+  const md = serialize(state, 'markdown');
+  expect('markdown names unmodeled axes', md.includes('## Axes not modeled') && /carry no rating/i.test(md), 'markdown export does not plainly name the unmodeled axes when nothing is rated');
+  console.log('  export with zero ratings names capability, latency, and throughput as unmodeled in both formats');
+}
+
+/* ---- 20. Default weight sum sanity, used across all scoring -------- */
 expect('axis keys stable', AXIS_KEYS.length === 4, `expected 4 scored axes, got ${AXIS_KEYS.length}`);
-expect('default weights positive', Object.values(DEFAULT_WEIGHTS).every((w) => w > 0), 'every default weight should start above zero so the ranking is meaningful out of the box');
+expect('default weights positive', Object.values(DEFAULT_WEIGHTS).every((w) => w > 0), 'every default weight should start above zero so the ranking is meaningful once axes are modeled');
 expect('default token blend sums to one', Math.abs(DEFAULT_TOKEN_BLEND.inputShare + DEFAULT_TOKEN_BLEND.outputShare - 1) < 1e-9, 'default token blend shares must sum to 1');
 
 /* ---- Report --------------------------------------------------------- */
